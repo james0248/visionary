@@ -1,0 +1,4 @@
+run_dir: artifacts/dqn-breakout
+n_envs: 64
+screen_size: 84
+start_from_step: null
