@@ -26,29 +26,45 @@ class EpisodeDataSource(grain.RandomAccessDataSource):
         return VideoDataset(video=data["observation"])
 
 
-class PreprocessAndPatchify(grain.MapTransform):
-    def __init__(self, patch_size: int, pad_width: tuple[int, int]):
-        self.height_pad, self.width_pad = pad_width
+class RandomVideoCrop(grain.RandomMapTransform):
+    def __init__(self, frame_length: int):
+        self.frame_length = frame_length
+
+    def random_map(
+        self, element: VideoDataset, rng: np.random.Generator
+    ) -> VideoDataset:
+        video = element["video"]
+        start_idx = rng.integers(0, len(video) - self.frame_length + 1)
+        sliced_video = video[start_idx : start_idx + self.sequence_length]
+
+        return VideoDataset(video=sliced_video)
+
+
+class PreprocessAndPatchify(grain.RandomMapTransform):
+    def __init__(self, frame_length: int, patch_size: int, pad_width: tuple[int, int]):
+        self.frame_length = frame_length
         self.patch_size = patch_size
 
-    def map(self, element: VideoDataset) -> PreprocessedVideoDataset:
-        video = element["video"]
-
-        pad_width = (
+        height_pad, width_pad = pad_width
+        self.pad_width = (
             (0, 0),
-            (self.height_pad, self.height_pad),
-            (self.width_pad, self.width_pad),
+            (height_pad, height_pad),
+            (width_pad, width_pad),
             (0, 0),
         )
-        padded_video = np.pad(video, pad_width, mode="constant", constant_values=0)
 
+    def random_map(
+        self, element: VideoDataset, rng: np.random.Generator
+    ) -> PreprocessedVideoDataset:
+        video = element["video"]
+
+        padded_video = np.pad(video, self.pad_width, mode="constant", constant_values=0)
         patched_video = rearrange(
             padded_video,
             "t (h p1) (w p2) c -> t (h w) (p1 p2 c)",
             p1=self.patch_size,
             p2=self.patch_size,
         )
-
-        p = np.random.uniform(0.0, 0.9)
+        p = rng.uniform(0.0, 0.9, size=(video.shape[0],))
 
         return {"video": patched_video, "mask_prob": p}
