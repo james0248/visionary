@@ -61,17 +61,15 @@ class Attention(nn.Module):
         rope_emb: tuple[jnp.ndarray, jnp.ndarray] | None = None,
         mask: jnp.ndarray | None = None,
     ) -> jnp.ndarray:
-        b, t, n, d = x.shape
-
         num_groups = self.num_heads // self.num_kv_heads
 
         q = nn.Dense(self.num_heads * self.head_dim, use_bias=False)(x)
         k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False)(x)
         v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False)(x)
 
-        q = rearrange(q, "b n (h d) -> b n h d", h=self.num_heads)
-        k = rearrange(k, "b n (h d) -> b n h d", h=self.num_kv_heads)
-        v = rearrange(v, "b n (h d) -> b n h d", h=self.num_kv_heads)
+        q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
+        k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
+        v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
 
         q = nn.RMSNorm()(q)
         k = nn.RMSNorm()(k)
@@ -82,6 +80,18 @@ class Attention(nn.Module):
 
         k = jnp.repeat(k, repeats=num_groups, axis=2)
         v = jnp.repeat(v, repeats=num_groups, axis=2)
+
+        scores = jnp.einsum("b q h d, b k h d -> b h q k", q, k)
+        scores = scores / jnp.sqrt(self.head_dim)
+        if mask is not None:
+            scores = jnp.where(mask, scores, -1e9)
+
+        attn_weights = nn.softmax(scores, axis=-1)
+        out = jnp.einsum("b h q k, b k h d -> b q h d", attn_weights, v)
+        out = rearrange(out, "b t h d -> b t (h d)")
+        out = nn.Dense(self.model_dim, use_bias=False)(out)
+
+        return out
 
 
 class TransformerBlock(nn.Module):
