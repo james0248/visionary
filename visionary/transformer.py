@@ -2,16 +2,68 @@ import flax.linen as nn
 import jax.numpy as jnp
 from einops import rearrange
 
+from visionary.swiglu import SwiGLU
 
-class Transformer(nn.Module):
+
+def apply_rotary_embedding(
+    x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray
+) -> jnp.ndarray:
+    x_rot = jnp.stack([-x[..., 1::2], x[..., 0::2]], axis=-1)
+    x_rot = rearrange(x_rot, "... d2 2 -> ... (d2 2)")
+
+    cos = jnp.expand_dims(cos, axis=0)
+    sin = jnp.expand_dims(sin, axis=0)
+
+    emb = x * cos + x_rot * sin
+    return emb
+
+
+def create_temporal_rope(base: float, head_dim: int, seq_len: int) -> jnp.ndarray:
+    theta = 1 / (base ** (jnp.arange(0, head_dim, 2) / head_dim))
+    indicies = jnp.arange(seq_len)
+    angles = jnp.outer(indicies, theta)
+    cos_emb = jnp.cos(angles).repeat(2, axis=-1)
+    sin_emb = jnp.sin(angles).repeat(2, axis=-1)
+    return cos_emb, sin_emb
+
+
+def create_spatial_rope(
+    base: float, head_dim: int, x_len: int, y_len: int
+) -> jnp.ndarray:
+    theta = 1 / (base ** (jnp.arange(0, head_dim, 4) / head_dim))
+    indicies = jnp.arange(x_len * y_len)
+    x_indicies = indicies % x_len
+    y_indicies = indicies // x_len
+
+    x_angles = jnp.outer(x_indicies, theta)
+    y_angles = jnp.outer(y_indicies, theta)
+
+    x_cos_emb = jnp.cos(x_angles).repeat(2, axis=-1)
+    x_sin_emb = jnp.sin(x_angles).repeat(2, axis=-1)
+    y_cos_emb = jnp.cos(y_angles).repeat(2, axis=-1)
+    y_sin_emb = jnp.sin(y_angles).repeat(2, axis=-1)
+
+    cos_emb = jnp.concat([x_cos_emb, y_cos_emb], axis=-1)
+    sin_emb = jnp.concat([x_sin_emb, y_sin_emb], axis=-1)
+    return cos_emb, sin_emb
+
+
+class Attention(nn.Module):
     model_dim: int
     num_heads: int
     num_kv_heads: int
     head_dim: int
 
     @nn.compact
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        rope_emb: tuple[jnp.ndarray, jnp.ndarray] | None = None,
+        mask: jnp.ndarray | None = None,
+    ) -> jnp.ndarray:
         b, t, n, d = x.shape
+
+        num_groups = self.num_heads // self.num_kv_heads
 
         q = nn.Dense(self.num_heads * self.head_dim, use_bias=False)(x)
         k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False)(x)
@@ -20,3 +72,43 @@ class Transformer(nn.Module):
         q = rearrange(q, "b n (h d) -> b n h d", h=self.num_heads)
         k = rearrange(k, "b n (h d) -> b n h d", h=self.num_kv_heads)
         v = rearrange(v, "b n (h d) -> b n h d", h=self.num_kv_heads)
+
+        q = nn.RMSNorm()(q)
+        k = nn.RMSNorm()(k)
+
+        if rope_emb:
+            q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
+            k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
+
+        k = jnp.repeat(k, repeats=num_groups, axis=2)
+        v = jnp.repeat(v, repeats=num_groups, axis=2)
+
+
+class TransformerBlock(nn.Module):
+    model_dim: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    mlp_hidden_dim: int
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        mask: jnp.ndarray,
+    ) -> jnp.ndarray:
+        residual = x
+        x = nn.RMSNorm()(x)
+        x = residual + Attention(
+            self.model_dim,
+            self.num_heads,
+            self.num_kv_heads,
+            self.head_dim,
+        )(x, rope_emb, mask)
+
+        residual = x
+        x = nn.RMSNorm()(x)
+        x = residual + SwiGLU(self.mlp_hidden_dim)(x)
+
+        return x
