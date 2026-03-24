@@ -19,10 +19,10 @@ def apply_rotary_embedding(
     x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray
 ) -> jnp.ndarray:
     x_rot = jnp.stack([-x[..., 1::2], x[..., 0::2]], axis=-1)
-    x_rot = rearrange(x_rot, "... d2 2 -> ... (d2 2)")
+    x_rot = x_rot.reshape(*x_rot.shape[:-2], -1)
 
-    cos = jnp.expand_dims(cos, axis=0)
-    sin = jnp.expand_dims(sin, axis=0)
+    cos = cos[None, :, None, :]
+    sin = sin[None, :, None, :]
 
     emb = x * cos + x_rot * sin
     return emb
@@ -164,6 +164,10 @@ class SpatioTemporalTransformer(nn.Module):
         temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
         temporal_mask: jnp.ndarray,
     ) -> jnp.ndarray:
+        # (b, t, t) -> (b*n, 1, t, t) for head broadcast
+        temporal_mask = jnp.repeat(temporal_mask, total_tokens, axis=0)
+        temporal_mask = temporal_mask[:, None, :, :]
+
         for i in range(1, self.num_layers + 1):
             if i % 4 == 0:
                 x = rearrange(x, "b t n d -> (b n) t d")

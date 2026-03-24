@@ -9,11 +9,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import yaml
+from dqn import DQN
 from omegaconf import DictConfig
 
 from visionary.common.checkpoint import load_checkpoint
 from visionary.common.env import FireResetEnv, FrameRecorder, make_vec_env
-from dqn import DQN
 
 logger = logging.getLogger(__name__)
 
