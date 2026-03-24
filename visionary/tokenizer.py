@@ -1,13 +1,13 @@
-from einops import rearrange
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
 
 from visionary.dataset import PreprocessedVideoDataset
 from visionary.transformer import (
-    TransformerBlock,
+    SpatioTemporalTransformer,
     create_spatial_rope,
     create_temporal_rope,
+    pad_rope_for_latents,
 )
 
 
@@ -99,45 +99,21 @@ class TokenizerEncoder(nn.Module):
         spatial_rope_cos, spatial_rope_sin = create_spatial_rope(
             self.base, self.head_dim, self.x_len, self.y_len
         )
-        spatial_rope_emb = (
-            jnp.pad(
-                spatial_rope_cos,
-                ((self.num_latents, 0), (0, 0)),
-                mode="constant",
-                constant_values=1,
-            ),
-            jnp.pad(
-                spatial_rope_sin,
-                ((self.num_latents, 0), (0, 0)),
-                mode="constant",
-                constant_values=0,
-            ),
+        spatial_rope_emb = pad_rope_for_latents(
+            spatial_rope_cos, spatial_rope_sin, self.num_latents
         )
         spatial_mask = create_encoder_spatial_mask(num_tokens, self.num_latents)
         temporal_rope_emb = create_temporal_rope(self.base, self.head_dim, t)
         temporal_mask = create_temporal_mask(t)
 
-        # Encoder
-        for i in range(1, self.num_layers + 1):
-            if i % 4 == 0:
-                x = rearrange(x, "b t n d -> (b n) t d")
-                rope_emb, mask = temporal_rope_emb, temporal_mask
-            else:
-                x = rearrange(x, "b t n d -> (b t) n d")
-                rope_emb, mask = spatial_rope_emb, spatial_mask
-
-            x = TransformerBlock(
-                self.model_dim,
-                self.num_heads,
-                self.num_kv_heads,
-                self.head_dim,
-                self.mlp_hidden_dim,
-            )(x, rope_emb, mask)
-
-            if i % 4 == 0:
-                x = rearrange(x, "(b n) t d -> b t n d", n=total_tokens)
-            else:
-                x = rearrange(x, "(b t) n d -> b t n d", t=t)
+        x = SpatioTemporalTransformer(
+            self.num_layers,
+            self.model_dim,
+            self.num_heads,
+            self.num_kv_heads,
+            self.head_dim,
+            self.mlp_hidden_dim,
+        )(x, t, total_tokens, spatial_rope_emb, spatial_mask, temporal_rope_emb, temporal_mask)
 
         latent_tokens = x[:, :, : self.num_latents, :]
         latent = nn.Dense(self.channel_dim)(latent_tokens)
@@ -185,44 +161,21 @@ class TokenizerDecoder(nn.Module):
         spatial_rope_cos, spatial_rope_sin = create_spatial_rope(
             self.base, self.head_dim, self.x_len, self.y_len
         )
-        spatial_rope_emb = (
-            jnp.pad(
-                spatial_rope_cos,
-                ((self.num_latents, 0), (0, 0)),
-                mode="constant",
-                constant_values=1,
-            ),
-            jnp.pad(
-                spatial_rope_sin,
-                ((self.num_latents, 0), (0, 0)),
-                mode="constant",
-                constant_values=0,
-            ),
+        spatial_rope_emb = pad_rope_for_latents(
+            spatial_rope_cos, spatial_rope_sin, self.num_latents
         )
         spatial_mask = create_decoder_spatial_mask(num_tokens, self.num_latents)
         temporal_rope_emb = create_temporal_rope(self.base, self.head_dim, t)
         temporal_mask = create_temporal_mask(t)
 
-        for i in range(1, self.num_layers + 1):
-            if i % 4 == 0:
-                x = rearrange(x, "b t n d -> (b n) t d")
-                rope_emb, mask = temporal_rope_emb, temporal_mask
-            else:
-                x = rearrange(x, "b t n d -> (b t) n d")
-                rope_emb, mask = spatial_rope_emb, spatial_mask
-
-            x = TransformerBlock(
-                self.model_dim,
-                self.num_heads,
-                self.num_kv_heads,
-                self.head_dim,
-                self.mlp_hidden_dim,
-            )(x, rope_emb, mask)
-
-            if i % 4 == 0:
-                x = rearrange(x, "(b n) t d -> b t n d", n=total_tokens)
-            else:
-                x = rearrange(x, "(b t) n d -> b t n d", t=t)
+        x = SpatioTemporalTransformer(
+            self.num_layers,
+            self.model_dim,
+            self.num_heads,
+            self.num_kv_heads,
+            self.head_dim,
+            self.mlp_hidden_dim,
+        )(x, t, total_tokens, spatial_rope_emb, spatial_mask, temporal_rope_emb, temporal_mask)
 
         x = x[:, :, self.num_latents:, :]
         x = nn.Dense(self.patch_dim)(x)

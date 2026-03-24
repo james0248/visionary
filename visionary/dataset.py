@@ -35,7 +35,7 @@ class RandomVideoCrop(grain.RandomMapTransform):
     ) -> VideoDataset:
         video = element["video"]
         start_idx = rng.integers(0, len(video) - self.frame_length + 1)
-        sliced_video = video[start_idx : start_idx + self.sequence_length]
+        sliced_video = video[start_idx : start_idx + self.frame_length]
 
         return VideoDataset(video=sliced_video)
 
