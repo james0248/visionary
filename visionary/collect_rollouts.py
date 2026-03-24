@@ -13,7 +13,7 @@ from omegaconf import DictConfig
 
 from visionary.common.checkpoint import load_checkpoint
 from visionary.common.env import FireResetEnv, FrameRecorder, make_vec_env
-from visionary.models.dqn import DQN
+from visionary.dqn import DQN
 
 logger = logging.getLogger(__name__)
 
