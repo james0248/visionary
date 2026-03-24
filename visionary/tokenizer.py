@@ -155,6 +155,7 @@ class TokenizerDecoder(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     channel_dim: int
+    patch_dim: int
     x_len: int
     y_len: int
 
@@ -177,6 +178,7 @@ class TokenizerDecoder(nn.Module):
             image_tokens, (b, t, num_tokens, self.model_dim)
         )
 
+        latent = nn.Dense(self.model_dim)(latent)
         x = jnp.concatenate([latent, image_tokens_bcast], axis=2)
 
         # Create RoPE and mask
@@ -222,5 +224,6 @@ class TokenizerDecoder(nn.Module):
             else:
                 x = rearrange(x, "(b t) n d -> b t n d", t=t)
 
-        x = nn.Dense(self.channel_dim)(x)
+        x = x[:, :, self.num_latents:, :]
+        x = nn.Dense(self.patch_dim)(x)
         return x
