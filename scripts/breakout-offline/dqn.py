@@ -114,7 +114,7 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-@hydra.main(config_path="../config", config_name="dqn", version_base=None)
+@hydra.main(config_path="config", config_name="dqn", version_base=None)
 def main(cfg: DictConfig):
     key = jax.random.key(cfg.seed)
 
