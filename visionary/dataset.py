@@ -1,7 +1,8 @@
+import glob
 from typing import TypedDict
+
 import grain.python as grain
 import numpy as np
-import glob
 from einops import rearrange
 
 
@@ -12,6 +13,7 @@ class VideoDataset(TypedDict):
 class PreprocessedVideoDataset(TypedDict):
     video: np.ndarray
     mask_prob: float
+    independent: bool
 
 
 class EpisodeDataSource(grain.RandomAccessDataSource):
@@ -66,5 +68,6 @@ class PreprocessAndPatchify(grain.RandomMapTransform):
             p2=self.patch_size,
         )
         p = rng.uniform(0.0, 0.9, size=(video.shape[0],))
+        independent = rng.random() < 0.3
 
-        return {"video": patched_video, "mask_prob": p}
+        return {"video": patched_video, "mask_prob": p, "independent": independent}
