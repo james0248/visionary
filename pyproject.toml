@@ -14,6 +14,7 @@ dependencies = [
     "importlib-resources>=6.5.2",
     "jax>=0.9.1",
     "moviepy>=2.2.1",
+    "orbax-checkpoint>=0.11.33",
     "wandb>=0.19.11",
 ]
 
