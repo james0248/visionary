@@ -150,27 +150,26 @@ def main(cfg: DictConfig):
         q_values = model.apply(params, obs)
         return jnp.argmax(q_values, axis=-1)
 
-    try:
-        for step in checkpoints:
-            logger.info("Collecting rollouts for checkpoint step=%d", step)
-            params = checkpoint_manager.restore(
-                step=step,
-                target=init_state,
-                params_only=True,
-            )
-            collect_rollouts_for_checkpoint(
-                env,
-                recorders,
-                get_actions,
-                params,
-                cfg.n_envs,
-                output_dir,
-                step,
-            )
-        logger.info("Done. Rollouts saved to %s", output_dir)
-    finally:
-        checkpoint_manager.close()
-        env.close()
+    for step in checkpoints:
+        logger.info("Collecting rollouts for checkpoint step=%d", step)
+        params = checkpoint_manager.restore(
+            step=step,
+            target=init_state,
+            params_only=True,
+        )
+        collect_rollouts_for_checkpoint(
+            env,
+            recorders,
+            get_actions,
+            params,
+            cfg.n_envs,
+            output_dir,
+            step,
+        )
+
+    checkpoint_manager.close()
+    env.close()
+    logger.info("Done. Rollouts saved to %s", output_dir)
 
 
 if __name__ == "__main__":

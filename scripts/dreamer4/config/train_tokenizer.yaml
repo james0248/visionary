@@ -1,0 +1,41 @@
+seed: 42
+learning_rate: 1e-4
+lpips_weight: 0.0
+log_interval: 100
+eval_steps: 0
+
+dataset:
+  data_dir: ???
+  frame_length: 16
+  batch_size: 8
+  patch_size: 4
+  pad_width: [0, 0]
+
+tokenizer:
+  _target_: visionary.tokenizer.Tokenizer
+  num_layers: 8
+  num_latents: 64
+  num_heads: 8
+  num_kv_heads: 8
+  model_dim: 512
+  head_dim: 64
+  mlp_hidden_dim: 2048
+  channel_dim: 32
+  x_len: 21
+  y_len: 21
+  base: 10000.0
+
+checkpoint:
+  manager:
+    _target_: visionary.common.checkpoint.CheckpointManager
+    directory: ???
+    options:
+      _target_: orbax.checkpoint.CheckpointManagerOptions
+      save_interval_steps: 1000
+      max_to_keep: 3
+      enable_async_checkpointing: true
+  resume_step: null
+
+wandb:
+  enabled: true
+  project: visionary

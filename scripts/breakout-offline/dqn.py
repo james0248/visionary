@@ -180,90 +180,87 @@ def main(cfg: DictConfig):
     episode_rewards = np.zeros(cfg.n_envs)
     episode_lengths = np.zeros(cfg.n_envs, dtype=int)
     global_step = 0
-    try:
-        while global_step < cfg.total_steps:
-            key, action_key = jax.random.split(key)
-            epsilon = linear_schedule(
-                cfg.start_epsilon, cfg.end_epsilon, exploration_duration, global_step
-            )
-            actions = select_action(
-                state, obs, action_key, jnp.array(epsilon), action_size
-            )
-            next_obs, rewards, terminated, truncated, infos = env.step(
-                jax.device_get(actions)
-            )
-            dones = np.logical_or(terminated, truncated)
+    while global_step < cfg.total_steps:
+        key, action_key = jax.random.split(key)
+        epsilon = linear_schedule(
+            cfg.start_epsilon, cfg.end_epsilon, exploration_duration, global_step
+        )
+        actions = select_action(state, obs, action_key, jnp.array(epsilon), action_size)
+        next_obs, rewards, terminated, truncated, infos = env.step(
+            jax.device_get(actions)
+        )
+        dones = np.logical_or(terminated, truncated)
 
-            if np.any(truncated):
-                real_next_obs = next_obs.copy()
-                mask = np.where(truncated)[0]
-                real_next_obs[mask] = np.stack([infos["final_obs"][i] for i in mask])
-            else:
-                real_next_obs = next_obs
+        if np.any(truncated):
+            real_next_obs = next_obs.copy()
+            mask = np.where(truncated)[0]
+            real_next_obs[mask] = np.stack([infos["final_obs"][i] for i in mask])
+        else:
+            real_next_obs = next_obs
 
-            replay_buffer.add(
-                obs,
-                real_next_obs,
-                np.asarray(actions).reshape(cfg.n_envs, 1),
-                rewards,
-                terminated,
-            )
+        replay_buffer.add(
+            obs,
+            real_next_obs,
+            np.asarray(actions).reshape(cfg.n_envs, 1),
+            rewards,
+            terminated,
+        )
 
-            episode_rewards += rewards
-            episode_lengths += 1
-            for i in range(cfg.n_envs):
-                if dones[i]:
-                    wb.log(
-                        {
-                            "episode_reward": episode_rewards[i],
-                            "episode_length": int(episode_lengths[i]),
-                        },
-                        step=global_step,
-                    )
-                    episode_rewards[i] = 0.0
-                    episode_lengths[i] = 0
-
-            obs = next_obs
-            global_step += cfg.n_envs
-
-            if cfg.eval_steps > 0 and global_step % cfg.eval_steps < cfg.n_envs:
-                checkpoint_manager.save(
+        episode_rewards += rewards
+        episode_lengths += 1
+        for i in range(cfg.n_envs):
+            if dones[i]:
+                wb.log(
+                    {
+                        "episode_reward": episode_rewards[i],
+                        "episode_length": int(episode_lengths[i]),
+                    },
                     step=global_step,
-                    state=state,
-                    force=True,
                 )
-                steps, reward, video_path = record_rollout(
-                    eval_env, state, output_dir, global_step
-                )
-                wb.log({"eval/steps": steps, "eval/reward": reward}, step=global_step)
-                wb.log_video("eval/rollout", video_path, step=global_step)
+                episode_rewards[i] = 0.0
+                episode_lengths[i] = 0
 
-            if (
-                global_step >= cfg.learning_starts
-                and global_step % cfg.train_freq < cfg.n_envs
-            ):
-                n_updates = max(1, cfg.n_envs // cfg.train_freq)
-                for _ in range(n_updates):
-                    batch = replay_buffer.sample(cfg.batch_size)
-                    state, loss, mean_q, mean_q_next = train_step(state, cfg.gamma, batch)
-                if global_step % cfg.target_update_freq < cfg.n_envs:
-                    state = update_target(state, cfg.tau)
-                if global_step % cfg.log_interval < cfg.n_envs:
-                    wb.log(
-                        {
-                            "train/loss": float(loss),
-                            "train/epsilon": epsilon,
-                            "train/q_values": float(mean_q),
-                            "train/q_values_next": float(mean_q_next),
-                        },
-                        step=global_step,
-                    )
-    finally:
-        checkpoint_manager.wait_until_finished()
-        checkpoint_manager.close()
-        wb.finish()
-        env.close()
-        eval_env.close()
+        obs = next_obs
+        global_step += cfg.n_envs
+
+        if cfg.eval_steps > 0 and global_step % cfg.eval_steps < cfg.n_envs:
+            checkpoint_manager.save(
+                step=global_step,
+                state=state,
+                force=True,
+            )
+            steps, reward, video_path = record_rollout(
+                eval_env, state, output_dir, global_step
+            )
+            wb.log({"eval/steps": steps, "eval/reward": reward}, step=global_step)
+            wb.log_video("eval/rollout", video_path, step=global_step)
+
+        if (
+            global_step >= cfg.learning_starts
+            and global_step % cfg.train_freq < cfg.n_envs
+        ):
+            n_updates = max(1, cfg.n_envs // cfg.train_freq)
+            for _ in range(n_updates):
+                batch = replay_buffer.sample(cfg.batch_size)
+                state, loss, mean_q, mean_q_next = train_step(state, cfg.gamma, batch)
+            if global_step % cfg.target_update_freq < cfg.n_envs:
+                state = update_target(state, cfg.tau)
+            if global_step % cfg.log_interval < cfg.n_envs:
+                wb.log(
+                    {
+                        "train/loss": float(loss),
+                        "train/epsilon": epsilon,
+                        "train/q_values": float(mean_q),
+                        "train/q_values_next": float(mean_q_next),
+                    },
+                    step=global_step,
+                )
+
+    checkpoint_manager.wait_until_finished()
+    checkpoint_manager.close()
+    wb.finish()
+    env.close()
+    eval_env.close()
 
 
 if __name__ == "__main__":
