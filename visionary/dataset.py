@@ -34,14 +34,23 @@ class EpisodeDataSource(grain.RandomAccessDataSource):
 
     def __getitem__(self, idx: int) -> VideoDataset:
         with self.files[idx].open("rb") as file_obj:
-            data = np.load(file_obj)
-            video = np.asarray(data["observation"])
+            with np.load(file_obj) as data:
+                if "frames" not in data:
+                    raise KeyError(
+                        f"Expected 'frames' in {self.files[idx]}"
+                    )
+                video = np.asarray(data["frames"])
         return VideoDataset(video=video)
 
 
 def list_episode_files(data_dir: str) -> list[epath.Path]:
     root = epath.Path(data_dir)
-    return sorted(root.glob("**/episode_*.npz"), key=lambda p: p.as_posix())
+    episode_files: list[epath.Path] = []
+    for dirpath, _, filenames in root.walk():
+        for filename in filenames:
+            if filename.startswith("episode_") and filename.endswith(".npz"):
+                episode_files.append(dirpath / filename)
+    return sorted(episode_files, key=lambda p: p.as_posix())
 
 
 def split_episode_files(
