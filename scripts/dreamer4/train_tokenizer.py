@@ -1,13 +1,16 @@
 import itertools
 import logging
+from functools import lru_cache, partial
 
 import grain.python as grain
 import hydra
 import jax
 import jax.numpy as jnp
 import optax
+from einops import rearrange
 from flax.training.train_state import TrainState
 from hydra.utils import instantiate
+from jaxlpips import LPIPS
 from omegaconf import DictConfig
 
 from visionary.common.checkpoint import CheckpointManager
@@ -22,61 +25,120 @@ from visionary.dataset import (
 logger = logging.getLogger(__name__)
 
 
-@jax.jit
+LPIPS_PRETRAINED_NETWORK = "alexnet"
+
+
+@lru_cache(maxsize=1)
+def get_lpips_loss_fn():
+    return LPIPS(pretrained_network=LPIPS_PRETRAINED_NETWORK)
+
+
+def compute_lpips_loss(
+    original: jax.Array,
+    reconstructed: jax.Array,
+    patch_size: int,
+    width_tokens: int,
+    height_tokens: int,
+) -> jax.Array:
+    def unpatchify(images: jax.Array) -> jax.Array:
+        return rearrange(
+            images,
+            "b t (h w) (p p c) -> b t (h p) (w p) c",
+            p=patch_size,
+            h=height_tokens,
+            w=width_tokens,
+        )
+
+    original_images = unpatchify(original)
+    reconstructed_images = unpatchify(reconstructed)
+    original_images, reconstructed_images = (
+        original_images * 2.0 - 1.0,
+        reconstructed_images * 2.0 - 1.0,
+    )
+    return jnp.mean(get_lpips_loss_fn()(original_images, reconstructed_images))
+
+
+def compute_losses(
+    params,
+    state: TrainState,
+    batch: PreprocessedVideoDataset,
+    mask_key: jax.Array,
+    lpips_weight: float,
+    patch_size: int,
+    width_tokens: int,
+    height_tokens: int,
+):
+    reconstructed = state.apply_fn(params, batch, rngs={"mask": mask_key})
+    original = batch["video"].astype(reconstructed.dtype) / 255.0
+    mse_loss = jnp.mean(jnp.square(reconstructed - original))
+    if lpips_weight > 0:
+        lpips_loss = compute_lpips_loss(
+            original,
+            reconstructed,
+            patch_size=patch_size,
+            width_tokens=width_tokens,
+            height_tokens=height_tokens,
+        )
+    else:
+        lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
+    loss = mse_loss + lpips_weight * lpips_loss
+    return loss, {"loss": loss, "mse_loss": mse_loss, "lpips_loss": lpips_loss}
+
+
+@partial(
+    jax.jit,
+    static_argnames=("lpips_weight", "patch_size", "width_tokens", "height_tokens"),
+)
 def train_step(
     state: TrainState,
     batch: PreprocessedVideoDataset,
-    lpips_weight: float,
     mask_key: jax.Array,
+    lpips_weight: float,
+    patch_size: int,
+    width_tokens: int,
+    height_tokens: int,
 ):
     def loss_fn(params):
-        reconstructed = state.apply_fn(params, batch, rngs={"mask": mask_key})
-        original = batch["video"]
-        mse_loss = jnp.mean((reconstructed - original) ** 2)
-        # TODO: Add LPIPS loss
-        lpips_loss = lpips_weight * 0.0
-        loss = mse_loss + lpips_loss
-        return loss, {"mse_loss": mse_loss, "lpips_loss": lpips_loss}
+        return compute_losses(
+            params,
+            state,
+            batch,
+            mask_key,
+            lpips_weight,
+            patch_size,
+            width_tokens,
+            height_tokens,
+        )
 
-    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+    (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     state = state.apply_gradients(grads=grads)
-    return state, {**metrics, "loss": loss}
+    return state, metrics
 
 
-@jax.jit
-def compute_eval_loss(
+@partial(
+    jax.jit,
+    static_argnames=("lpips_weight", "patch_size", "width_tokens", "height_tokens"),
+)
+def eval_step(
     state: TrainState,
     batch: PreprocessedVideoDataset,
-    lpips_weight: float,
     mask_key: jax.Array,
-):
-    reconstructed = state.apply_fn(state.params, batch, rngs={"mask": mask_key})
-    original = batch["video"]
-    mse_loss = jnp.mean((reconstructed - original) ** 2)
-    # TODO: Add LPIPS loss
-    lpips_loss = lpips_weight * 0.0
-    loss = mse_loss + lpips_loss
-    return {"loss": loss, "mse_loss": mse_loss, "lpips_loss": lpips_loss}
-
-
-def evaluate(
-    state: TrainState,
-    dataloader: grain.DataLoader,
     lpips_weight: float,
-    eval_key: jax.Array,
-    max_batches: int,
-) -> dict[str, float]:
-    totals: dict[str, float] = {}
-    num_batches = 0
-
-    for batch_idx, batch in enumerate(itertools.islice(iter(dataloader), max_batches)):
-        mask_key = jax.random.fold_in(eval_key, batch_idx)
-        metrics = compute_eval_loss(state, batch, lpips_weight, mask_key)
-        for k, v in metrics.items():
-            totals[k] = totals.get(k, 0.0) + float(v)
-        num_batches += 1
-
-    return {k: v / num_batches for k, v in totals.items()}
+    patch_size: int,
+    width_tokens: int,
+    height_tokens: int,
+):
+    _, metrics = compute_losses(
+        state.params,
+        state,
+        batch,
+        mask_key,
+        lpips_weight,
+        patch_size,
+        width_tokens,
+        height_tokens,
+    )
+    return metrics
 
 
 @hydra.main(config_path="config", config_name="train_tokenizer", version_base=None)
@@ -145,21 +207,42 @@ def main(cfg: DictConfig):
 
     for batch in train_dataloader:
         mask_key = jax.random.fold_in(train_key, step)
-        state, metrics = train_step(state, batch, cfg.lpips_weight, mask_key)
+        state, metrics = train_step(
+            state,
+            batch,
+            mask_key,
+            cfg.lpips_weight,
+            patch_size=cfg.dataset.patch_size,
+            width_tokens=cfg.tokenizer.x_len,
+            height_tokens=cfg.tokenizer.y_len,
+        )
         step = int(state.step)
 
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
-            eval_metrics = evaluate(
-                state,
-                eval_dataloader,
-                cfg.lpips_weight,
-                eval_key,
-                cfg.dataset.eval.max_batches,
-            )
-            wb.log(
-                {f"eval/{k}": v for k, v in eval_metrics.items()},
-                step=step,
-            )
+            totals: dict[str, float] = {}
+            num_batches = 0
+            for batch_idx, eval_batch in enumerate(
+                itertools.islice(iter(eval_dataloader), cfg.dataset.eval.max_batches)
+            ):
+                eval_mask_key = jax.random.fold_in(eval_key, batch_idx)
+                batch_metrics = eval_step(
+                    state,
+                    eval_batch,
+                    eval_mask_key,
+                    cfg.lpips_weight,
+                    patch_size=cfg.dataset.patch_size,
+                    width_tokens=cfg.tokenizer.x_len,
+                    height_tokens=cfg.tokenizer.y_len,
+                )
+                for k, v in batch_metrics.items():
+                    totals[k] = totals.get(k, 0.0) + float(v)
+                num_batches += 1
+            if num_batches > 0:
+                eval_metrics = {k: v / num_batches for k, v in totals.items()}
+                wb.log(
+                    {f"eval/{k}": v for k, v in eval_metrics.items()},
+                    step=step,
+                )
 
         if step % cfg.log_interval == 0:
             wb.log(
