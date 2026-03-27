@@ -68,6 +68,7 @@ class TokenizerEncoder(nn.Module):
     y_len: int
 
     base: float
+    dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
     def __call__(
@@ -81,13 +82,13 @@ class TokenizerEncoder(nn.Module):
                 f"{expected_num_tokens} spatial tokens, got {num_tokens}."
             )
 
-        x = nn.Dense(self.model_dim)(x)
+        x = nn.Dense(self.model_dim, dtype=self.dtype)(x)
 
         # Apply masking to patches
         rng = self.make_rng("mask")
         mask_token = self.param(
             "mask_token", nn.initializers.normal(stddev=0.02), (self.model_dim,)
-        )
+        ).astype(self.dtype)
         rand_vals = jax.random.uniform(rng, shape=(batch_size, seq_len, num_tokens))
         mask_threshold = jnp.expand_dims(mask_prob, axis=-1)
         is_masked = jnp.expand_dims(rand_vals < mask_threshold, axis=-1)
@@ -98,7 +99,7 @@ class TokenizerEncoder(nn.Module):
             "latent_tokens",
             nn.initializers.normal(stddev=0.02),
             (self.num_latents, self.model_dim),
-        )
+        ).astype(self.dtype)
         latent_tokens = jnp.broadcast_to(
             latent_tokens, (batch_size, seq_len, self.num_latents, self.model_dim)
         )
@@ -120,6 +121,7 @@ class TokenizerEncoder(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
+            dtype=self.dtype,
         )(
             x=x,
             t=seq_len,
@@ -131,7 +133,7 @@ class TokenizerEncoder(nn.Module):
         )
 
         latent = x[:, :, : self.num_latents, :]
-        latent = nn.Dense(self.channel_dim)(latent)
+        latent = nn.Dense(self.channel_dim, dtype=self.dtype)(latent)
         latent = jnp.tanh(latent)
         return latent
 
@@ -150,6 +152,7 @@ class TokenizerDecoder(nn.Module):
     y_len: int
 
     base: float
+    dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
     def __call__(
@@ -170,12 +173,12 @@ class TokenizerDecoder(nn.Module):
             "image_tokens",
             nn.initializers.normal(stddev=0.02),
             (num_tokens, self.model_dim),
-        )
+        ).astype(self.dtype)
         image_tokens = jnp.broadcast_to(
             image_tokens, (batch_size, seq_len, num_tokens, self.model_dim)
         )
 
-        latent = nn.Dense(self.model_dim)(latent)
+        latent = nn.Dense(self.model_dim, dtype=self.dtype)(latent)
         x = jnp.concatenate([latent, image_tokens], axis=2)
 
         spatial_rope, temporal_rope = _build_rope_embeddings(
@@ -194,6 +197,7 @@ class TokenizerDecoder(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
+            dtype=self.dtype,
         )(
             x=x,
             t=seq_len,
@@ -205,7 +209,7 @@ class TokenizerDecoder(nn.Module):
         )
 
         x = x[:, :, self.num_latents :, :]
-        x = nn.Dense(patch_dim)(x)
+        x = nn.Dense(patch_dim, dtype=self.dtype)(x)
         return x
 
 
@@ -223,6 +227,7 @@ class Tokenizer(nn.Module):
     y_len: int
 
     base: float
+    dtype: jnp.dtype = jnp.bfloat16
 
     def setup(self):
         shared = dict(
@@ -237,6 +242,7 @@ class Tokenizer(nn.Module):
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
+            dtype=self.dtype,
         )
         self.encoder = TokenizerEncoder(**shared)
         self.decoder = TokenizerDecoder(**shared)

@@ -5,14 +5,17 @@ from einops import rearrange
 
 class SwiGLU(nn.Module):
     hidden_dim: int
+    dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        gate = nn.swish(nn.Dense(self.hidden_dim, use_bias=False)(x))
-        value = nn.Dense(self.hidden_dim, use_bias=False)(x)
+        gate = nn.swish(
+            nn.Dense(self.hidden_dim, use_bias=False, dtype=self.dtype)(x)
+        )
+        value = nn.Dense(self.hidden_dim, use_bias=False, dtype=self.dtype)(x)
         hidden = gate * value
 
-        return nn.Dense(x.shape[-1], use_bias=False)(hidden)
+        return nn.Dense(x.shape[-1], use_bias=False, dtype=self.dtype)(hidden)
 
 
 def apply_rotary_embedding(
@@ -21,8 +24,8 @@ def apply_rotary_embedding(
     x_rot = jnp.stack([-x[..., 1::2], x[..., 0::2]], axis=-1)
     x_rot = x_rot.reshape(*x_rot.shape[:-2], -1)
 
-    cos = cos[None, :, None, :]
-    sin = sin[None, :, None, :]
+    cos = cos.astype(x.dtype)[None, :, None, :]
+    sin = sin.astype(x.dtype)[None, :, None, :]
 
     emb = x * cos + x_rot * sin
     return emb
@@ -74,6 +77,7 @@ class Attention(nn.Module):
     num_heads: int
     num_kv_heads: int
     head_dim: int
+    dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
     def __call__(
@@ -84,16 +88,22 @@ class Attention(nn.Module):
     ) -> jnp.ndarray:
         num_groups = self.num_heads // self.num_kv_heads
 
-        q = nn.Dense(self.num_heads * self.head_dim, use_bias=False)(x)
-        k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False)(x)
-        v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False)(x)
+        q = nn.Dense(
+            self.num_heads * self.head_dim, use_bias=False, dtype=self.dtype
+        )(x)
+        k = nn.Dense(
+            self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype
+        )(x)
+        v = nn.Dense(
+            self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype
+        )(x)
 
         q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
         k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
         v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
 
-        q = nn.RMSNorm()(q)
-        k = nn.RMSNorm()(k)
+        q = nn.RMSNorm(dtype=self.dtype)(q)
+        k = nn.RMSNorm(dtype=self.dtype)(k)
 
         if rope_emb is not None:
             q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
@@ -103,14 +113,16 @@ class Attention(nn.Module):
         v = jnp.repeat(v, repeats=num_groups, axis=2)
 
         scores = jnp.einsum("b q h d, b k h d -> b h q k", q, k)
-        scores = scores / jnp.sqrt(self.head_dim)
+        scores = scores / jnp.sqrt(jnp.asarray(self.head_dim, dtype=scores.dtype))
         if mask is not None:
             scores = jnp.where(mask, scores, jnp.finfo(scores.dtype).min)
 
-        attn_weights = nn.softmax(scores, axis=-1)
+        attn_weights = nn.softmax(scores.astype(jnp.float32), axis=-1).astype(
+            self.dtype
+        )
         out = jnp.einsum("b h q k, b k h d -> b q h d", attn_weights, v)
         out = rearrange(out, "b t h d -> b t (h d)")
-        out = nn.Dense(self.model_dim, use_bias=False)(out)
+        out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
 
         return out
 
@@ -121,6 +133,7 @@ class TransformerBlock(nn.Module):
     num_kv_heads: int
     head_dim: int
     mlp_hidden_dim: int
+    dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
     def __call__(
@@ -130,17 +143,18 @@ class TransformerBlock(nn.Module):
         mask: jnp.ndarray,
     ) -> jnp.ndarray:
         residual = x
-        x = nn.RMSNorm()(x)
+        x = nn.RMSNorm(dtype=self.dtype)(x)
         x = residual + Attention(
             self.model_dim,
             self.num_heads,
             self.num_kv_heads,
             self.head_dim,
+            dtype=self.dtype,
         )(x, rope_emb, mask)
 
         residual = x
-        x = nn.RMSNorm()(x)
-        x = residual + SwiGLU(self.mlp_hidden_dim)(x)
+        x = nn.RMSNorm(dtype=self.dtype)(x)
+        x = residual + SwiGLU(self.mlp_hidden_dim, dtype=self.dtype)(x)
 
         return x
 
@@ -152,6 +166,7 @@ class SpatioTemporalTransformer(nn.Module):
     num_kv_heads: int
     head_dim: int
     mlp_hidden_dim: int
+    dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
     def __call__(
@@ -182,6 +197,7 @@ class SpatioTemporalTransformer(nn.Module):
                 self.num_kv_heads,
                 self.head_dim,
                 self.mlp_hidden_dim,
+                dtype=self.dtype,
             )(x, rope_emb, mask)
 
             if i % 4 == 0:

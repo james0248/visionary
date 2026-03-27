@@ -43,8 +43,9 @@ def compute_lpips_loss(
     def unpatchify(images: jax.Array) -> jax.Array:
         return rearrange(
             images,
-            "b t (h w) (p p c) -> b t (h p) (w p) c",
-            p=patch_size,
+            "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
+            p1=patch_size,
+            p2=patch_size,
             h=height_tokens,
             w=width_tokens,
         )
@@ -69,12 +70,13 @@ def compute_losses(
     height_tokens: int,
 ):
     reconstructed = state.apply_fn(params, batch, rngs={"mask": mask_key})
-    original = batch["video"].astype(reconstructed.dtype) / 255.0
-    mse_loss = jnp.mean(jnp.square(reconstructed - original))
+    reconstructed_f32 = reconstructed.astype(jnp.float32)
+    original = batch["video"].astype(jnp.float32) / 255.0
+    mse_loss = jnp.mean(jnp.square(reconstructed_f32 - original))
     if lpips_weight > 0:
         lpips_loss = compute_lpips_loss(
             original,
-            reconstructed,
+            reconstructed_f32,
             patch_size=patch_size,
             width_tokens=width_tokens,
             height_tokens=height_tokens,
