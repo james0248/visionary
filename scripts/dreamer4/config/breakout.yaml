@@ -1,43 +1,43 @@
 seed: 42
-learning_rate: 1e-4
-lpips_weight: 0.0
+learning_rate: 2e-4
+lpips_weight: 0.2
 log_interval: 100
-eval_steps: 0
+eval_steps: 500
 
 dataset:
-  data_dir: ???
+  data_dir: artifacts/dqn-breakout/rollouts
   frame_length: 16
-  batch_size: 8
+  batch_size: 32
   worker_count: 8
-  patch_size: 4
-  pad_width: [0, 0]
-  eval_ratio: 0.05
+  patch_size: 16
+  pad_width: [7, 0]
+  eval_ratio: 0.1
   split_seed: 42
   eval:
-    max_batches: 32
+    max_batches: 16
 
 tokenizer:
   _target_: visionary.tokenizer.Tokenizer
-  num_layers: 8
-  num_latents: 64
-  num_heads: 8
-  num_kv_heads: 8
-  model_dim: 512
+  num_layers: 6
+  num_latents: 48
+  num_heads: 6
+  num_kv_heads: 2
+  model_dim: 384
   head_dim: 64
-  mlp_hidden_dim: 2048
-  channel_dim: 32
-  x_len: 21
-  y_len: 21
+  mlp_hidden_dim: 1024
+  channel_dim: 24
+  x_len: 10
+  y_len: 14
   base: 10000.0
 
 checkpoint:
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
-    directory: ???
+    directory: gcs://visionary-exp/checkpoints/baseline
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
       save_interval_steps: 1000
-      max_to_keep: 3
+      max_to_keep: 5
       enable_async_checkpointing: true
   resume_step: null
 
