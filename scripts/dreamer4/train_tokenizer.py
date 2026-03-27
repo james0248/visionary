@@ -1,4 +1,3 @@
-import functools
 import itertools
 import logging
 
@@ -23,61 +22,109 @@ from visionary.dataset import (
 logger = logging.getLogger(__name__)
 
 
-def load_dataset(cfg: DictConfig, seed: int):
-    source = EpisodeDataSource(cfg.data_dir)
-    sampler = grain.IndexSampler(
-        num_records=len(source),
-        shard_options=grain.ShardByJaxProcess(),
-        shuffle=True,
-        seed=seed,
-    )
-    operations = [
-        RandomVideoCrop(cfg.frame_length),
-        PreprocessAndPatchify(cfg.frame_length, cfg.patch_size, cfg.pad_width),
-        grain.Batch(batch_size=cfg.batch_size, drop_remainder=True),
-    ]
-    dataloader = grain.DataLoader(
-        source=source, sampler=sampler, operations=operations, worker_count=8
-    )
-    return dataloader
-
-
-@functools.partial(jax.jit, static_argnums=(2,))
+@jax.jit
 def train_step(
     state: TrainState,
     batch: PreprocessedVideoDataset,
     lpips_weight: float,
     mask_key: jax.Array,
 ):
-    def compute_loss(state: TrainState, params: dict, batch: PreprocessedVideoDataset):
+    def loss_fn(params):
         reconstructed = state.apply_fn(params, batch, rngs={"mask": mask_key})
         original = batch["video"]
         mse_loss = jnp.mean((reconstructed - original) ** 2)
-
         # TODO: Add LPIPS loss
         lpips_loss = lpips_weight * 0.0
-
         loss = mse_loss + lpips_loss
-        return loss, (mse_loss, lpips_loss)
+        return loss, {"mse_loss": mse_loss, "lpips_loss": lpips_loss}
 
-    (loss, (mse_loss, lpips_loss)), grads = jax.value_and_grad(
-        compute_loss, argnums=1, has_aux=True
-    )(state, state.params, batch)
+    (loss, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     state = state.apply_gradients(grads=grads)
-    return state, loss, (mse_loss, lpips_loss)
+    return state, {**metrics, "loss": loss}
+
+
+@jax.jit
+def compute_eval_loss(
+    state: TrainState,
+    batch: PreprocessedVideoDataset,
+    lpips_weight: float,
+    mask_key: jax.Array,
+):
+    reconstructed = state.apply_fn(state.params, batch, rngs={"mask": mask_key})
+    original = batch["video"]
+    mse_loss = jnp.mean((reconstructed - original) ** 2)
+    # TODO: Add LPIPS loss
+    lpips_loss = lpips_weight * 0.0
+    loss = mse_loss + lpips_loss
+    return {"loss": loss, "mse_loss": mse_loss, "lpips_loss": lpips_loss}
+
+
+def evaluate(
+    state: TrainState,
+    dataloader: grain.DataLoader,
+    lpips_weight: float,
+    eval_key: jax.Array,
+    max_batches: int,
+) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    num_batches = 0
+
+    for batch_idx, batch in enumerate(itertools.islice(iter(dataloader), max_batches)):
+        mask_key = jax.random.fold_in(eval_key, batch_idx)
+        metrics = compute_eval_loss(state, batch, lpips_weight, mask_key)
+        for k, v in metrics.items():
+            totals[k] = totals.get(k, 0.0) + float(v)
+        num_batches += 1
+
+    return {k: v / num_batches for k, v in totals.items()}
 
 
 @hydra.main(config_path="config", config_name="train_tokenizer", version_base=None)
 def main(cfg: DictConfig):
     wb = WandbLogger(cfg)
 
-    dataloader = load_dataset(cfg.dataset, cfg.seed)
-    sample_batch = next(iter(dataloader))
+    train_source, eval_source = EpisodeDataSource.from_split(
+        cfg.dataset.data_dir, cfg.dataset.eval_ratio, cfg.dataset.split_seed
+    )
+    logger.info(
+        "Loaded %d training videos and %d eval videos",
+        len(train_source),
+        len(eval_source),
+    )
+
+    transforms = [
+        RandomVideoCrop(cfg.dataset.frame_length),
+        PreprocessAndPatchify(cfg.dataset.patch_size, cfg.dataset.pad_width),
+    ]
+
+    def make_loader(source, *, shuffle: bool, drop_remainder: bool):
+        sampler = grain.IndexSampler(
+            num_records=len(source),
+            shard_options=grain.ShardByJaxProcess(),
+            shuffle=shuffle,
+            seed=cfg.seed,
+        )
+        return grain.DataLoader(
+            data_source=source,
+            sampler=sampler,
+            operations=[
+                *transforms,
+                grain.Batch(
+                    batch_size=cfg.dataset.batch_size,
+                    drop_remainder=drop_remainder,
+                ),
+            ],
+            worker_count=cfg.dataset.worker_count,
+        )
+
+    train_dataloader = make_loader(train_source, shuffle=True, drop_remainder=True)
+    eval_dataloader = make_loader(eval_source, shuffle=False, drop_remainder=False)
+    sample_batch = next(iter(train_dataloader))
 
     key = jax.random.key(cfg.seed)
-    init_key, mask_key, train_key = jax.random.split(key, num=3)
+    init_key, init_mask_key, train_key, eval_key = jax.random.split(key, num=4)
     model = instantiate(cfg.tokenizer)
-    params = model.init({"params": init_key, "mask": mask_key}, sample_batch)
+    params = model.init({"params": init_key, "mask": init_mask_key}, sample_batch)
 
     optimizer = optax.adam(cfg.learning_rate)
     state = TrainState.create(
@@ -96,27 +143,27 @@ def main(cfg: DictConfig):
 
     step = int(state.step)
 
-    for batch in dataloader:
+    for batch in train_dataloader:
         mask_key = jax.random.fold_in(train_key, step)
-        state, loss, (mse_loss, lpips_loss) = train_step(
-            state,
-            batch,
-            cfg.lpips_weight,
-            mask_key,
-        )
+        state, metrics = train_step(state, batch, cfg.lpips_weight, mask_key)
         step = int(state.step)
 
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
-            eval_loss = 0.0
-            wb.log({"eval/steps": step, "eval/loss": eval_loss}, step=step)
+            eval_metrics = evaluate(
+                state,
+                eval_dataloader,
+                cfg.lpips_weight,
+                eval_key,
+                cfg.dataset.eval.max_batches,
+            )
+            wb.log(
+                {f"eval/{k}": v for k, v in eval_metrics.items()},
+                step=step,
+            )
 
         if step % cfg.log_interval == 0:
             wb.log(
-                {
-                    "loss": float(loss),
-                    "mse_loss": float(mse_loss),
-                    "lpips_loss": float(lpips_loss),
-                },
+                {k: float(v) for k, v in metrics.items()},
                 step=step,
             )
 

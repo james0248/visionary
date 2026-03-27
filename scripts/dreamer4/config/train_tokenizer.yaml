@@ -8,8 +8,13 @@ dataset:
   data_dir: ???
   frame_length: 16
   batch_size: 8
+  worker_count: 8
   patch_size: 4
   pad_width: [0, 0]
+  eval_ratio: 0.05
+  split_seed: 42
+  eval:
+    max_batches: 32
 
 tokenizer:
   _target_: visionary.tokenizer.Tokenizer
