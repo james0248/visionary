@@ -32,7 +32,7 @@ tokenizer:
 checkpoint:
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
-    directory: gs://visionary-exp/checkpoints/baseline
+    directory: gs://visionary-exp/breakout/checkpoints/baseline
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
       save_interval_steps: 1000
