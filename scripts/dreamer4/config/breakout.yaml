@@ -5,7 +5,7 @@ log_interval: 100
 eval_steps: 500
 
 dataset:
-  data_dir: artifacts/dqn-breakout/rollouts
+  data_dir: gs://visionary-exp/data/breakout/
   frame_length: 16
   batch_size: 32
   worker_count: 8
@@ -33,7 +33,7 @@ tokenizer:
 checkpoint:
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
-    directory: gcs://visionary-exp/checkpoints/baseline
+    directory: gs://visionary-exp/checkpoints/baseline
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
       save_interval_steps: 1000

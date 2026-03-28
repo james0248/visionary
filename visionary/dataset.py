@@ -48,24 +48,21 @@ def list_episode_files(data_dir: str) -> list[epath.Path]:
     episode_files: list[epath.Path] = []
     for dirpath, _, filenames in root.walk():
         for filename in filenames:
-            if filename.startswith("episode_") and filename.endswith(".npz"):
+            if filename.endswith(".npz"):
                 episode_files.append(dirpath / filename)
     return sorted(episode_files, key=lambda p: p.as_posix())
-
 
 def split_episode_files(
     data_dir: str,
     eval_ratio: float,
     split_seed: int,
 ) -> tuple[list[epath.Path], list[epath.Path]]:
-    root = epath.Path(data_dir)
     train_files: list[epath.Path] = []
     eval_files: list[epath.Path] = []
 
     for path in list_episode_files(data_dir):
-        relative_path = path.relative_to(root).as_posix()
         digest = hashlib.sha256(
-            f"{split_seed}:{relative_path}".encode("utf-8")
+            f"{split_seed}:{path.as_posix()}".encode("utf-8")
         ).digest()
         bucket = int.from_bytes(digest[:8], byteorder="big") / 2**64
         if bucket < eval_ratio:
