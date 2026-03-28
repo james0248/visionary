@@ -150,6 +150,7 @@ def eval_step(
 
 @hydra.main(config_path="config", version_base=None)
 def main(cfg: DictConfig):
+    logger.info("JAX backend: %s, devices: %s", jax.default_backend(), jax.devices())
     wb = WandbLogger(cfg)
 
     train_source, eval_source = EpisodeDataSource.from_split(
@@ -173,6 +174,7 @@ def main(cfg: DictConfig):
             shuffle=shuffle,
             seed=cfg.seed,
         )
+        read_options = grain.ReadOptions(num_threads=4, prefetch_buffer_size=2)
         return grain.DataLoader(
             data_source=source,
             sampler=sampler,
@@ -184,6 +186,7 @@ def main(cfg: DictConfig):
                 ),
             ],
             worker_count=cfg.dataset.worker_count,
+            read_options=read_options,
         )
 
     train_dataloader = make_loader(train_source, shuffle=True, drop_remainder=True)
