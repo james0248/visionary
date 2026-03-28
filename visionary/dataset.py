@@ -91,7 +91,7 @@ class RandomVideoCrop(grain.RandomMapTransform):
     ) -> VideoDataset:
         video = element["video"]
         start_idx = int(rng.integers(0, len(video) - self.frame_length + 1))
-        return VideoDataset(video=video[start_idx : start_idx + self.frame_length])
+        return VideoDataset(video=video[start_idx : start_idx + self.frame_length].copy())
 
 
 class PreprocessAndPatchify(grain.RandomMapTransform):
