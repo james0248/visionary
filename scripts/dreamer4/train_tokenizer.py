@@ -1,5 +1,6 @@
 import itertools
 import logging
+import time
 from functools import lru_cache, partial
 
 import grain.python as grain
@@ -213,7 +214,13 @@ def main(cfg: DictConfig):
 
     step = int(state.step)
 
+    t0 = time.monotonic()
     for batch in train_dataloader:
+        t1 = time.monotonic()
+
+        batch = jax.device_put(batch)
+        t2 = time.monotonic()
+
         mask_key = jax.random.fold_in(train_key, step)
         state, metrics = train_step(
             state,
@@ -224,9 +231,14 @@ def main(cfg: DictConfig):
             width_tokens=cfg.tokenizer.x_len,
             height_tokens=cfg.tokenizer.y_len,
         )
+        jax.block_until_ready(metrics)
+        t3 = time.monotonic()
+
         step = int(state.step)
 
+        t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
+            t_eval_start = time.monotonic()
             totals: dict[str, float] = {}
             num_batches = 0
             for batch_idx, eval_batch in enumerate(
@@ -251,6 +263,8 @@ def main(cfg: DictConfig):
                     {f"eval/{k}": v for k, v in eval_metrics.items()},
                     step=step,
                 )
+            t_eval = time.monotonic() - t_eval_start
+            logger.info("Eval at step %d — %d batches in %.3fs", step, num_batches, t_eval)
 
         if step % cfg.log_interval == 0:
             wb.log(
@@ -260,6 +274,13 @@ def main(cfg: DictConfig):
 
         if checkpoint_manager.should_save(step):
             checkpoint_manager.save(step=step, state=state)
+
+        t4 = time.monotonic()
+        logger.info(
+            "Step %d — data: %.3fs, transfer: %.3fs, compute: %.3fs, overhead: %.3fs",
+            step, t1 - t0, t2 - t1, t3 - t2, t4 - t3 - t_eval,
+        )
+        t0 = time.monotonic()
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()
