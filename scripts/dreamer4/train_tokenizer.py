@@ -172,7 +172,7 @@ def main(cfg: DictConfig):
             shuffle=shuffle,
             seed=cfg.seed,
         )
-        read_options = grain.ReadOptions(num_threads=4, prefetch_buffer_size=4)
+        read_options = grain.ReadOptions(num_threads=8, prefetch_buffer_size=8)
         return grain.DataLoader(
             data_source=source,
             sampler=sampler,
@@ -274,7 +274,9 @@ def main(cfg: DictConfig):
                     step=step,
                 )
             t_eval = time.monotonic() - t_eval_start
-            logger.info("Eval at step %d — %d batches in %.3fs", step, num_batches, t_eval)
+            logger.info(
+                "Eval at step %d — %d batches in %.3fs", step, num_batches, t_eval
+            )
 
         if step % cfg.log_interval == 0:
             wb.log(
@@ -288,7 +290,11 @@ def main(cfg: DictConfig):
         t4 = time.monotonic()
         logger.info(
             "Step %d — data: %.3fs, transfer: %.3fs, compute: %.3fs, overhead: %.3fs",
-            step, t1 - t0, t2 - t1, t3 - t2, t4 - t3 - t_eval,
+            step,
+            t1 - t0,
+            t2 - t1,
+            t3 - t2,
+            t4 - t3 - t_eval,
         )
         t0 = time.monotonic()
     checkpoint_manager.wait_until_finished()

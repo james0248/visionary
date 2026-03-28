@@ -9,7 +9,7 @@ dataset:
   eval_dir: gs://visionary-exp/data/breakout-arecord/eval/
   frame_length: 16
   batch_size: 32
-  worker_count: 4
+  worker_count: 8
   patch_size: 16
   pad_width: [7, 0]
   eval:
