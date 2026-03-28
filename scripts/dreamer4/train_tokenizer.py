@@ -56,6 +56,11 @@ def compute_lpips_loss(
         original_images * 2.0 - 1.0,
         reconstructed_images * 2.0 - 1.0,
     )
+    # jaxlpips expects NHWC images, so fold time into the batch axis.
+    original_images = rearrange(original_images, "b t h w c -> (b t) h w c")
+    reconstructed_images = rearrange(
+        reconstructed_images, "b t h w c -> (b t) h w c"
+    )
     return jnp.mean(get_lpips_loss_fn()(original_images, reconstructed_images))
 
 

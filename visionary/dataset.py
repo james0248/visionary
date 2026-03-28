@@ -2,10 +2,10 @@ import hashlib
 from collections.abc import Sequence
 from typing import TypedDict
 
-from etils import epath
 import grain.python as grain
 import numpy as np
 from einops import rearrange
+from etils import epath
 
 
 class VideoDataset(TypedDict):
