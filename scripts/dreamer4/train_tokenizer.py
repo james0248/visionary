@@ -187,23 +187,34 @@ def main(cfg: DictConfig):
             read_options=read_options,
         )
 
+    _t = time.monotonic()
     train_dataloader = make_loader(train_source, shuffle=True, drop_remainder=True)
     eval_dataloader = make_loader(eval_source, shuffle=False, drop_remainder=False)
-    sample_batch = next(iter(train_dataloader))
+    logger.info("DataLoader creation took %.1fs", time.monotonic() - _t)
 
+    _t = time.monotonic()
+    sample_batch = next(iter(train_dataloader))
+    logger.info("First batch fetch took %.1fs", time.monotonic() - _t)
+
+    _t = time.monotonic()
     key = jax.random.key(cfg.seed)
     init_key, init_mask_key, train_key, eval_key = jax.random.split(key, num=4)
     model = instantiate(cfg.tokenizer)
     params = model.init({"params": init_key, "mask": init_mask_key}, sample_batch)
+    logger.info("Model init took %.1fs", time.monotonic() - _t)
 
+    _t = time.monotonic()
     optimizer = optax.adam(cfg.learning_rate)
     state = TrainState.create(
         apply_fn=model.apply,
         params=params,
         tx=optimizer,
     )
+    logger.info("TrainState creation took %.1fs", time.monotonic() - _t)
 
+    _t = time.monotonic()
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
+    logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
     if cfg.checkpoint.resume_step is not None:
         state = checkpoint_manager.restore(
             target=state,
