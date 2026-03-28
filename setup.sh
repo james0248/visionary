@@ -73,7 +73,27 @@ else
 fi
 
 # -------------------------------------------------------------------
-# 5. Summary
+# 5. Optional Google Cloud auth for gs:// dataset access
+# -------------------------------------------------------------------
+if command -v gcloud &>/dev/null; then
+    if gcloud auth application-default print-access-token >/dev/null 2>&1; then
+        ok "Google ADC already configured"
+    elif [ "${SETUP_GCLOUD_AUTH:-0}" = "1" ]; then
+        info "Starting interactive Google Cloud auth..."
+        if gcloud auth login && gcloud auth application-default login; then
+            ok "Google ADC configured"
+        else
+            warn "Google Cloud auth setup failed — gs:// paths may not work"
+        fi
+    else
+        warn "Google ADC not configured — run SETUP_GCLOUD_AUTH=1 ./setup.sh or gcloud auth application-default login"
+    fi
+else
+    warn "gcloud not found — gs:// paths will fail until Google Cloud SDK is installed"
+fi
+
+# -------------------------------------------------------------------
+# 6. Summary
 # -------------------------------------------------------------------
 echo ""
 echo "==========================================="
