@@ -47,10 +47,19 @@ def list_episode_files(data_dir: str) -> list[epath.Path]:
     root = epath.Path(data_dir)
     episode_files: list[epath.Path] = []
     for dirpath, _, filenames in root.walk():
+        dirpath = _normalize_walk_dirpath(root, dirpath)
         for filename in filenames:
             if filename.endswith(".npz"):
                 episode_files.append(dirpath / filename)
     return sorted(episode_files, key=lambda p: p.as_posix())
+
+
+def _normalize_walk_dirpath(root: epath.Path, dirpath: epath.Path) -> epath.Path:
+    root_parts = root.parts
+    dirpath_str = dirpath.as_posix()
+    if root_parts[:2] == ("/", "gs") and not dirpath_str.startswith(("gs://", "/gs/")):
+        return epath.Path(f"/gs/{dirpath_str.lstrip('/')}")
+    return dirpath
 
 def split_episode_files(
     data_dir: str,
