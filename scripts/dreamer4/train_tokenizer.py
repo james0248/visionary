@@ -58,9 +58,7 @@ def compute_lpips_loss(
     )
     # jaxlpips expects NHWC images, so fold time into the batch axis.
     original_images = rearrange(original_images, "b t h w c -> (b t) h w c")
-    reconstructed_images = rearrange(
-        reconstructed_images, "b t h w c -> (b t) h w c"
-    )
+    reconstructed_images = rearrange(reconstructed_images, "b t h w c -> (b t) h w c")
     return jnp.mean(get_lpips_loss_fn()(original_images, reconstructed_images))
 
 
@@ -174,7 +172,7 @@ def main(cfg: DictConfig):
             shuffle=shuffle,
             seed=cfg.seed,
         )
-        read_options = grain.ReadOptions(num_threads=4, prefetch_buffer_size=2)
+        read_options = grain.ReadOptions(num_threads=4, prefetch_buffer_size=4)
         return grain.DataLoader(
             data_source=source,
             sampler=sampler,
