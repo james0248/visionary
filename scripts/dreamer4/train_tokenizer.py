@@ -152,9 +152,8 @@ def main(cfg: DictConfig):
     logger.info("JAX backend: %s, devices: %s", jax.default_backend(), jax.devices())
     wb = WandbLogger(cfg)
 
-    train_source, eval_source = EpisodeDataSource.from_split(
-        cfg.dataset.data_dir, cfg.dataset.eval_ratio, cfg.dataset.split_seed
-    )
+    train_source = EpisodeDataSource(cfg.dataset.train_dir)
+    eval_source = EpisodeDataSource(cfg.dataset.eval_dir)
     logger.info(
         "Loaded %d training videos and %d eval videos",
         len(train_source),

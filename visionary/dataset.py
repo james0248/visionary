@@ -1,5 +1,4 @@
-import hashlib
-from collections.abc import Sequence
+import io
 from typing import TypedDict
 
 import grain.python as grain
@@ -19,67 +18,26 @@ class PreprocessedVideoDataset(TypedDict):
 
 
 class EpisodeDataSource(grain.RandomAccessDataSource):
-    def __init__(self, files: Sequence[epath.Path]):
-        self.files = list(files)
-
-    @classmethod
-    def from_split(
-        cls, data_dir: str, eval_ratio: float, seed: int
-    ) -> tuple["EpisodeDataSource", "EpisodeDataSource"]:
-        train_files, eval_files = split_episode_files(data_dir, eval_ratio, seed)
-        return cls(train_files), cls(eval_files)
+    def __init__(self, data_dir: str):
+        shard_dir = epath.Path(data_dir)
+        self._paths = sorted(
+            [p for p in shard_dir.iterdir() if p.suffix == ".arecord"],
+            key=lambda p: p.as_posix(),
+        )
+        if not self._paths:
+            raise FileNotFoundError(f"No .arecord files found in {data_dir}")
+        self._source = grain.ArrayRecordDataSource(
+            [p.as_posix() for p in self._paths]
+        )
 
     def __len__(self):
-        return len(self.files)
+        return len(self._source)
 
     def __getitem__(self, idx: int) -> VideoDataset:
-        with self.files[idx].open("rb") as file_obj:
-            with np.load(file_obj) as data:
-                if "frames" not in data:
-                    raise KeyError(
-                        f"Expected 'frames' in {self.files[idx]}"
-                    )
-                video = np.asarray(data["frames"])
+        record_bytes = self._source[idx]
+        with np.load(io.BytesIO(record_bytes)) as data:
+            video = np.asarray(data["frames"])
         return VideoDataset(video=video)
-
-
-def list_episode_files(data_dir: str) -> list[epath.Path]:
-    root = epath.Path(data_dir)
-    episode_files: list[epath.Path] = []
-    for dirpath, _, filenames in root.walk():
-        dirpath = _normalize_walk_dirpath(root, dirpath)
-        for filename in filenames:
-            if filename.endswith(".npz"):
-                episode_files.append(dirpath / filename)
-    return sorted(episode_files, key=lambda p: p.as_posix())
-
-
-def _normalize_walk_dirpath(root: epath.Path, dirpath: epath.Path) -> epath.Path:
-    root_parts = root.parts
-    dirpath_str = dirpath.as_posix()
-    if root_parts[:2] == ("/", "gs") and not dirpath_str.startswith(("gs://", "/gs/")):
-        return epath.Path(f"/gs/{dirpath_str.lstrip('/')}")
-    return dirpath
-
-def split_episode_files(
-    data_dir: str,
-    eval_ratio: float,
-    split_seed: int,
-) -> tuple[list[epath.Path], list[epath.Path]]:
-    train_files: list[epath.Path] = []
-    eval_files: list[epath.Path] = []
-
-    for path in list_episode_files(data_dir):
-        digest = hashlib.sha256(
-            f"{split_seed}:{path.as_posix()}".encode("utf-8")
-        ).digest()
-        bucket = int.from_bytes(digest[:8], byteorder="big") / 2**64
-        if bucket < eval_ratio:
-            eval_files.append(path)
-        else:
-            train_files.append(path)
-
-    return train_files, eval_files
 
 
 class RandomVideoCrop(grain.RandomMapTransform):
