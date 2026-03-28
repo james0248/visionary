@@ -1,6 +1,5 @@
 import argparse
 import hashlib
-import io
 import logging
 
 import numpy as np
@@ -43,14 +42,6 @@ def split_files(
     return train, eval_
 
 
-def serialize_episode(path: epath.Path) -> bytes:
-    with path.open("rb") as f:
-        with np.load(f) as data:
-            buf = io.BytesIO()
-            np.savez(buf, **{k: data[k] for k in data.files})
-            return buf.getvalue()
-
-
 def write_shards(
     files: list[epath.Path],
     output_dir: epath.Path,
@@ -62,23 +53,25 @@ def write_shards(
     rng = np.random.default_rng(seed)
     indices = rng.permutation(len(files))
 
-    shard_idx = 0
     total = 0
-    for start in range(0, len(indices), episodes_per_shard):
+    for shard_idx, start in enumerate(range(0, len(indices), episodes_per_shard)):
         batch_indices = indices[start : start + episodes_per_shard]
         shard_path = output_dir / f"shard-{shard_idx:05d}.arecord"
 
-        writer = ArrayRecordWriter(shard_path.as_posix())
+        writer = ArrayRecordWriter(shard_path.as_posix(), "group_size:1")
         for idx in batch_indices:
-            record = serialize_episode(files[idx])
-            writer.write(record)
+            with files[idx].open("rb") as f:
+                writer.write(f.read())
             total += 1
         writer.close()
 
         logger.info(
-            "Wrote shard %s (%d episodes)", shard_path.as_posix(), len(batch_indices)
+            "Wrote shard %s (%d episodes, %d/%d total)",
+            shard_path.as_posix(),
+            len(batch_indices),
+            total,
+            len(indices),
         )
-        shard_idx += 1
 
     return total
 
@@ -103,10 +96,16 @@ def main():
     output = epath.Path(args.output_dir)
 
     n_train = write_shards(
-        train_files, output / "train", args.episodes_per_shard, args.seed
+        train_files,
+        output / "train",
+        args.episodes_per_shard,
+        args.seed,
     )
     n_eval = write_shards(
-        eval_files, output / "eval", args.episodes_per_shard, args.seed
+        eval_files,
+        output / "eval",
+        args.episodes_per_shard,
+        args.seed,
     )
     logger.info("Done. Wrote %d train, %d eval episodes.", n_train, n_eval)
 
