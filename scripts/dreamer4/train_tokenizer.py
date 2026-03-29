@@ -151,6 +151,7 @@ def eval_step(
 def main(cfg: DictConfig):
     logger.info("JAX backend: %s, devices: %s", jax.default_backend(), jax.devices())
     wb = WandbLogger(cfg)
+    total_steps = int(cfg.total_steps)
 
     train_source = EpisodeDataSource(cfg.dataset.train_dir)
     eval_source = EpisodeDataSource(cfg.dataset.eval_dir)
@@ -223,6 +224,18 @@ def main(cfg: DictConfig):
         logger.info(f"Resumed tokenizer training from step {state.step}")
 
     step = int(state.step)
+    logger.info("Tokenizer training target step: %d", total_steps)
+
+    if step >= total_steps:
+        logger.info(
+            "Current step %d is already at or above total_steps=%d; exiting.",
+            step,
+            total_steps,
+        )
+        checkpoint_manager.wait_until_finished()
+        checkpoint_manager.close()
+        wb.finish()
+        return
 
     t0 = time.monotonic()
     for batch in train_dataloader:
@@ -296,7 +309,15 @@ def main(cfg: DictConfig):
             t3 - t2,
             t4 - t3 - t_eval,
         )
+        if step >= total_steps:
+            logger.info(
+                "Reached total_steps=%d; stopping tokenizer training.", total_steps
+            )
+            break
         t0 = time.monotonic()
+
+    if step >= total_steps and not checkpoint_manager.should_save(step):
+        checkpoint_manager.save(step=step, state=state, force=True)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()

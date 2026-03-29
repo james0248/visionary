@@ -2,11 +2,12 @@ seed: 42
 learning_rate: 2e-4
 lpips_weight: 0.2
 log_interval: 100
-eval_steps: 500
+eval_steps: 1000
+total_steps: 150000
 
 dataset:
-  train_dir: gs://visionary-exp/breakout/data/train/
-  eval_dir: gs://visionary-exp/breakout/data/eval/
+  train_dir: data/train/
+  eval_dir: data/eval/
   frame_length: 16
   batch_size: 32
   worker_count: 8
@@ -35,7 +36,7 @@ checkpoint:
     directory: gs://visionary-exp/breakout/checkpoints/baseline
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
-      save_interval_steps: 1000
+      save_interval_steps: 5000
       max_to_keep: 5
       enable_async_checkpointing: true
   resume_step: null
