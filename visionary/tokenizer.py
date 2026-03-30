@@ -71,9 +71,19 @@ class TokenizerEncoder(nn.Module):
     attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
+    def sample_mask(self, mask_prob: jnp.ndarray, num_tokens: int) -> jnp.ndarray:
+        batch_size, seq_len = mask_prob.shape
+        rng = self.make_rng("mask")
+        rand_vals = jax.random.uniform(rng, shape=(batch_size, seq_len, num_tokens))
+        return rand_vals < jnp.expand_dims(mask_prob, axis=-1)
+
     @nn.compact
     def __call__(
-        self, x: jnp.ndarray, mask_prob: jnp.ndarray, temporal_mask: jnp.ndarray
+        self,
+        x: jnp.ndarray,
+        mask_prob: jnp.ndarray,
+        temporal_mask: jnp.ndarray,
+        is_masked: jnp.ndarray | None = None,
     ) -> jnp.ndarray:
         batch_size, seq_len, num_tokens, _ = x.shape
         expected_num_tokens = self.x_len * self.y_len
@@ -86,14 +96,12 @@ class TokenizerEncoder(nn.Module):
         x = nn.Dense(self.model_dim, dtype=self.dtype)(x)
 
         # Apply masking to patches
-        rng = self.make_rng("mask")
         mask_token = self.param(
             "mask_token", nn.initializers.normal(stddev=0.02), (self.model_dim,)
         ).astype(self.dtype)
-        rand_vals = jax.random.uniform(rng, shape=(batch_size, seq_len, num_tokens))
-        mask_threshold = jnp.expand_dims(mask_prob, axis=-1)
-        is_masked = jnp.expand_dims(rand_vals < mask_threshold, axis=-1)
-        x = jnp.where(is_masked, mask_token, x)
+        if is_masked is None:
+            is_masked = self.sample_mask(mask_prob, num_tokens)
+        x = jnp.where(jnp.expand_dims(is_masked, axis=-1), mask_token, x)
 
         # Prepend latent tokens
         latent_tokens = self.param(
@@ -274,6 +282,22 @@ class Tokenizer(nn.Module):
         )
         latent = self.encoder(batch["video"], batch["mask_prob"], temporal_mask)
         return self.decoder(latent, temporal_mask, patch_dim)
+
+    def reconstruct_with_mask(
+        self, batch: PreprocessedVideoDataset
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        patch_dim = self._validate_batch(batch)
+        temporal_mask = create_temporal_mask(
+            batch["independent"], batch["video"].shape[1]
+        )
+        is_masked = self.encoder.sample_mask(batch["mask_prob"], batch["video"].shape[2])
+        latent = self.encoder(
+            batch["video"],
+            batch["mask_prob"],
+            temporal_mask,
+            is_masked=is_masked,
+        )
+        return self.decoder(latent, temporal_mask, patch_dim), is_masked
 
     def encode(self, batch: PreprocessedVideoDataset) -> jnp.ndarray:
         self._validate_batch(batch)

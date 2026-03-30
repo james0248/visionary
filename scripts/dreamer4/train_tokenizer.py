@@ -7,6 +7,7 @@ import grain.python as grain
 import hydra
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from einops import rearrange
 from flax.training.train_state import TrainState
@@ -22,6 +23,7 @@ from visionary.dataset import (
     RandomVideoCrop,
     VideoDataSource,
 )
+from visionary.tokenizer import Tokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,19 @@ def get_lpips_loss_fn():
     return LPIPS(pretrained_network=LPIPS_PRETRAINED_NETWORK)
 
 
+def unpatchify(
+    images: jax.Array, patch_size: int, width_tokens: int, height_tokens: int
+) -> jax.Array:
+    return rearrange(
+        images,
+        "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
+        p1=patch_size,
+        p2=patch_size,
+        h=height_tokens,
+        w=width_tokens,
+    )
+
+
 def compute_lpips_loss(
     original: jax.Array,
     reconstructed: jax.Array,
@@ -41,18 +56,10 @@ def compute_lpips_loss(
     width_tokens: int,
     height_tokens: int,
 ) -> jax.Array:
-    def unpatchify(images: jax.Array) -> jax.Array:
-        return rearrange(
-            images,
-            "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
-            p1=patch_size,
-            p2=patch_size,
-            h=height_tokens,
-            w=width_tokens,
-        )
-
-    original_images = unpatchify(original)
-    reconstructed_images = unpatchify(reconstructed)
+    original_images = unpatchify(original, patch_size, width_tokens, height_tokens)
+    reconstructed_images = unpatchify(
+        reconstructed, patch_size, width_tokens, height_tokens
+    )
     original_images, reconstructed_images = (
         original_images * 2.0 - 1.0,
         reconstructed_images * 2.0 - 1.0,
@@ -145,6 +152,117 @@ def eval_step(
         height_tokens,
     )
     return metrics
+
+
+@jax.jit
+def eval_visualization_step(
+    state: TrainState,
+    batch: PreprocessedVideoDataset,
+    mask_key: jax.Array,
+):
+    return state.apply_fn(
+        state.params,
+        batch,
+        rngs={"mask": mask_key},
+        method=Tokenizer.reconstruct_with_mask,
+    )
+
+
+def trim_padding(images: np.ndarray, pad_width: tuple[int, int]) -> np.ndarray:
+    height_pad, width_pad = (int(p) for p in pad_width)
+    h_slice = slice(height_pad, -height_pad if height_pad else None)
+    w_slice = slice(width_pad, -width_pad if width_pad else None)
+    return images[:, :, h_slice, w_slice, :]
+
+
+def build_reconstruction_grid(
+    batch: PreprocessedVideoDataset,
+    reconstructed: jax.Array,
+    is_masked: jax.Array,
+    *,
+    patch_size: int,
+    width_tokens: int,
+    height_tokens: int,
+    pad_width: tuple[int, int],
+    frame_key: jax.Array,
+    num_frames: int,
+) -> np.ndarray:
+    original = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+    masked_input = jnp.where(jnp.expand_dims(is_masked, axis=-1), 0.0, original)
+    original = rearrange(original, "b t n d -> (b t) n d")
+    reconstructed = rearrange(reconstructed.astype(jnp.float32), "b t n d -> (b t) n d")
+    masked_input = rearrange(masked_input, "b t n d -> (b t) n d")
+
+    total_frames = original.shape[0]
+    num_frames = min(int(num_frames), total_frames)
+    frame_indices = np.asarray(
+        jax.device_get(
+            jax.random.choice(frame_key, total_frames, shape=(num_frames,), replace=False)
+        )
+    )
+
+    original_images = trim_padding(
+        np.asarray(
+            jax.device_get(
+                unpatchify(
+                    rearrange(original[frame_indices], "f n d -> 1 f n d"),
+                    patch_size,
+                    width_tokens,
+                    height_tokens,
+                ).clip(0.0, 1.0)
+            )
+        ),
+        pad_width,
+    )[0]
+    reconstructed_images = trim_padding(
+        np.asarray(
+            jax.device_get(
+                unpatchify(
+                    rearrange(reconstructed[frame_indices], "f n d -> 1 f n d"),
+                    patch_size,
+                    width_tokens,
+                    height_tokens,
+                ).clip(0.0, 1.0)
+            )
+        ),
+        pad_width,
+    )[0]
+    masked_images = trim_padding(
+        np.asarray(
+            jax.device_get(
+                unpatchify(
+                    rearrange(masked_input[frame_indices], "f n d -> 1 f n d"),
+                    patch_size,
+                    width_tokens,
+                    height_tokens,
+                ).clip(0.0, 1.0)
+            )
+        ),
+        pad_width,
+    )[0]
+
+    originals = np.clip(np.rint(original_images * 255.0), 0, 255).astype(np.uint8)
+    reconstructions = np.clip(np.rint(reconstructed_images * 255.0), 0, 255).astype(
+        np.uint8
+    )
+    masked_inputs = np.clip(np.rint(masked_images * 255.0), 0, 255).astype(np.uint8)
+
+    col_sep = np.full((originals.shape[1], 2, 3), 255, dtype=np.uint8)
+    rows = []
+    for original_frame, reconstructed_frame, masked_frame in zip(
+        originals, reconstructions, masked_inputs, strict=True
+    ):
+        rows.append(
+            np.concatenate(
+                [original_frame, col_sep, reconstructed_frame, col_sep, masked_frame],
+                axis=1,
+            )
+        )
+    row_sep = np.full((2, rows[0].shape[1], 3), 255, dtype=np.uint8)
+    return np.concatenate(
+        [row if idx == 0 else np.concatenate([row_sep, row], axis=0) for idx, row in enumerate(rows)],
+        axis=0,
+    )
 
 
 @hydra.main(config_path="config", version_base=None)
@@ -297,6 +415,27 @@ def main(cfg: DictConfig):
                 )
                 for k, v in batch_metrics.items():
                     totals[k] = totals.get(k, 0.0) + float(v)
+                if batch_idx == 0:
+                    reconstructed, is_masked = eval_visualization_step(
+                        state, eval_batch, eval_mask_key
+                    )
+                    grid = build_reconstruction_grid(
+                        eval_batch,
+                        reconstructed,
+                        is_masked,
+                        patch_size=cfg.dataset.patch_size,
+                        width_tokens=cfg.tokenizer.x_len,
+                        height_tokens=cfg.tokenizer.y_len,
+                        pad_width=tuple(cfg.dataset.pad_width),
+                        frame_key=jax.random.fold_in(eval_key, step),
+                        num_frames=int(cfg.dataset.eval.log_frames),
+                    )
+                    wb.log_image(
+                        "eval/reconstructions",
+                        grid,
+                        step=step,
+                        caption="Columns: original, reconstructed, masked input",
+                    )
                 num_batches += 1
             if num_batches > 0:
                 eval_metrics = {k: v / num_batches for k, v in totals.items()}

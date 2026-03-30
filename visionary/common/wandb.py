@@ -19,6 +19,10 @@ class WandbLogger:
         if self.enabled:
             wandb.log({key: wandb.Video(video_path)}, step=step)
 
+    def log_image(self, key: str, image, step: int, caption: str | None = None):
+        if self.enabled:
+            wandb.log({key: wandb.Image(image, caption=caption)}, step=step)
+
     def finish(self):
         if self.enabled:
             wandb.finish()
