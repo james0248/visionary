@@ -68,6 +68,7 @@ class TokenizerEncoder(nn.Module):
     y_len: int
 
     base: float
+    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -121,6 +122,7 @@ class TokenizerEncoder(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
+            attention_logit_soft_cap=self.attention_logit_soft_cap,
             dtype=self.dtype,
         )(
             x=x,
@@ -152,6 +154,7 @@ class TokenizerDecoder(nn.Module):
     y_len: int
 
     base: float
+    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -197,6 +200,7 @@ class TokenizerDecoder(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
+            attention_logit_soft_cap=self.attention_logit_soft_cap,
             dtype=self.dtype,
         )(
             x=x,
@@ -227,6 +231,7 @@ class Tokenizer(nn.Module):
     y_len: int
 
     base: float
+    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     def setup(self):
@@ -242,6 +247,7 @@ class Tokenizer(nn.Module):
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
+            attention_logit_soft_cap=self.attention_logit_soft_cap,
             dtype=self.dtype,
         )
         self.encoder = TokenizerEncoder(**shared)

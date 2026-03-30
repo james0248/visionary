@@ -77,6 +77,7 @@ class Attention(nn.Module):
     num_heads: int
     num_kv_heads: int
     head_dim: int
+    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -114,12 +115,14 @@ class Attention(nn.Module):
 
         scores = jnp.einsum("b q h d, b k h d -> b h q k", q, k)
         scores = scores / jnp.sqrt(jnp.asarray(self.head_dim, dtype=scores.dtype))
+        scores = scores.astype(jnp.float32)
+        if self.attention_logit_soft_cap is not None:
+            cap = jnp.asarray(self.attention_logit_soft_cap, dtype=scores.dtype)
+            scores = cap * jnp.tanh(scores / cap)
         if mask is not None:
             scores = jnp.where(mask, scores, jnp.finfo(scores.dtype).min)
 
-        attn_weights = nn.softmax(scores.astype(jnp.float32), axis=-1).astype(
-            self.dtype
-        )
+        attn_weights = nn.softmax(scores, axis=-1).astype(self.dtype)
         out = jnp.einsum("b h q k, b k h d -> b q h d", attn_weights, v)
         out = rearrange(out, "b t h d -> b t (h d)")
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
@@ -133,6 +136,7 @@ class TransformerBlock(nn.Module):
     num_kv_heads: int
     head_dim: int
     mlp_hidden_dim: int
+    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -145,10 +149,11 @@ class TransformerBlock(nn.Module):
         residual = x
         x = nn.RMSNorm(dtype=self.dtype)(x)
         x = residual + Attention(
-            self.model_dim,
-            self.num_heads,
-            self.num_kv_heads,
-            self.head_dim,
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            attention_logit_soft_cap=self.attention_logit_soft_cap,
             dtype=self.dtype,
         )(x, rope_emb, mask)
 
@@ -166,6 +171,7 @@ class SpatioTemporalTransformer(nn.Module):
     num_kv_heads: int
     head_dim: int
     mlp_hidden_dim: int
+    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -192,11 +198,12 @@ class SpatioTemporalTransformer(nn.Module):
                 rope_emb, mask = spatial_rope_emb, spatial_mask
 
             x = TransformerBlock(
-                self.model_dim,
-                self.num_heads,
-                self.num_kv_heads,
-                self.head_dim,
-                self.mlp_hidden_dim,
+                model_dim=self.model_dim,
+                num_heads=self.num_heads,
+                num_kv_heads=self.num_kv_heads,
+                head_dim=self.head_dim,
+                mlp_hidden_dim=self.mlp_hidden_dim,
+                attention_logit_soft_cap=self.attention_logit_soft_cap,
                 dtype=self.dtype,
             )(x, rope_emb, mask)
 
