@@ -17,18 +17,16 @@ class PreprocessedVideoDataset(TypedDict):
     independent: bool
 
 
-class EpisodeDataSource(grain.RandomAccessDataSource):
+class VideoDataSource(grain.RandomAccessDataSource):
     def __init__(self, data_dir: str):
         shard_dir = epath.Path(data_dir)
-        self._paths = sorted(
+        paths = sorted(
             [p for p in shard_dir.iterdir() if p.suffix == ".arecord"],
             key=lambda p: p.as_posix(),
         )
-        if not self._paths:
+        if not paths:
             raise FileNotFoundError(f"No .arecord files found in {data_dir}")
-        self._source = grain.ArrayRecordDataSource(
-            [p.as_posix() for p in self._paths]
-        )
+        self._source = grain.ArrayRecordDataSource([p.as_posix() for p in paths])
 
     def __len__(self):
         return len(self._source)

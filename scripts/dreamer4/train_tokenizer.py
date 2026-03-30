@@ -17,10 +17,10 @@ from omegaconf import DictConfig
 from visionary.common.checkpoint import CheckpointManager
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import (
-    EpisodeDataSource,
     PreprocessAndPatchify,
     PreprocessedVideoDataset,
     RandomVideoCrop,
+    VideoDataSource,
 )
 
 logger = logging.getLogger(__name__)
@@ -153,14 +153,24 @@ def main(cfg: DictConfig):
     wb = WandbLogger(cfg)
     total_steps = int(cfg.total_steps)
 
-    train_source = EpisodeDataSource(cfg.dataset.train_dir)
-    eval_source = EpisodeDataSource(cfg.dataset.eval_dir)
+    train_source = VideoDataSource(cfg.dataset.train_dir)
+    eval_source = VideoDataSource(cfg.dataset.eval_dir)
     logger.info(
         "Loaded %d training videos and %d eval videos",
         len(train_source),
         len(eval_source),
     )
-
+    effective_read_threads = max(int(cfg.dataset.worker_count), 1) * int(
+        cfg.dataset.num_threads
+    )
+    logger.info(
+        "Data loader settings: worker_count=%d num_threads=%d "
+        "prefetch_buffer_size=%d effective_read_threads=%d",
+        int(cfg.dataset.worker_count),
+        int(cfg.dataset.num_threads),
+        int(cfg.dataset.prefetch_buffer_size),
+        effective_read_threads,
+    )
     transforms = [
         RandomVideoCrop(cfg.dataset.frame_length),
         PreprocessAndPatchify(cfg.dataset.patch_size, cfg.dataset.pad_width),
@@ -173,7 +183,10 @@ def main(cfg: DictConfig):
             shuffle=shuffle,
             seed=cfg.seed,
         )
-        read_options = grain.ReadOptions(num_threads=8, prefetch_buffer_size=8)
+        read_options = grain.ReadOptions(
+            num_threads=int(cfg.dataset.num_threads),
+            prefetch_buffer_size=int(cfg.dataset.prefetch_buffer_size),
+        )
         return grain.DataLoader(
             data_source=source,
             sampler=sampler,
