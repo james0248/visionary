@@ -217,6 +217,11 @@ def main(cfg: DictConfig):
     params = model.init({"params": init_key, "mask": init_mask_key}, sample_batch)
     logger.info("Model init took %.1fs", time.monotonic() - _t)
 
+    if cfg.lpips_weight > 0:
+        _t = time.monotonic()
+        get_lpips_loss_fn()
+        logger.info("LPIPS init took %.1fs", time.monotonic() - _t)
+
     _t = time.monotonic()
     optimizer = optax.adam(cfg.learning_rate)
     state = TrainState.create(
