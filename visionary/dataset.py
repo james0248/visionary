@@ -13,8 +13,6 @@ class VideoDataset(TypedDict):
 
 class PreprocessedVideoDataset(TypedDict):
     video: np.ndarray
-    mask_prob: np.ndarray
-    independent: bool
 
 
 class VideoDataSource(grain.RandomAccessDataSource):
@@ -72,7 +70,4 @@ class PreprocessAndPatchify(grain.RandomMapTransform):
             p1=self.patch_size,
             p2=self.patch_size,
         )
-        p = rng.uniform(0.0, 0.9, size=(video.shape[0],)).astype(np.float32)
-        independent = rng.random() < 0.3
-
-        return {"video": patched_video, "mask_prob": p, "independent": independent}
+        return {"video": patched_video}

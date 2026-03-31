@@ -12,7 +12,7 @@ from visionary.transformer import (
 
 
 def create_spatial_mask(
-    num_image_tokens: int, num_latent_tokens: int, *, encoder: bool
+    num_image_tokens: int, num_latent_tokens: int, encoder: bool
 ) -> jnp.ndarray:
     n_img, n_lat = num_image_tokens, num_latent_tokens
 
@@ -26,10 +26,12 @@ def create_spatial_mask(
         latent_to_image = jnp.zeros((n_lat, n_img), dtype=bool)
         image_to_latent = jnp.ones((n_img, n_lat), dtype=bool)
 
-    return jnp.block([
-        [latent_to_latent, latent_to_image],
-        [image_to_latent,  image_to_image],
-    ])
+    return jnp.block(
+        [
+            [latent_to_latent, latent_to_image],
+            [image_to_latent, image_to_image],
+        ]
+    )
 
 
 def create_temporal_mask(independent: jnp.ndarray, t: int) -> jnp.ndarray:
@@ -38,7 +40,7 @@ def create_temporal_mask(independent: jnp.ndarray, t: int) -> jnp.ndarray:
     return jnp.where(independent[:, None, None], identity, causal)
 
 
-def _build_rope_embeddings(
+def build_rope_embeddings(
     base: float,
     head_dim: int,
     x_len: int,
@@ -71,27 +73,14 @@ class TokenizerEncoder(nn.Module):
     attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
-    def sample_mask(self, mask_prob: jnp.ndarray, num_tokens: int) -> jnp.ndarray:
-        batch_size, seq_len = mask_prob.shape
-        rng = self.make_rng("mask")
-        rand_vals = jax.random.uniform(rng, shape=(batch_size, seq_len, num_tokens))
-        return rand_vals < jnp.expand_dims(mask_prob, axis=-1)
-
     @nn.compact
     def __call__(
         self,
         x: jnp.ndarray,
-        mask_prob: jnp.ndarray,
         temporal_mask: jnp.ndarray,
-        is_masked: jnp.ndarray | None = None,
+        mask: jnp.ndarray | None = None,
     ) -> jnp.ndarray:
         batch_size, seq_len, num_tokens, _ = x.shape
-        expected_num_tokens = self.x_len * self.y_len
-        if num_tokens != expected_num_tokens:
-            raise ValueError(
-                "Tokenizer encoder expected "
-                f"{expected_num_tokens} spatial tokens, got {num_tokens}."
-            )
 
         x = nn.Dense(self.model_dim, dtype=self.dtype)(x)
 
@@ -99,9 +88,9 @@ class TokenizerEncoder(nn.Module):
         mask_token = self.param(
             "mask_token", nn.initializers.normal(stddev=0.02), (self.model_dim,)
         ).astype(self.dtype)
-        if is_masked is None:
-            is_masked = self.sample_mask(mask_prob, num_tokens)
-        x = jnp.where(jnp.expand_dims(is_masked, axis=-1), mask_token, x)
+        if mask is None:
+            mask = jnp.zeros((batch_size, seq_len, num_tokens), dtype=bool)
+        x = jnp.where(jnp.expand_dims(mask, axis=-1), mask_token, x)
 
         # Prepend latent tokens
         latent_tokens = self.param(
@@ -114,7 +103,7 @@ class TokenizerEncoder(nn.Module):
         )
         x = jnp.concatenate([latent_tokens, x], axis=2)
 
-        spatial_rope, temporal_rope = _build_rope_embeddings(
+        spatial_rope, temporal_rope = build_rope_embeddings(
             self.base,
             self.head_dim,
             self.x_len,
@@ -137,7 +126,9 @@ class TokenizerEncoder(nn.Module):
             t=seq_len,
             total_tokens=num_tokens + self.num_latents,
             spatial_rope_emb=spatial_rope,
-            spatial_mask=create_spatial_mask(num_tokens, self.num_latents, encoder=True),
+            spatial_mask=create_spatial_mask(
+                num_tokens, self.num_latents, encoder=True
+            ),
             temporal_rope_emb=temporal_rope,
             temporal_mask=temporal_mask,
         )
@@ -173,11 +164,6 @@ class TokenizerDecoder(nn.Module):
         patch_dim: int,
     ) -> jnp.ndarray:
         batch_size, seq_len, num_latents, _ = latent.shape
-        if num_latents != self.num_latents:
-            raise ValueError(
-                "Tokenizer decoder expected "
-                f"{self.num_latents} latent tokens, got {num_latents}."
-            )
         num_tokens = self.x_len * self.y_len
 
         image_tokens = self.param(
@@ -192,7 +178,7 @@ class TokenizerDecoder(nn.Module):
         latent = nn.Dense(self.model_dim, dtype=self.dtype)(latent)
         x = jnp.concatenate([latent, image_tokens], axis=2)
 
-        spatial_rope, temporal_rope = _build_rope_embeddings(
+        spatial_rope, temporal_rope = build_rope_embeddings(
             self.base,
             self.head_dim,
             self.x_len,
@@ -215,7 +201,9 @@ class TokenizerDecoder(nn.Module):
             t=seq_len,
             total_tokens=num_tokens + self.num_latents,
             spatial_rope_emb=spatial_rope,
-            spatial_mask=create_spatial_mask(num_tokens, self.num_latents, encoder=False),
+            spatial_mask=create_spatial_mask(
+                num_tokens, self.num_latents, encoder=False
+            ),
             temporal_rope_emb=temporal_rope,
             temporal_mask=temporal_mask,
         )
@@ -239,6 +227,9 @@ class Tokenizer(nn.Module):
     y_len: int
 
     base: float
+    independent_prob: float = 0.3
+    mask_prob_min: float = 0.0
+    mask_prob_max: float = 0.9
     attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
@@ -261,50 +252,53 @@ class Tokenizer(nn.Module):
         self.encoder = TokenizerEncoder(**shared)
         self.decoder = TokenizerDecoder(**shared)
 
-    def _validate_batch(self, batch: PreprocessedVideoDataset) -> int:
-        num_tokens = batch["video"].shape[-2]
-        expected_num_tokens = self.x_len * self.y_len
-        if num_tokens != expected_num_tokens:
-            raise ValueError(
-                "Tokenizer expected "
-                f"{expected_num_tokens} spatial tokens from x_len*y_len, got "
-                f"{num_tokens}."
+    def sample_independent(self, batch_size: int) -> jnp.ndarray:
+        rng = self.make_rng("sample")
+        return jax.random.bernoulli(rng, p=self.independent_prob, shape=(batch_size,))
+
+    def sample_mask(
+        self,
+        video_shape: tuple[int, int, int],
+        mask_prob: float | None = None,
+    ) -> jnp.ndarray:
+        batch_size, seq_len, num_tokens = video_shape
+        rng = self.make_rng("sample")
+
+        if mask_prob is None:
+            prob_rng, rng = jax.random.split(rng)
+            mask_prob = jax.random.uniform(
+                prob_rng,
+                shape=(batch_size, seq_len),
+                minval=self.mask_prob_min,
+                maxval=self.mask_prob_max,
             )
-        patch_dim = batch["video"].shape[-1]
-        if patch_dim <= 0:
-            raise ValueError(f"Tokenizer expected positive patch_dim, got {patch_dim}.")
-        return patch_dim
-
-    def __call__(self, batch: PreprocessedVideoDataset) -> jnp.ndarray:
-        patch_dim = self._validate_batch(batch)
-        temporal_mask = create_temporal_mask(
-            batch["independent"], batch["video"].shape[1]
+        else:
+            mask_prob = jnp.full((batch_size, seq_len), mask_prob)
+        rand_vals = jax.random.uniform(
+            rng, shape=(batch_size, seq_len, num_tokens)
         )
-        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-        latent = self.encoder(video, batch["mask_prob"], temporal_mask)
-        return self.decoder(latent, temporal_mask, patch_dim)
+        return rand_vals < jnp.expand_dims(mask_prob, axis=-1)
 
-    def reconstruct_with_mask(
-        self, batch: PreprocessedVideoDataset
+    def __call__(
+        self,
+        batch: PreprocessedVideoDataset,
+        mask_prob: float | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        patch_dim = self._validate_batch(batch)
-        temporal_mask = create_temporal_mask(
-            batch["independent"], batch["video"].shape[1]
-        )
+        batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
+
+        independent = self.sample_independent(batch_size)
+        mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=mask_prob)
+        temporal_mask = create_temporal_mask(independent, seq_len)
+
         video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-        is_masked = self.encoder.sample_mask(batch["mask_prob"], batch["video"].shape[2])
-        latent = self.encoder(
-            video,
-            batch["mask_prob"],
-            temporal_mask,
-            is_masked=is_masked,
-        )
-        return self.decoder(latent, temporal_mask, patch_dim), is_masked
+        latent = self.encoder(video, temporal_mask, mask=mask)
+        reconstructed = self.decoder(latent, temporal_mask, patch_dim)
+        return reconstructed, mask
 
     def encode(self, batch: PreprocessedVideoDataset) -> jnp.ndarray:
-        self._validate_batch(batch)
+        batch_size, seq_len, _, _ = batch["video"].shape
         temporal_mask = create_temporal_mask(
-            batch["independent"], batch["video"].shape[1]
+            jnp.zeros((batch_size,), dtype=bool), seq_len
         )
         video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-        return self.encoder(video, batch["mask_prob"], temporal_mask)
+        return self.encoder(video, temporal_mask)

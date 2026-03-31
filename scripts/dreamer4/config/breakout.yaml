@@ -34,6 +34,7 @@ tokenizer:
   x_len: 10
   y_len: 14
   base: 10000.0
+  independent_prob: 0.3
   attention_logit_soft_cap: 50.0
 
 checkpoint:

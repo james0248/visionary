@@ -16,7 +16,6 @@ from omegaconf import OmegaConf
 from visionary.common.checkpoint import CheckpointManager
 from visionary.common.train_state import TokenizerTrainState
 from visionary.dataset import PreprocessAndPatchify, RandomVideoCrop
-from visionary.tokenizer import Tokenizer
 
 
 def unpatchify(images: jax.Array, patch_size: int, x_len: int, y_len: int) -> jax.Array:
@@ -49,6 +48,7 @@ def main():
     parser.add_argument("--step", type=int)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_episodes", type=int, default=8)
+    parser.add_argument("--mask_prob", type=float, default=0.1)
     args = parser.parse_args()
 
     cfg = OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout.yaml")
@@ -71,17 +71,13 @@ def main():
         samples.append(sample)
     batch = {
         "video": np.stack([sample["video"] for sample in samples]),
-        "mask_prob": np.full(
-            (len(samples), samples[0]["video"].shape[0]), 0.1, dtype=np.float32
-        ),
-        "independent": np.asarray([sample["independent"] for sample in samples], dtype=bool),
     }
 
     model = instantiate(cfg.tokenizer)
-    init_key, mask_key = jax.random.split(jax.random.key(args.seed))
+    init_key, sample_key = jax.random.split(jax.random.key(args.seed))
     state = TokenizerTrainState.create(
         apply_fn=model.apply,
-        params=model.init({"params": init_key, "mask": mask_key}, batch),
+        params=model.init({"params": init_key, "sample": sample_key}, batch),
         tx=optax.adam(0.0),
         mse_sq_ema=jnp.ones((), dtype=jnp.float32),
         lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
@@ -89,15 +85,16 @@ def main():
     with CheckpointManager(args.checkpoint_dir, ocp.CheckpointManagerOptions()) as manager:
         state = manager.restore(target=state, step=args.step)
 
-    reconstructed, is_masked = state.apply_fn(
+    reconstructed, mask = state.apply_fn(
         state.params,
         batch,
-        rngs={"mask": jax.random.key(args.seed + 1)},
-        method=Tokenizer.reconstruct_with_mask,
+        mask_prob=float(args.mask_prob),
+        rngs={"sample": jax.random.key(args.seed + 1)},
     )
 
     original = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-    masked = jnp.where(jnp.expand_dims(is_masked, axis=-1), 0.0, original)
+    mask_f32 = jnp.expand_dims(mask, axis=-1).astype(original.dtype)
+    masked = original * (1.0 - mask_f32)
     reconstructed = reconstructed.astype(jnp.float32)
 
     original = trim_padding(
