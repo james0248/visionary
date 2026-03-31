@@ -280,7 +280,8 @@ class Tokenizer(nn.Module):
         temporal_mask = create_temporal_mask(
             batch["independent"], batch["video"].shape[1]
         )
-        latent = self.encoder(batch["video"], batch["mask_prob"], temporal_mask)
+        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+        latent = self.encoder(video, batch["mask_prob"], temporal_mask)
         return self.decoder(latent, temporal_mask, patch_dim)
 
     def reconstruct_with_mask(
@@ -290,9 +291,10 @@ class Tokenizer(nn.Module):
         temporal_mask = create_temporal_mask(
             batch["independent"], batch["video"].shape[1]
         )
+        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
         is_masked = self.encoder.sample_mask(batch["mask_prob"], batch["video"].shape[2])
         latent = self.encoder(
-            batch["video"],
+            video,
             batch["mask_prob"],
             temporal_mask,
             is_masked=is_masked,
@@ -304,4 +306,5 @@ class Tokenizer(nn.Module):
         temporal_mask = create_temporal_mask(
             batch["independent"], batch["video"].shape[1]
         )
-        return self.encoder(batch["video"], batch["mask_prob"], temporal_mask)
+        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+        return self.encoder(video, batch["mask_prob"], temporal_mask)

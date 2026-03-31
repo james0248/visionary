@@ -10,11 +10,11 @@ import numpy as np
 import optax
 import orbax.checkpoint as ocp
 from einops import rearrange
-from flax.training.train_state import TrainState
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from visionary.common.checkpoint import CheckpointManager
+from visionary.common.train_state import TokenizerTrainState
 from visionary.dataset import PreprocessAndPatchify, RandomVideoCrop
 from visionary.tokenizer import Tokenizer
 
@@ -79,10 +79,12 @@ def main():
 
     model = instantiate(cfg.tokenizer)
     init_key, mask_key = jax.random.split(jax.random.key(args.seed))
-    state = TrainState.create(
+    state = TokenizerTrainState.create(
         apply_fn=model.apply,
         params=model.init({"params": init_key, "mask": mask_key}, batch),
         tx=optax.adam(0.0),
+        mse_sq_ema=jnp.ones((), dtype=jnp.float32),
+        lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
     )
     with CheckpointManager(args.checkpoint_dir, ocp.CheckpointManagerOptions()) as manager:
         state = manager.restore(target=state, step=args.step)

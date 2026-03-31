@@ -10,12 +10,12 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from einops import rearrange
-from flax.training.train_state import TrainState
 from hydra.utils import instantiate
 from jaxlpips import LPIPS
 from omegaconf import DictConfig
 
 from visionary.common.checkpoint import CheckpointManager
+from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import (
     PreprocessAndPatchify,
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 
 LPIPS_PRETRAINED_NETWORK = "alexnet"
+LOSS_RMS_DECAY = 0.99
+LOSS_RMS_EPS = 1e-8
 
 
 @lru_cache(maxsize=1)
@@ -70,9 +72,29 @@ def compute_lpips_loss(
     return jnp.mean(get_lpips_loss_fn()(original_images, reconstructed_images))
 
 
+def update_loss_ema(
+    state: TokenizerTrainState,
+    mse_loss: jax.Array,
+    lpips_loss: jax.Array,
+) -> TokenizerTrainState:
+    mse_loss = mse_loss.astype(jnp.float32)
+    lpips_loss = lpips_loss.astype(jnp.float32)
+    step_size = jnp.asarray(1.0 - LOSS_RMS_DECAY, dtype=mse_loss.dtype)
+    return state.replace(
+        mse_sq_ema=optax.incremental_update(
+            jnp.square(mse_loss), state.mse_sq_ema.astype(mse_loss.dtype), step_size
+        ),
+        lpips_sq_ema=optax.incremental_update(
+            jnp.square(lpips_loss),
+            state.lpips_sq_ema.astype(lpips_loss.dtype),
+            step_size,
+        ),
+    )
+
+
 def compute_losses(
     params,
-    state: TrainState,
+    state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
     mask_key: jax.Array,
     lpips_weight: float,
@@ -83,7 +105,12 @@ def compute_losses(
     reconstructed = state.apply_fn(params, batch, rngs={"mask": mask_key})
     reconstructed_f32 = reconstructed.astype(jnp.float32)
     original = batch["video"].astype(jnp.float32) / 255.0
+
     mse_loss = jnp.mean(jnp.square(reconstructed_f32 - original))
+    mse_rms = jnp.sqrt(state.mse_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
+    normalized_mse_loss = mse_loss / jax.lax.stop_gradient(mse_rms)
+
+    lpips_rms = jnp.sqrt(state.lpips_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if lpips_weight > 0:
         lpips_loss = compute_lpips_loss(
             original,
@@ -94,8 +121,21 @@ def compute_losses(
         )
     else:
         lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
-    loss = mse_loss + lpips_weight * lpips_loss
-    return loss, {"loss": loss, "mse_loss": mse_loss, "lpips_loss": lpips_loss}
+    normalized_lpips_loss = lpips_loss / jax.lax.stop_gradient(lpips_rms)
+
+    raw_loss = mse_loss + lpips_weight * lpips_loss
+    loss = normalized_mse_loss + lpips_weight * normalized_lpips_loss
+    metrics = {
+        "loss": loss,
+        "raw_loss": raw_loss,
+        "mse_loss": mse_loss,
+        "lpips_loss": lpips_loss,
+        "normalized_mse_loss": normalized_mse_loss,
+        "normalized_lpips_loss": normalized_lpips_loss,
+        "mse_rms": mse_rms,
+        "lpips_rms": lpips_rms,
+    }
+    return loss, metrics
 
 
 @partial(
@@ -103,7 +143,7 @@ def compute_losses(
     static_argnames=("lpips_weight", "patch_size", "width_tokens", "height_tokens"),
 )
 def train_step(
-    state: TrainState,
+    state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
     mask_key: jax.Array,
     lpips_weight: float,
@@ -125,6 +165,7 @@ def train_step(
 
     (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     state = state.apply_gradients(grads=grads)
+    state = update_loss_ema(state, metrics["mse_loss"], metrics["lpips_loss"])
     return state, metrics
 
 
@@ -133,7 +174,7 @@ def train_step(
     static_argnames=("lpips_weight", "patch_size", "width_tokens", "height_tokens"),
 )
 def eval_step(
-    state: TrainState,
+    state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
     mask_key: jax.Array,
     lpips_weight: float,
@@ -156,7 +197,7 @@ def eval_step(
 
 @jax.jit
 def eval_visualization_step(
-    state: TrainState,
+    state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
     mask_key: jax.Array,
 ):
@@ -342,10 +383,12 @@ def main(cfg: DictConfig):
 
     _t = time.monotonic()
     optimizer = optax.adam(cfg.learning_rate)
-    state = TrainState.create(
+    state = TokenizerTrainState.create(
         apply_fn=model.apply,
         params=params,
         tx=optimizer,
+        mse_sq_ema=jnp.ones((), dtype=jnp.float32),
+        lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
     )
     logger.info("TrainState creation took %.1fs", time.monotonic() - _t)
 
