@@ -98,6 +98,7 @@ def compute_loss_metrics(
     reconstructed: jax.Array,
     mask: jax.Array,
     lpips_weight: float,
+    masked_mse: bool,
     patch_size: int,
     width_tokens: int,
     height_tokens: int,
@@ -105,11 +106,12 @@ def compute_loss_metrics(
     reconstructed_f32 = reconstructed.astype(jnp.float32)
     original = batch["video"].astype(jnp.float32) / 255.0
     mask_f32 = jnp.expand_dims(mask, axis=-1).astype(reconstructed_f32.dtype)
-    num_masked = jnp.maximum(
-        jnp.sum(mask_f32) * reconstructed_f32.shape[-1],
+    mse_weights = mask_f32 if masked_mse else jnp.ones_like(mask_f32)
+    num_mse = jnp.maximum(
+        jnp.sum(mse_weights) * reconstructed_f32.shape[-1],
         1.0,
     )
-    mse_loss = jnp.sum(jnp.square(reconstructed_f32 - original) * mask_f32) / num_masked
+    mse_loss = jnp.sum(jnp.square(reconstructed_f32 - original) * mse_weights) / num_mse
     mse_rms = jnp.sqrt(state.mse_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     normalized_mse_loss = mse_loss / jax.lax.stop_gradient(mse_rms)
 
@@ -147,17 +149,24 @@ def compute_loss_metrics(
 
 @partial(
     jax.jit,
-    static_argnames=("lpips_weight", "patch_size", "width_tokens", "height_tokens"),
+    static_argnames=(
+        "lpips_weight",
+        "masked_mse",
+        "patch_size",
+        "width_tokens",
+        "height_tokens",
+    ),
 )
 def train_step(
     state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
     lpips_weight: float,
+    masked_mse: bool,
     patch_size: int,
     width_tokens: int,
     height_tokens: int,
-    ):
+):
     def loss_fn(params):
         reconstructed, mask = state.apply_fn(
             params,
@@ -170,6 +179,7 @@ def train_step(
             reconstructed,
             mask,
             lpips_weight,
+            masked_mse,
             patch_size,
             width_tokens,
             height_tokens,
@@ -185,6 +195,7 @@ def train_step(
     jax.jit,
     static_argnames=(
         "lpips_weight",
+        "masked_mse",
         "patch_size",
         "width_tokens",
         "height_tokens",
@@ -196,6 +207,7 @@ def eval_step(
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
     lpips_weight: float,
+    masked_mse: bool,
     patch_size: int,
     width_tokens: int,
     height_tokens: int,
@@ -214,6 +226,7 @@ def eval_step(
         reconstructed,
         mask,
         lpips_weight,
+        masked_mse,
         patch_size,
         width_tokens,
         height_tokens,
@@ -475,6 +488,7 @@ def main(cfg: DictConfig):
             batch,
             sample_key,
             cfg.lpips_weight,
+            bool(cfg.masked_mse),
             patch_size=cfg.dataset.patch_size,
             width_tokens=cfg.tokenizer.x_len,
             height_tokens=cfg.tokenizer.y_len,
@@ -508,6 +522,7 @@ def main(cfg: DictConfig):
                     eval_batch,
                     eval_sample_key,
                     cfg.lpips_weight,
+                    bool(cfg.masked_mse),
                     patch_size=cfg.dataset.patch_size,
                     width_tokens=cfg.tokenizer.x_len,
                     height_tokens=cfg.tokenizer.y_len,
