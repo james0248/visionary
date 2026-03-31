@@ -66,7 +66,9 @@ def main():
             sample = {"video": np.asarray(data["frames"])}
         sample = RandomVideoCrop(cfg.dataset.frame_length).random_map(sample, rng)
         sample = PreprocessAndPatchify(
-            cfg.dataset.patch_size, tuple(cfg.dataset.pad_width)
+            cfg.dataset.patch_size,
+            tuple(cfg.dataset.pad_width),
+            tuple(cfg.dataset.resize_shape),
         ).random_map(sample, rng)
         samples.append(sample)
     batch = {

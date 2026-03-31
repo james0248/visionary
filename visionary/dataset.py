@@ -2,6 +2,7 @@ import io
 from typing import TypedDict
 
 import grain.python as grain
+import jax
 import numpy as np
 from einops import rearrange
 from etils import epath
@@ -49,14 +50,35 @@ class RandomVideoCrop(grain.RandomMapTransform):
 
 
 class PreprocessAndPatchify(grain.RandomMapTransform):
-    def __init__(self, patch_size: int, pad_width: tuple[int, int]):
+    def __init__(
+        self,
+        patch_size: int,
+        pad_width: tuple[int, int],
+        resize_shape: tuple[int, int] | None = None,
+    ):
         self.patch_size = patch_size
         self.pad_width = pad_width
+        self.resize_shape = resize_shape
 
     def random_map(
         self, element: VideoDataset, rng: np.random.Generator
     ) -> PreprocessedVideoDataset:
         video = element["video"]
+        if self.resize_shape is not None:
+            video = np.clip(
+                np.rint(
+                    np.asarray(
+                        jax.image.resize(
+                            video.astype(np.float32),
+                            (video.shape[0], *self.resize_shape, video.shape[-1]),
+                            method="linear",
+                            antialias=True,
+                        )
+                    )
+                ),
+                0,
+                255,
+            ).astype(video.dtype)
         height_pad, width_pad = self.pad_width
         padded_video = np.pad(
             video,

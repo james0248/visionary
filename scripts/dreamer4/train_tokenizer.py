@@ -387,7 +387,11 @@ def main(cfg: DictConfig):
     )
     transforms = [
         RandomVideoCrop(cfg.dataset.frame_length),
-        PreprocessAndPatchify(cfg.dataset.patch_size, cfg.dataset.pad_width),
+        PreprocessAndPatchify(
+            cfg.dataset.patch_size,
+            tuple(cfg.dataset.pad_width),
+            tuple(cfg.dataset.resize_shape),
+        ),
     ]
 
     def make_loader(source, *, shuffle: bool, drop_remainder: bool, seed: int):
