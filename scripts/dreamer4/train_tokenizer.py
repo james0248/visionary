@@ -427,6 +427,8 @@ def main(cfg: DictConfig):
     _t = time.monotonic()
     sample_batch = next(iter(train_dataloader))
     logger.info("First batch fetch took %.1fs", time.monotonic() - _t)
+    if bool(cfg.overfit_single_batch):
+        logger.info("Overfit mode enabled: reusing the first sampled batch for training.")
 
     _t = time.monotonic()
     key = jax.random.key(cfg.seed)
@@ -476,7 +478,12 @@ def main(cfg: DictConfig):
         return
 
     t0 = time.monotonic()
-    for batch in train_dataloader:
+    train_batches = (
+        itertools.repeat(sample_batch)
+        if bool(cfg.overfit_single_batch)
+        else train_dataloader
+    )
+    for batch in train_batches:
         t1 = time.monotonic()
 
         batch = jax.device_put(batch)

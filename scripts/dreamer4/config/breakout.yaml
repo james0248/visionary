@@ -5,6 +5,7 @@ masked_mse: true
 log_interval: 100
 eval_steps: 1000
 total_steps: 150000
+overfit_single_batch: false
 exp_name: ???
 
 dataset:
