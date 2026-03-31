@@ -18,7 +18,7 @@ dataset:
   num_threads: 2
   prefetch_buffer_size: 2
   resize_shape: [96, 96]
-  patch_size: 16
+  patch_size: 8
   pad_width: [0, 0]
   eval:
     max_batches: 16
