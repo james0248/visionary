@@ -144,6 +144,7 @@ class TokenizerDecoder(nn.Module):
     num_latents: int
     num_heads: int
     num_kv_heads: int
+    single_image_token: bool = False
 
     model_dim: int
     head_dim: int
@@ -166,11 +167,14 @@ class TokenizerDecoder(nn.Module):
         batch_size, seq_len, num_latents, _ = latent.shape
         num_tokens = self.x_len * self.y_len
 
+        image_token_count = 1 if self.single_image_token else num_tokens
         image_tokens = self.param(
             "image_tokens",
             nn.initializers.normal(stddev=0.02),
-            (num_tokens, self.model_dim),
+            (image_token_count, self.model_dim),
         ).astype(self.dtype)
+        if self.single_image_token:
+            image_tokens = jnp.broadcast_to(image_tokens, (num_tokens, self.model_dim))
         image_tokens = jnp.broadcast_to(
             image_tokens, (batch_size, seq_len, num_tokens, self.model_dim)
         )
@@ -227,6 +231,7 @@ class Tokenizer(nn.Module):
     y_len: int
 
     base: float
+    decoder_single_image_token: bool = False
     independent_prob: float = 0.3
     mask_prob_min: float = 0.0
     mask_prob_max: float = 0.9
@@ -250,7 +255,10 @@ class Tokenizer(nn.Module):
             dtype=self.dtype,
         )
         self.encoder = TokenizerEncoder(**shared)
-        self.decoder = TokenizerDecoder(**shared)
+        self.decoder = TokenizerDecoder(
+            **shared,
+            single_image_token=self.decoder_single_image_token,
+        )
 
     def sample_independent(self, batch_size: int) -> jnp.ndarray:
         rng = self.make_rng("sample")
