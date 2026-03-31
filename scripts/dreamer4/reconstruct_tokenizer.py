@@ -1,0 +1,153 @@
+import argparse
+from pathlib import Path
+
+import imageio
+import jax
+import jax.numpy as jnp
+import numpy as np
+import optax
+import orbax.checkpoint as ocp
+from einops import rearrange
+from flax.training.train_state import TrainState
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
+
+from visionary.common.checkpoint import CheckpointManager
+from visionary.dataset import PreprocessAndPatchify, RandomVideoCrop, VideoDataSource
+from visionary.tokenizer import Tokenizer
+
+
+def unpatchify(images: jax.Array, patch_size: int, x_len: int, y_len: int) -> jax.Array:
+    return rearrange(
+        images,
+        "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
+        h=y_len,
+        w=x_len,
+        p1=patch_size,
+        p2=patch_size,
+    )
+
+
+def trim_padding(images: np.ndarray, pad_width: tuple[int, int]) -> np.ndarray:
+    h_pad, w_pad = (int(v) for v in pad_width)
+    return images[
+        :,
+        :,
+        slice(h_pad, -h_pad if h_pad else None),
+        slice(w_pad, -w_pad if w_pad else None),
+        :,
+    ]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint_dir", required=True)
+    parser.add_argument("--dataset_dir", required=True)
+    parser.add_argument("--output", default="reconstruction.png")
+    parser.add_argument("--step", type=int)
+    parser.add_argument("--index", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--num_frames", type=int, default=8)
+    args = parser.parse_args()
+
+    cfg = OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout.yaml")
+    rng = np.random.default_rng(args.seed)
+
+    sample = VideoDataSource(args.dataset_dir)[args.index]
+    sample = RandomVideoCrop(cfg.dataset.frame_length).random_map(sample, rng)
+    sample = PreprocessAndPatchify(
+        cfg.dataset.patch_size, tuple(cfg.dataset.pad_width)
+    ).random_map(sample, rng)
+    batch = {
+        "video": sample["video"][None],
+        "mask_prob": np.full((1, sample["video"].shape[0]), 0.1, dtype=np.float32),
+        "independent": np.asarray([sample["independent"]], dtype=bool),
+    }
+
+    model = instantiate(cfg.tokenizer)
+    init_key, mask_key = jax.random.split(jax.random.key(args.seed))
+    state = TrainState.create(
+        apply_fn=model.apply,
+        params=model.init({"params": init_key, "mask": mask_key}, batch),
+        tx=optax.adam(0.0),
+    )
+    with CheckpointManager(args.checkpoint_dir, ocp.CheckpointManagerOptions()) as manager:
+        state = manager.restore(target=state, step=args.step)
+
+    reconstructed, is_masked = state.apply_fn(
+        state.params,
+        batch,
+        rngs={"mask": jax.random.key(args.seed + 1)},
+        method=Tokenizer.reconstruct_with_mask,
+    )
+
+    original = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+    masked = jnp.where(jnp.expand_dims(is_masked, axis=-1), 0.0, original)
+    reconstructed = reconstructed.astype(jnp.float32)
+
+    original = trim_padding(
+        np.asarray(
+            jax.device_get(
+                unpatchify(
+                    original, cfg.dataset.patch_size, cfg.tokenizer.x_len, cfg.tokenizer.y_len
+                ).clip(0.0, 1.0)
+            )
+        ),
+        tuple(cfg.dataset.pad_width),
+    )[0]
+    masked = trim_padding(
+        np.asarray(
+            jax.device_get(
+                unpatchify(
+                    masked, cfg.dataset.patch_size, cfg.tokenizer.x_len, cfg.tokenizer.y_len
+                ).clip(0.0, 1.0)
+            )
+        ),
+        tuple(cfg.dataset.pad_width),
+    )[0]
+    reconstructed = trim_padding(
+        np.asarray(
+            jax.device_get(
+                unpatchify(
+                    reconstructed,
+                    cfg.dataset.patch_size,
+                    cfg.tokenizer.x_len,
+                    cfg.tokenizer.y_len,
+                ).clip(0.0, 1.0)
+            )
+        ),
+        tuple(cfg.dataset.pad_width),
+    )[0]
+
+    frame_indices = np.sort(
+        rng.choice(
+            original.shape[0],
+            size=min(args.num_frames, original.shape[0]),
+            replace=False,
+        )
+    )
+    original = np.clip(np.rint(original[frame_indices] * 255.0), 0, 255).astype(np.uint8)
+    masked = np.clip(np.rint(masked[frame_indices] * 255.0), 0, 255).astype(np.uint8)
+    reconstructed = np.clip(np.rint(reconstructed[frame_indices] * 255.0), 0, 255).astype(
+        np.uint8
+    )
+
+    col_sep = np.full((original.shape[1], 2, 3), 255, dtype=np.uint8)
+    rows = [
+        np.concatenate([o, col_sep, m, col_sep, r], axis=1)
+        for o, m, r in zip(original, masked, reconstructed, strict=True)
+    ]
+    row_sep = np.full((2, rows[0].shape[1], 3), 255, dtype=np.uint8)
+    grid = np.concatenate(
+        [row if i == 0 else np.concatenate([row_sep, row], axis=0) for i, row in enumerate(rows)],
+        axis=0,
+    )
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    imageio.imwrite(output, grid)
+    print(output)
+
+
+if __name__ == "__main__":
+    main()
