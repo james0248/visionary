@@ -144,7 +144,6 @@ class TokenizerDecoder(nn.Module):
     num_latents: int
     num_heads: int
     num_kv_heads: int
-    single_image_token: bool = False
 
     model_dim: int
     head_dim: int
@@ -154,6 +153,7 @@ class TokenizerDecoder(nn.Module):
     y_len: int
 
     base: float
+    single_image_token: bool = False
     attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
