@@ -511,18 +511,22 @@ def main(cfg: DictConfig):
             totals: dict[str, float] = {}
             num_batches = 0
             eval_run_key = jax.random.fold_in(eval_key, step)
-            eval_dataloader = make_loader(
-                eval_source,
-                shuffle=True,
-                drop_remainder=False,
-                seed=int(cfg.seed) + step,
-            )
+            if bool(cfg.overfit_single_batch):
+                eval_batches = [sample_batch]
+            else:
+                eval_dataloader = make_loader(
+                    eval_source,
+                    shuffle=True,
+                    drop_remainder=False,
+                    seed=int(cfg.seed) + step,
+                )
+                eval_batches = itertools.islice(
+                    iter(eval_dataloader), cfg.dataset.eval.max_batches
+                )
             vis_original_batches = []
             vis_reconstruction_batches = []
             vis_masked_batches = []
-            for batch_idx, eval_batch in enumerate(
-                itertools.islice(iter(eval_dataloader), cfg.dataset.eval.max_batches)
-            ):
+            for batch_idx, eval_batch in enumerate(eval_batches):
                 eval_sample_key = jax.random.fold_in(eval_run_key, batch_idx)
                 batch_metrics, sampled_frames = eval_step(
                     state,
