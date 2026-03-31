@@ -1,6 +1,8 @@
 import argparse
+import io
 from pathlib import Path
 
+import grain.python as grain
 import imageio
 import jax
 import jax.numpy as jnp
@@ -13,7 +15,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from visionary.common.checkpoint import CheckpointManager
-from visionary.dataset import PreprocessAndPatchify, RandomVideoCrop, VideoDataSource
+from visionary.dataset import PreprocessAndPatchify, RandomVideoCrop
 from visionary.tokenizer import Tokenizer
 
 
@@ -45,23 +47,34 @@ def main():
     parser.add_argument("--dataset_dir", required=True)
     parser.add_argument("--output", default="reconstruction.png")
     parser.add_argument("--step", type=int)
-    parser.add_argument("--index", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num_frames", type=int, default=8)
+    parser.add_argument("--num_episodes", type=int, default=8)
     args = parser.parse_args()
 
     cfg = OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout.yaml")
     rng = np.random.default_rng(args.seed)
-
-    sample = VideoDataSource(args.dataset_dir)[args.index]
-    sample = RandomVideoCrop(cfg.dataset.frame_length).random_map(sample, rng)
-    sample = PreprocessAndPatchify(
-        cfg.dataset.patch_size, tuple(cfg.dataset.pad_width)
-    ).random_map(sample, rng)
+    shard_paths = sorted(Path(args.dataset_dir).glob("*.arecord"))
+    shard_indices = rng.choice(
+        len(shard_paths),
+        size=min(args.num_episodes, len(shard_paths)),
+        replace=False,
+    )
+    samples = []
+    for shard_idx in np.atleast_1d(shard_indices):
+        source = grain.ArrayRecordDataSource([shard_paths[int(shard_idx)].as_posix()])
+        with np.load(io.BytesIO(source[int(rng.integers(len(source)))])) as data:
+            sample = {"video": np.asarray(data["frames"])}
+        sample = RandomVideoCrop(cfg.dataset.frame_length).random_map(sample, rng)
+        sample = PreprocessAndPatchify(
+            cfg.dataset.patch_size, tuple(cfg.dataset.pad_width)
+        ).random_map(sample, rng)
+        samples.append(sample)
     batch = {
-        "video": sample["video"][None],
-        "mask_prob": np.full((1, sample["video"].shape[0]), 0.1, dtype=np.float32),
-        "independent": np.asarray([sample["independent"]], dtype=bool),
+        "video": np.stack([sample["video"] for sample in samples]),
+        "mask_prob": np.full(
+            (len(samples), samples[0]["video"].shape[0]), 0.1, dtype=np.float32
+        ),
+        "independent": np.asarray([sample["independent"] for sample in samples], dtype=bool),
     }
 
     model = instantiate(cfg.tokenizer)
@@ -94,7 +107,7 @@ def main():
             )
         ),
         tuple(cfg.dataset.pad_width),
-    )[0]
+    )
     masked = trim_padding(
         np.asarray(
             jax.device_get(
@@ -104,7 +117,7 @@ def main():
             )
         ),
         tuple(cfg.dataset.pad_width),
-    )[0]
+    )
     reconstructed = trim_padding(
         np.asarray(
             jax.device_get(
@@ -117,20 +130,19 @@ def main():
             )
         ),
         tuple(cfg.dataset.pad_width),
-    )[0]
+    )
 
-    frame_indices = np.sort(
-        rng.choice(
-            original.shape[0],
-            size=min(args.num_frames, original.shape[0]),
-            replace=False,
-        )
-    )
-    original = np.clip(np.rint(original[frame_indices] * 255.0), 0, 255).astype(np.uint8)
-    masked = np.clip(np.rint(masked[frame_indices] * 255.0), 0, 255).astype(np.uint8)
-    reconstructed = np.clip(np.rint(reconstructed[frame_indices] * 255.0), 0, 255).astype(
-        np.uint8
-    )
+    episode_indices = np.arange(original.shape[0])
+    frame_indices = rng.integers(0, original.shape[1], size=original.shape[0])
+    original = np.clip(
+        np.rint(original[episode_indices, frame_indices] * 255.0), 0, 255
+    ).astype(np.uint8)
+    masked = np.clip(
+        np.rint(masked[episode_indices, frame_indices] * 255.0), 0, 255
+    ).astype(np.uint8)
+    reconstructed = np.clip(
+        np.rint(reconstructed[episode_indices, frame_indices] * 255.0), 0, 255
+    ).astype(np.uint8)
 
     col_sep = np.full((original.shape[1], 2, 3), 255, dtype=np.uint8)
     rows = [
