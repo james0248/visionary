@@ -23,8 +23,8 @@ dataset:
 
 tokenizer:
   _target_: visionary.tokenizer.Tokenizer
-  num_layers: 6
-  num_latents: 48
+  num_layers: 8
+  num_latents: 64
   num_heads: 6
   num_kv_heads: 2
   model_dim: 384

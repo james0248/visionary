@@ -23,6 +23,7 @@ from visionary.dataset import (
     RandomVideoCrop,
     VideoDataSource,
 )
+from visionary.tokenizer import Tokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -91,21 +92,16 @@ def update_loss_ema(
     )
 
 
-def compute_losses(
-    params,
+def compute_loss_metrics(
     state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
-    sample_key: jax.Array,
+    reconstructed: jax.Array,
+    mask: jax.Array,
     lpips_weight: float,
     patch_size: int,
     width_tokens: int,
     height_tokens: int,
 ):
-    reconstructed, mask = state.apply_fn(
-        params,
-        batch,
-        rngs={"sample": sample_key},
-    )
     reconstructed_f32 = reconstructed.astype(jnp.float32)
     original = batch["video"].astype(jnp.float32) / 255.0
     mask_f32 = jnp.expand_dims(mask, axis=-1).astype(reconstructed_f32.dtype)
@@ -161,13 +157,18 @@ def train_step(
     patch_size: int,
     width_tokens: int,
     height_tokens: int,
-):
+    ):
     def loss_fn(params):
-        return compute_losses(
+        reconstructed, mask = state.apply_fn(
             params,
+            batch,
+            rngs={"sample": sample_key},
+        )
+        return compute_loss_metrics(
             state,
             batch,
-            sample_key,
+            reconstructed,
+            mask,
             lpips_weight,
             patch_size,
             width_tokens,
@@ -182,7 +183,13 @@ def train_step(
 
 @partial(
     jax.jit,
-    static_argnames=("lpips_weight", "patch_size", "width_tokens", "height_tokens"),
+    static_argnames=(
+        "lpips_weight",
+        "patch_size",
+        "width_tokens",
+        "height_tokens",
+        "pad_width",
+    ),
 )
 def eval_step(
     state: TokenizerTrainState,
@@ -192,31 +199,36 @@ def eval_step(
     patch_size: int,
     width_tokens: int,
     height_tokens: int,
+    pad_width: tuple[int, int],
 ):
-    _, metrics = compute_losses(
+    model_key, frame_key = jax.random.split(sample_key)
+    reconstructed, mask = state.apply_fn(
         state.params,
+        batch,
+        method=Tokenizer.reconstruct_eval,
+        rngs={"sample": model_key},
+    )
+    _, metrics = compute_loss_metrics(
         state,
         batch,
-        sample_key,
+        reconstructed,
+        mask,
         lpips_weight,
         patch_size,
         width_tokens,
         height_tokens,
     )
-    return metrics
-
-
-@jax.jit
-def eval_visualization_step(
-    state: TokenizerTrainState,
-    batch: PreprocessedVideoDataset,
-    sample_key: jax.Array,
-):
-    return state.apply_fn(
-        state.params,
+    sampled_frames = sample_sequence_frames(
         batch,
-        rngs={"sample": sample_key},
+        reconstructed,
+        mask,
+        patch_size=patch_size,
+        width_tokens=width_tokens,
+        height_tokens=height_tokens,
+        pad_width=pad_width,
+        frame_key=frame_key,
     )
+    return metrics, sampled_frames
 
 
 def trim_padding(images: np.ndarray, pad_width: tuple[int, int]) -> np.ndarray:
@@ -226,7 +238,25 @@ def trim_padding(images: np.ndarray, pad_width: tuple[int, int]) -> np.ndarray:
     return images[:, :, h_slice, w_slice, :]
 
 
-def build_reconstruction_grid(
+def patches_to_images(
+    patches: jax.Array,
+    *,
+    patch_size: int,
+    width_tokens: int,
+    height_tokens: int,
+    pad_width: tuple[int, int],
+) -> jax.Array:
+    images = unpatchify(
+        rearrange(patches, "b n d -> b 1 n d"),
+        patch_size,
+        width_tokens,
+        height_tokens,
+    )
+    images = trim_padding(images, pad_width)[:, 0]
+    return jnp.clip(jnp.rint(images * 255.0), 0, 255).astype(jnp.uint8)
+
+
+def sample_sequence_frames(
     batch: PreprocessedVideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
@@ -236,16 +266,54 @@ def build_reconstruction_grid(
     height_tokens: int,
     pad_width: tuple[int, int],
     frame_key: jax.Array,
-    num_frames: int,
-) -> np.ndarray:
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     original = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+    reconstructed = reconstructed.astype(jnp.float32)
     mask_f32 = jnp.expand_dims(mask, axis=-1).astype(original.dtype)
     masked_input = original * (1.0 - mask_f32)
-    original = rearrange(original, "b t n d -> (b t) n d")
-    reconstructed = rearrange(reconstructed.astype(jnp.float32), "b t n d -> (b t) n d")
-    masked_input = rearrange(masked_input, "b t n d -> (b t) n d")
 
-    total_frames = original.shape[0]
+    batch_size, seq_len, _, _ = original.shape
+    batch_indices = jnp.arange(batch_size)
+    frame_indices = jax.random.randint(frame_key, (batch_size,), 0, seq_len)
+
+    original = original[batch_indices, frame_indices]
+    reconstructed = reconstructed[batch_indices, frame_indices]
+    masked_input = masked_input[batch_indices, frame_indices]
+
+    return (
+        patches_to_images(
+            original,
+            patch_size=patch_size,
+            width_tokens=width_tokens,
+            height_tokens=height_tokens,
+            pad_width=pad_width,
+        ),
+        patches_to_images(
+            reconstructed,
+            patch_size=patch_size,
+            width_tokens=width_tokens,
+            height_tokens=height_tokens,
+            pad_width=pad_width,
+        ),
+        patches_to_images(
+            masked_input,
+            patch_size=patch_size,
+            width_tokens=width_tokens,
+            height_tokens=height_tokens,
+            pad_width=pad_width,
+        ),
+    )
+
+
+def build_reconstruction_grid(
+    originals: np.ndarray,
+    reconstructions: np.ndarray,
+    masked_inputs: np.ndarray,
+    *,
+    frame_key: jax.Array,
+    num_frames: int,
+) -> np.ndarray:
+    total_frames = originals.shape[0]
     num_frames = min(int(num_frames), total_frames)
     frame_indices = np.asarray(
         jax.device_get(
@@ -255,51 +323,9 @@ def build_reconstruction_grid(
         )
     )
 
-    original_images = trim_padding(
-        np.asarray(
-            jax.device_get(
-                unpatchify(
-                    rearrange(original[frame_indices], "f n d -> 1 f n d"),
-                    patch_size,
-                    width_tokens,
-                    height_tokens,
-                ).clip(0.0, 1.0)
-            )
-        ),
-        pad_width,
-    )[0]
-    reconstructed_images = trim_padding(
-        np.asarray(
-            jax.device_get(
-                unpatchify(
-                    rearrange(reconstructed[frame_indices], "f n d -> 1 f n d"),
-                    patch_size,
-                    width_tokens,
-                    height_tokens,
-                ).clip(0.0, 1.0)
-            )
-        ),
-        pad_width,
-    )[0]
-    masked_images = trim_padding(
-        np.asarray(
-            jax.device_get(
-                unpatchify(
-                    rearrange(masked_input[frame_indices], "f n d -> 1 f n d"),
-                    patch_size,
-                    width_tokens,
-                    height_tokens,
-                ).clip(0.0, 1.0)
-            )
-        ),
-        pad_width,
-    )[0]
-
-    originals = np.clip(np.rint(original_images * 255.0), 0, 255).astype(np.uint8)
-    reconstructions = np.clip(np.rint(reconstructed_images * 255.0), 0, 255).astype(
-        np.uint8
-    )
-    masked_inputs = np.clip(np.rint(masked_images * 255.0), 0, 255).astype(np.uint8)
+    originals = originals[frame_indices]
+    reconstructions = reconstructions[frame_indices]
+    masked_inputs = masked_inputs[frame_indices]
 
     col_sep = np.full((originals.shape[1], 2, 3), 255, dtype=np.uint8)
     rows = []
@@ -351,12 +377,12 @@ def main(cfg: DictConfig):
         PreprocessAndPatchify(cfg.dataset.patch_size, cfg.dataset.pad_width),
     ]
 
-    def make_loader(source, *, shuffle: bool, drop_remainder: bool):
+    def make_loader(source, *, shuffle: bool, drop_remainder: bool, seed: int):
         sampler = grain.IndexSampler(
             num_records=len(source),
             shard_options=grain.ShardByJaxProcess(),
             shuffle=shuffle,
-            seed=cfg.seed,
+            seed=seed,
         )
         read_options = grain.ReadOptions(
             num_threads=int(cfg.dataset.num_threads),
@@ -377,9 +403,13 @@ def main(cfg: DictConfig):
         )
 
     _t = time.monotonic()
-    train_dataloader = make_loader(train_source, shuffle=True, drop_remainder=True)
-    eval_dataloader = make_loader(eval_source, shuffle=False, drop_remainder=False)
-    logger.info("DataLoader creation took %.1fs", time.monotonic() - _t)
+    train_dataloader = make_loader(
+        train_source,
+        shuffle=True,
+        drop_remainder=True,
+        seed=int(cfg.seed),
+    )
+    logger.info("Train DataLoader creation took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
     sample_batch = next(iter(train_dataloader))
@@ -459,11 +489,21 @@ def main(cfg: DictConfig):
             t_eval_start = time.monotonic()
             totals: dict[str, float] = {}
             num_batches = 0
+            eval_run_key = jax.random.fold_in(eval_key, step)
+            eval_dataloader = make_loader(
+                eval_source,
+                shuffle=True,
+                drop_remainder=False,
+                seed=int(cfg.seed) + step,
+            )
+            vis_original_batches = []
+            vis_reconstruction_batches = []
+            vis_masked_batches = []
             for batch_idx, eval_batch in enumerate(
                 itertools.islice(iter(eval_dataloader), cfg.dataset.eval.max_batches)
             ):
-                eval_sample_key = jax.random.fold_in(eval_key, batch_idx)
-                batch_metrics = eval_step(
+                eval_sample_key = jax.random.fold_in(eval_run_key, batch_idx)
+                batch_metrics, sampled_frames = eval_step(
                     state,
                     eval_batch,
                     eval_sample_key,
@@ -471,36 +511,35 @@ def main(cfg: DictConfig):
                     patch_size=cfg.dataset.patch_size,
                     width_tokens=cfg.tokenizer.x_len,
                     height_tokens=cfg.tokenizer.y_len,
+                    pad_width=tuple(cfg.dataset.pad_width),
                 )
                 for k, v in batch_metrics.items():
                     totals[k] = totals.get(k, 0.0) + float(v)
-                if batch_idx == 0:
-                    reconstructed, mask = eval_visualization_step(
-                        state, eval_batch, eval_sample_key
-                    )
-                    grid = build_reconstruction_grid(
-                        eval_batch,
-                        reconstructed,
-                        mask,
-                        patch_size=cfg.dataset.patch_size,
-                        width_tokens=cfg.tokenizer.x_len,
-                        height_tokens=cfg.tokenizer.y_len,
-                        pad_width=tuple(cfg.dataset.pad_width),
-                        frame_key=jax.random.fold_in(eval_key, step),
-                        num_frames=int(cfg.dataset.eval.log_frames),
-                    )
-                    wb.log_image(
-                        "eval/reconstructions",
-                        grid,
-                        step=step,
-                        caption="Columns: original, reconstructed, masked input",
-                    )
+                sampled_originals, sampled_reconstructions, sampled_masked_inputs = (
+                    jax.device_get(sampled_frames)
+                )
+                vis_original_batches.append(np.asarray(sampled_originals))
+                vis_reconstruction_batches.append(np.asarray(sampled_reconstructions))
+                vis_masked_batches.append(np.asarray(sampled_masked_inputs))
                 num_batches += 1
             if num_batches > 0:
                 eval_metrics = {k: v / num_batches for k, v in totals.items()}
                 wb.log(
                     {f"eval/{k}": v for k, v in eval_metrics.items()},
                     step=step,
+                )
+                grid = build_reconstruction_grid(
+                    np.concatenate(vis_original_batches, axis=0),
+                    np.concatenate(vis_reconstruction_batches, axis=0),
+                    np.concatenate(vis_masked_batches, axis=0),
+                    frame_key=jax.random.fold_in(eval_run_key, num_batches),
+                    num_frames=int(cfg.dataset.eval.log_frames),
+                )
+                wb.log_image(
+                    "eval/reconstructions",
+                    grid,
+                    step=step,
+                    caption="Columns: original, reconstructed, masked input",
                 )
             t_eval = time.monotonic() - t_eval_start
             logger.info(

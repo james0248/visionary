@@ -210,7 +210,7 @@ class TokenizerDecoder(nn.Module):
 
         x = x[:, :, self.num_latents :, :]
         x = nn.Dense(patch_dim, dtype=self.dtype)(x)
-        return x
+        return nn.sigmoid(x)
 
 
 class Tokenizer(nn.Module):
@@ -288,6 +288,20 @@ class Tokenizer(nn.Module):
 
         independent = self.sample_independent(batch_size)
         mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=mask_prob)
+        temporal_mask = create_temporal_mask(independent, seq_len)
+
+        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+        latent = self.encoder(video, temporal_mask, mask=mask)
+        reconstructed = self.decoder(latent, temporal_mask, patch_dim)
+        return reconstructed, mask
+
+    def reconstruct_eval(
+        self, batch: PreprocessedVideoDataset
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
+
+        independent = jnp.zeros((batch_size,), dtype=bool)
+        mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=0.1)
         temporal_mask = create_temporal_mask(independent, seq_len)
 
         video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
