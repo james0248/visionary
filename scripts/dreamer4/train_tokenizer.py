@@ -76,9 +76,11 @@ def update_loss_ema(
     state: TokenizerTrainState,
     mse_loss: jax.Array,
     lpips_loss: jax.Array,
+    motion_loss: jax.Array,
 ) -> TokenizerTrainState:
     mse_loss = mse_loss.astype(jnp.float32)
     lpips_loss = lpips_loss.astype(jnp.float32)
+    motion_loss = motion_loss.astype(jnp.float32)
     step_size = jnp.asarray(1.0 - LOSS_RMS_DECAY, dtype=mse_loss.dtype)
     return state.replace(
         mse_sq_ema=optax.incremental_update(
@@ -87,6 +89,11 @@ def update_loss_ema(
         lpips_sq_ema=optax.incremental_update(
             jnp.square(lpips_loss),
             state.lpips_sq_ema.astype(lpips_loss.dtype),
+            step_size,
+        ),
+        motion_sq_ema=optax.incremental_update(
+            jnp.square(motion_loss),
+            state.motion_sq_ema.astype(motion_loss.dtype),
             step_size,
         ),
     )
@@ -138,12 +145,14 @@ def compute_loss_metrics(
         motion_loss = jnp.mean(jnp.square(reconstructed_diff - original_diff))
     else:
         motion_loss = jnp.zeros((), dtype=mse_loss.dtype)
+    motion_rms = jnp.sqrt(state.motion_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
+    normalized_motion_loss = motion_loss / jax.lax.stop_gradient(motion_rms)
 
     raw_loss = mse_loss + lpips_weight * lpips_loss + motion_loss_weight * motion_loss
     loss = (
         normalized_mse_loss
         + lpips_weight * normalized_lpips_loss
-        + motion_loss_weight * motion_loss
+        + motion_loss_weight * normalized_motion_loss
     )
     metrics = {
         "loss": loss,
@@ -153,8 +162,10 @@ def compute_loss_metrics(
         "motion_loss": motion_loss,
         "normalized_mse_loss": normalized_mse_loss,
         "normalized_lpips_loss": normalized_lpips_loss,
+        "normalized_motion_loss": normalized_motion_loss,
         "mse_rms": mse_rms,
         "lpips_rms": lpips_rms,
+        "motion_rms": motion_rms,
         "mask_ratio": jnp.mean(mask_f32),
     }
     return loss, metrics
@@ -203,7 +214,12 @@ def train_step(
 
     (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     state = state.apply_gradients(grads=grads)
-    state = update_loss_ema(state, metrics["mse_loss"], metrics["lpips_loss"])
+    state = update_loss_ema(
+        state,
+        metrics["mse_loss"],
+        metrics["lpips_loss"],
+        metrics["motion_loss"],
+    )
     return state, metrics
 
 
@@ -473,6 +489,7 @@ def main(cfg: DictConfig):
         tx=optimizer,
         mse_sq_ema=jnp.ones((), dtype=jnp.float32),
         lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
+        motion_sq_ema=jnp.ones((), dtype=jnp.float32),
     )
     logger.info("TrainState creation took %.1fs", time.monotonic() - _t)
 

@@ -12,3 +12,4 @@ class TargetTrainState(TrainState):
 class TokenizerTrainState(TrainState):
     mse_sq_ema: jax.Array
     lpips_sq_ema: jax.Array
+    motion_sq_ema: jax.Array

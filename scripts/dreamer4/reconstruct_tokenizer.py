@@ -83,6 +83,7 @@ def main():
         tx=optax.adam(0.0),
         mse_sq_ema=jnp.ones((), dtype=jnp.float32),
         lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
+        motion_sq_ema=jnp.ones((), dtype=jnp.float32),
     )
     with CheckpointManager(args.checkpoint_dir, ocp.CheckpointManagerOptions()) as manager:
         state = manager.restore(target=state, step=args.step)
