@@ -75,16 +75,21 @@ def compute_lpips_loss(
 def update_loss_ema(
     state: TokenizerTrainState,
     mse_loss: jax.Array,
+    l1_loss: jax.Array,
     lpips_loss: jax.Array,
     motion_loss: jax.Array,
 ) -> TokenizerTrainState:
     mse_loss = mse_loss.astype(jnp.float32)
+    l1_loss = l1_loss.astype(jnp.float32)
     lpips_loss = lpips_loss.astype(jnp.float32)
     motion_loss = motion_loss.astype(jnp.float32)
     step_size = jnp.asarray(1.0 - LOSS_RMS_DECAY, dtype=mse_loss.dtype)
     return state.replace(
         mse_sq_ema=optax.incremental_update(
             jnp.square(mse_loss), state.mse_sq_ema.astype(mse_loss.dtype), step_size
+        ),
+        l1_sq_ema=optax.incremental_update(
+            jnp.square(l1_loss), state.l1_sq_ema.astype(l1_loss.dtype), step_size
         ),
         lpips_sq_ema=optax.incremental_update(
             jnp.square(lpips_loss),
@@ -104,6 +109,7 @@ def compute_loss_metrics(
     batch: PreprocessedVideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
+    l1_loss_weight: float,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -119,9 +125,17 @@ def compute_loss_metrics(
         jnp.sum(mse_weights) * reconstructed_f32.shape[-1],
         1.0,
     )
-    mse_loss = jnp.sum(jnp.square(reconstructed_f32 - original) * mse_weights) / num_mse
+    reconstruction_error = reconstructed_f32 - original
+    mse_loss = jnp.sum(jnp.square(reconstruction_error) * mse_weights) / num_mse
     mse_rms = jnp.sqrt(state.mse_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     normalized_mse_loss = mse_loss / jax.lax.stop_gradient(mse_rms)
+
+    l1_rms = jnp.sqrt(state.l1_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
+    if l1_loss_weight > 0:
+        l1_loss = jnp.sum(jnp.abs(reconstruction_error) * mse_weights) / num_mse
+    else:
+        l1_loss = jnp.zeros((), dtype=mse_loss.dtype)
+    normalized_l1_loss = l1_loss / jax.lax.stop_gradient(l1_rms)
 
     lpips_rms = jnp.sqrt(state.lpips_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if lpips_weight > 0:
@@ -148,9 +162,15 @@ def compute_loss_metrics(
     motion_rms = jnp.sqrt(state.motion_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     normalized_motion_loss = motion_loss / jax.lax.stop_gradient(motion_rms)
 
-    raw_loss = mse_loss + lpips_weight * lpips_loss + motion_loss_weight * motion_loss
+    raw_loss = (
+        mse_loss
+        + l1_loss_weight * l1_loss
+        + lpips_weight * lpips_loss
+        + motion_loss_weight * motion_loss
+    )
     loss = (
         normalized_mse_loss
+        + l1_loss_weight * normalized_l1_loss
         + lpips_weight * normalized_lpips_loss
         + motion_loss_weight * normalized_motion_loss
     )
@@ -158,12 +178,15 @@ def compute_loss_metrics(
         "loss": loss,
         "raw_loss": raw_loss,
         "mse_loss": mse_loss,
+        "l1_loss": l1_loss,
         "lpips_loss": lpips_loss,
         "motion_loss": motion_loss,
         "normalized_mse_loss": normalized_mse_loss,
+        "normalized_l1_loss": normalized_l1_loss,
         "normalized_lpips_loss": normalized_lpips_loss,
         "normalized_motion_loss": normalized_motion_loss,
         "mse_rms": mse_rms,
+        "l1_rms": l1_rms,
         "lpips_rms": lpips_rms,
         "motion_rms": motion_rms,
         "mask_ratio": jnp.mean(mask_f32),
@@ -174,6 +197,7 @@ def compute_loss_metrics(
 @partial(
     jax.jit,
     static_argnames=(
+        "l1_loss_weight",
         "lpips_weight",
         "motion_loss_weight",
         "masked_mse",
@@ -186,6 +210,7 @@ def train_step(
     state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
+    l1_loss_weight: float,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -204,6 +229,7 @@ def train_step(
             batch,
             reconstructed,
             mask,
+            l1_loss_weight,
             lpips_weight,
             motion_loss_weight,
             masked_mse,
@@ -217,6 +243,7 @@ def train_step(
     state = update_loss_ema(
         state,
         metrics["mse_loss"],
+        metrics["l1_loss"],
         metrics["lpips_loss"],
         metrics["motion_loss"],
     )
@@ -226,6 +253,7 @@ def train_step(
 @partial(
     jax.jit,
     static_argnames=(
+        "l1_loss_weight",
         "lpips_weight",
         "motion_loss_weight",
         "masked_mse",
@@ -239,6 +267,7 @@ def eval_step(
     state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
+    l1_loss_weight: float,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -259,6 +288,7 @@ def eval_step(
         batch,
         reconstructed,
         mask,
+        l1_loss_weight,
         lpips_weight,
         motion_loss_weight,
         masked_mse,
@@ -488,6 +518,7 @@ def main(cfg: DictConfig):
         params=params,
         tx=optimizer,
         mse_sq_ema=jnp.ones((), dtype=jnp.float32),
+        l1_sq_ema=jnp.ones((), dtype=jnp.float32),
         lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
         motion_sq_ema=jnp.ones((), dtype=jnp.float32),
     )
@@ -534,6 +565,7 @@ def main(cfg: DictConfig):
             state,
             batch,
             sample_key,
+            cfg.l1_loss_weight,
             cfg.lpips_weight,
             cfg.motion_loss_weight,
             bool(cfg.masked_mse),
@@ -573,6 +605,7 @@ def main(cfg: DictConfig):
                     state,
                     eval_batch,
                     eval_sample_key,
+                    cfg.l1_loss_weight,
                     cfg.lpips_weight,
                     cfg.motion_loss_weight,
                     bool(cfg.masked_mse),

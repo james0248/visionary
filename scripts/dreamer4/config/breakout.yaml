@@ -1,5 +1,6 @@
 seed: 42
 learning_rate: 2e-4
+l1_loss_weight: 0.0
 lpips_weight: 0.2
 motion_loss_weight: 0.0
 masked_mse: true

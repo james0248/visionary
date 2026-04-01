@@ -82,6 +82,7 @@ def main():
         params=model.init({"params": init_key, "sample": sample_key}, batch),
         tx=optax.adam(0.0),
         mse_sq_ema=jnp.ones((), dtype=jnp.float32),
+        l1_sq_ema=jnp.ones((), dtype=jnp.float32),
         lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
         motion_sq_ema=jnp.ones((), dtype=jnp.float32),
     )
