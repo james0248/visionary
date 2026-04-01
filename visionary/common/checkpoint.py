@@ -79,10 +79,20 @@ class CheckpointManager:
         abstract_target = jax.tree_util.tree_map(
             ocp.utils.to_shape_dtype_struct, target
         )
-        restored = self._manager.restore(
-            step,
-            args=ocp.args.StandardRestore(abstract_target),
-        )
+        try:
+            restored = self._manager.restore(
+                step,
+                args=ocp.args.StandardRestore(abstract_target),
+            )
+        except ValueError as exc:
+            if "Composite" not in str(exc):
+                raise
+            restored = self._manager.restore(
+                step,
+                args=ocp.args.Composite(
+                    default=ocp.args.StandardRestore(abstract_target)
+                ),
+            )["default"]
         logger.info("Checkpoint restored from step %d in %s", step, self.directory)
 
         if params_only:
