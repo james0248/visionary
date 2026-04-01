@@ -98,6 +98,7 @@ def compute_loss_metrics(
     reconstructed: jax.Array,
     mask: jax.Array,
     lpips_weight: float,
+    motion_loss_weight: float,
     masked_mse: bool,
     patch_size: int,
     width_tokens: int,
@@ -131,13 +132,25 @@ def compute_loss_metrics(
         lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
     normalized_lpips_loss = lpips_loss / jax.lax.stop_gradient(lpips_rms)
 
-    raw_loss = mse_loss + lpips_weight * lpips_loss
-    loss = normalized_mse_loss + lpips_weight * normalized_lpips_loss
+    if motion_loss_weight > 0 and reconstructed_f32.shape[1] > 1:
+        reconstructed_diff = reconstructed_f32[:, 1:] - reconstructed_f32[:, :-1]
+        original_diff = original[:, 1:] - original[:, :-1]
+        motion_loss = jnp.mean(jnp.square(reconstructed_diff - original_diff))
+    else:
+        motion_loss = jnp.zeros((), dtype=mse_loss.dtype)
+
+    raw_loss = mse_loss + lpips_weight * lpips_loss + motion_loss_weight * motion_loss
+    loss = (
+        normalized_mse_loss
+        + lpips_weight * normalized_lpips_loss
+        + motion_loss_weight * motion_loss
+    )
     metrics = {
         "loss": loss,
         "raw_loss": raw_loss,
         "mse_loss": mse_loss,
         "lpips_loss": lpips_loss,
+        "motion_loss": motion_loss,
         "normalized_mse_loss": normalized_mse_loss,
         "normalized_lpips_loss": normalized_lpips_loss,
         "mse_rms": mse_rms,
@@ -151,6 +164,7 @@ def compute_loss_metrics(
     jax.jit,
     static_argnames=(
         "lpips_weight",
+        "motion_loss_weight",
         "masked_mse",
         "patch_size",
         "width_tokens",
@@ -162,6 +176,7 @@ def train_step(
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
     lpips_weight: float,
+    motion_loss_weight: float,
     masked_mse: bool,
     patch_size: int,
     width_tokens: int,
@@ -179,6 +194,7 @@ def train_step(
             reconstructed,
             mask,
             lpips_weight,
+            motion_loss_weight,
             masked_mse,
             patch_size,
             width_tokens,
@@ -195,6 +211,7 @@ def train_step(
     jax.jit,
     static_argnames=(
         "lpips_weight",
+        "motion_loss_weight",
         "masked_mse",
         "patch_size",
         "width_tokens",
@@ -207,6 +224,7 @@ def eval_step(
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
     lpips_weight: float,
+    motion_loss_weight: float,
     masked_mse: bool,
     patch_size: int,
     width_tokens: int,
@@ -226,6 +244,7 @@ def eval_step(
         reconstructed,
         mask,
         lpips_weight,
+        motion_loss_weight,
         masked_mse,
         patch_size,
         width_tokens,
@@ -499,6 +518,7 @@ def main(cfg: DictConfig):
             batch,
             sample_key,
             cfg.lpips_weight,
+            cfg.motion_loss_weight,
             bool(cfg.masked_mse),
             patch_size=cfg.dataset.patch_size,
             width_tokens=cfg.tokenizer.x_len,
@@ -537,6 +557,7 @@ def main(cfg: DictConfig):
                     eval_batch,
                     eval_sample_key,
                     cfg.lpips_weight,
+                    cfg.motion_loss_weight,
                     bool(cfg.masked_mse),
                     patch_size=cfg.dataset.patch_size,
                     width_tokens=cfg.tokenizer.x_len,
