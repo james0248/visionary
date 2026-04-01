@@ -70,6 +70,7 @@ class TokenizerEncoder(nn.Module):
     y_len: int
 
     base: float
+    bottleneck_tanh: bool = True
     attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
@@ -135,7 +136,8 @@ class TokenizerEncoder(nn.Module):
 
         latent = x[:, :, : self.num_latents, :]
         latent = nn.Dense(self.channel_dim, dtype=self.dtype)(latent)
-        latent = jnp.tanh(latent)
+        if self.bottleneck_tanh:
+            latent = jnp.tanh(latent)
         return latent
 
 
@@ -232,6 +234,7 @@ class Tokenizer(nn.Module):
 
     base: float
     decoder_single_image_token: bool = False
+    bottleneck_tanh: bool = True
     independent_prob: float = 0.3
     mask_prob_min: float = 0.0
     mask_prob_max: float = 0.9
@@ -251,6 +254,7 @@ class Tokenizer(nn.Module):
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
+            bottleneck_tanh=self.bottleneck_tanh,
             attention_logit_soft_cap=self.attention_logit_soft_cap,
             dtype=self.dtype,
         )

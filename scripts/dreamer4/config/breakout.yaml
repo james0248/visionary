@@ -38,6 +38,7 @@ tokenizer:
   y_len: 12
   base: 10000.0
   decoder_single_image_token: false
+  bottleneck_tanh: true
   independent_prob: 0.3
   attention_logit_soft_cap: 50.0
 
