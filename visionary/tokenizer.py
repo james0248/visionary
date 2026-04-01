@@ -324,3 +324,10 @@ class Tokenizer(nn.Module):
         )
         video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
         return self.encoder(video, temporal_mask)
+
+    def decode(self, latent: jnp.ndarray, patch_dim: int) -> jnp.ndarray:
+        batch_size, seq_len, _, _ = latent.shape
+        temporal_mask = create_temporal_mask(
+            jnp.zeros((batch_size,), dtype=bool), seq_len
+        )
+        return self.decoder(latent, temporal_mask, patch_dim)
