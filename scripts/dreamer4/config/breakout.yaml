@@ -1,9 +1,9 @@
 seed: 42
 learning_rate: 2e-4
 reconstruction_loss: mse
-lpips_weight: 0.2
+lpips_weight: 0.1
 motion_loss_weight: 0.0
-masked_mse: true
+masked_mse: false
 log_interval: 100
 eval_steps: 1000
 total_steps: 150000
@@ -14,12 +14,12 @@ dataset:
   train_dir: data/train/
   eval_dir: data/eval/
   frame_length: 32
-  batch_size: 8
+  batch_size: 2
   # Chunked records keep first-batch startup predictable on local storage.
   worker_count: 0
   num_threads: 2
   prefetch_buffer_size: 2
-  resize_shape: [96, 96]
+  resize_shape: [168, 120]
   patch_size: 8
   pad_width: [0, 0]
   eval:
@@ -29,18 +29,18 @@ dataset:
 tokenizer:
   _target_: visionary.tokenizer.Tokenizer
   num_layers: 8
-  num_latents: 64
-  num_heads: 6
+  num_latents: 96
+  num_heads: 8
   num_kv_heads: 2
-  model_dim: 384
+  model_dim: 256
   head_dim: 64
-  mlp_hidden_dim: 1024
+  mlp_hidden_dim: 768
   channel_dim: 24
-  x_len: 12
-  y_len: 12
+  x_len: 21
+  y_len: 15
   base: 10000.0
   decoder_single_image_token: false
-  bottleneck_norm: tanh
+  bottleneck_norm: rmsnorm
   independent_prob: 0.3
   attention_logit_soft_cap: 50.0
 
