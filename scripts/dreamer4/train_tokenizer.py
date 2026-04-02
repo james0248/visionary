@@ -110,6 +110,7 @@ def compute_loss_metrics(
     reconstructed: jax.Array,
     mask: jax.Array,
     reconstruction_loss: str,
+    motion_weighted_mse: bool,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -120,18 +121,31 @@ def compute_loss_metrics(
     reconstructed_f32 = reconstructed.astype(jnp.float32)
     original = batch["video"].astype(jnp.float32) / 255.0
     mask_f32 = jnp.expand_dims(mask, axis=-1).astype(reconstructed_f32.dtype)
-    mse_weights = mask_f32 if masked_mse else jnp.ones_like(mask_f32)
-    num_mse = jnp.maximum(
-        jnp.sum(mse_weights) * reconstructed_f32.shape[-1],
-        1.0,
-    )
     reconstruction_error = reconstructed_f32 - original
+    mse_weights = mask_f32 if masked_mse else jnp.ones_like(reconstruction_error)
+    if masked_mse:
+        mse_weights = jnp.broadcast_to(mse_weights, reconstruction_error.shape)
+    if motion_weighted_mse:
+        frame_diffs = jnp.abs(original[:, 1:] - original[:, :-1])
+        motion_magnitude = jnp.maximum(
+            jnp.pad(frame_diffs, ((0, 0), (1, 0), (0, 0), (0, 0)), constant_values=0),
+            jnp.pad(frame_diffs, ((0, 0), (0, 1), (0, 0), (0, 0)), constant_values=0),
+        )
+        motion_scale = motion_magnitude / (
+            jax.lax.stop_gradient(jnp.mean(motion_magnitude) + LOSS_RMS_EPS)
+        )
+        mse_weights = mse_weights * (1.0 + motion_scale)
+    num_mse = jnp.maximum(jnp.sum(mse_weights), 1.0)
     mse_loss = jnp.sum(jnp.square(reconstruction_error) * mse_weights) / num_mse
     mse_rms = jnp.sqrt(state.mse_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     normalized_mse_loss = mse_loss / jax.lax.stop_gradient(mse_rms)
 
     l1_rms = jnp.sqrt(state.l1_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
-    l1_loss = jnp.sum(jnp.abs(reconstruction_error) * mse_weights) / num_mse
+    l1_base_weights = mask_f32 if masked_mse else jnp.ones_like(reconstruction_error)
+    if masked_mse:
+        l1_base_weights = jnp.broadcast_to(l1_base_weights, reconstruction_error.shape)
+    num_l1 = jnp.maximum(jnp.sum(l1_base_weights), 1.0)
+    l1_loss = jnp.sum(jnp.abs(reconstruction_error) * l1_base_weights) / num_l1
     normalized_l1_loss = l1_loss / jax.lax.stop_gradient(l1_rms)
 
     if reconstruction_loss == "mse":
@@ -200,6 +214,7 @@ def compute_loss_metrics(
     jax.jit,
     static_argnames=(
         "reconstruction_loss",
+        "motion_weighted_mse",
         "lpips_weight",
         "motion_loss_weight",
         "masked_mse",
@@ -213,6 +228,7 @@ def train_step(
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
     reconstruction_loss: str,
+    motion_weighted_mse: bool,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -232,6 +248,7 @@ def train_step(
             reconstructed,
             mask,
             reconstruction_loss,
+            motion_weighted_mse,
             lpips_weight,
             motion_loss_weight,
             masked_mse,
@@ -256,6 +273,7 @@ def train_step(
     jax.jit,
     static_argnames=(
         "reconstruction_loss",
+        "motion_weighted_mse",
         "lpips_weight",
         "motion_loss_weight",
         "masked_mse",
@@ -270,6 +288,7 @@ def eval_step(
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
     reconstruction_loss: str,
+    motion_weighted_mse: bool,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -291,6 +310,7 @@ def eval_step(
         reconstructed,
         mask,
         reconstruction_loss,
+        motion_weighted_mse,
         lpips_weight,
         motion_loss_weight,
         masked_mse,
@@ -568,6 +588,7 @@ def main(cfg: DictConfig):
             batch,
             sample_key,
             cfg.reconstruction_loss,
+            bool(cfg.motion_weighted_mse),
             cfg.lpips_weight,
             cfg.motion_loss_weight,
             bool(cfg.masked_mse),
@@ -608,6 +629,7 @@ def main(cfg: DictConfig):
                     eval_batch,
                     eval_sample_key,
                     cfg.reconstruction_loss,
+                    bool(cfg.motion_weighted_mse),
                     cfg.lpips_weight,
                     cfg.motion_loss_weight,
                     bool(cfg.masked_mse),
