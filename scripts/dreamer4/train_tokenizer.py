@@ -109,7 +109,7 @@ def compute_loss_metrics(
     batch: PreprocessedVideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
-    l1_loss_weight: float,
+    reconstruction_loss: str,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -131,11 +131,17 @@ def compute_loss_metrics(
     normalized_mse_loss = mse_loss / jax.lax.stop_gradient(mse_rms)
 
     l1_rms = jnp.sqrt(state.l1_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
-    if l1_loss_weight > 0:
-        l1_loss = jnp.sum(jnp.abs(reconstruction_error) * mse_weights) / num_mse
-    else:
-        l1_loss = jnp.zeros((), dtype=mse_loss.dtype)
+    l1_loss = jnp.sum(jnp.abs(reconstruction_error) * mse_weights) / num_mse
     normalized_l1_loss = l1_loss / jax.lax.stop_gradient(l1_rms)
+
+    if reconstruction_loss == "mse":
+        raw_reconstruction_loss = mse_loss
+        normalized_reconstruction_loss = normalized_mse_loss
+    elif reconstruction_loss == "l1":
+        raw_reconstruction_loss = l1_loss
+        normalized_reconstruction_loss = normalized_l1_loss
+    else:
+        raise ValueError(f"Unknown reconstruction_loss: {reconstruction_loss}")
 
     lpips_rms = jnp.sqrt(state.lpips_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if lpips_weight > 0:
@@ -162,25 +168,21 @@ def compute_loss_metrics(
     motion_rms = jnp.sqrt(state.motion_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     normalized_motion_loss = motion_loss / jax.lax.stop_gradient(motion_rms)
 
-    raw_loss = (
-        mse_loss
-        + l1_loss_weight * l1_loss
-        + lpips_weight * lpips_loss
-        + motion_loss_weight * motion_loss
-    )
+    raw_loss = raw_reconstruction_loss + lpips_weight * lpips_loss + motion_loss_weight * motion_loss
     loss = (
-        normalized_mse_loss
-        + l1_loss_weight * normalized_l1_loss
+        normalized_reconstruction_loss
         + lpips_weight * normalized_lpips_loss
         + motion_loss_weight * normalized_motion_loss
     )
     metrics = {
         "loss": loss,
         "raw_loss": raw_loss,
+        "raw_reconstruction_loss": raw_reconstruction_loss,
         "mse_loss": mse_loss,
         "l1_loss": l1_loss,
         "lpips_loss": lpips_loss,
         "motion_loss": motion_loss,
+        "normalized_reconstruction_loss": normalized_reconstruction_loss,
         "normalized_mse_loss": normalized_mse_loss,
         "normalized_l1_loss": normalized_l1_loss,
         "normalized_lpips_loss": normalized_lpips_loss,
@@ -197,7 +199,7 @@ def compute_loss_metrics(
 @partial(
     jax.jit,
     static_argnames=(
-        "l1_loss_weight",
+        "reconstruction_loss",
         "lpips_weight",
         "motion_loss_weight",
         "masked_mse",
@@ -210,7 +212,7 @@ def train_step(
     state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
-    l1_loss_weight: float,
+    reconstruction_loss: str,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -229,7 +231,7 @@ def train_step(
             batch,
             reconstructed,
             mask,
-            l1_loss_weight,
+            reconstruction_loss,
             lpips_weight,
             motion_loss_weight,
             masked_mse,
@@ -253,7 +255,7 @@ def train_step(
 @partial(
     jax.jit,
     static_argnames=(
-        "l1_loss_weight",
+        "reconstruction_loss",
         "lpips_weight",
         "motion_loss_weight",
         "masked_mse",
@@ -267,7 +269,7 @@ def eval_step(
     state: TokenizerTrainState,
     batch: PreprocessedVideoDataset,
     sample_key: jax.Array,
-    l1_loss_weight: float,
+    reconstruction_loss: str,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -288,7 +290,7 @@ def eval_step(
         batch,
         reconstructed,
         mask,
-        l1_loss_weight,
+        reconstruction_loss,
         lpips_weight,
         motion_loss_weight,
         masked_mse,
@@ -565,7 +567,7 @@ def main(cfg: DictConfig):
             state,
             batch,
             sample_key,
-            cfg.l1_loss_weight,
+            cfg.reconstruction_loss,
             cfg.lpips_weight,
             cfg.motion_loss_weight,
             bool(cfg.masked_mse),
@@ -605,7 +607,7 @@ def main(cfg: DictConfig):
                     state,
                     eval_batch,
                     eval_sample_key,
-                    cfg.l1_loss_weight,
+                    cfg.reconstruction_loss,
                     cfg.lpips_weight,
                     cfg.motion_loss_weight,
                     bool(cfg.masked_mse),
