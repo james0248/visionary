@@ -19,8 +19,8 @@ from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import (
     PreprocessAndPatchify,
-    PreprocessedVideoDataset,
     RandomVideoCrop,
+    VideoDataset,
     VideoDataSource,
 )
 from visionary.tokenizer import Tokenizer
@@ -106,7 +106,7 @@ def update_loss_ema(
 
 def compute_loss_metrics(
     state: TokenizerTrainState,
-    batch: PreprocessedVideoDataset,
+    batch: VideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
     reconstruction_loss: str,
@@ -159,8 +159,8 @@ def compute_loss_metrics(
 
     lpips_rms = jnp.sqrt(state.lpips_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if lpips_weight > 0:
-        inpainted_reconstruction = (
-            reconstructed_f32 * mask_f32 + original * (1.0 - mask_f32)
+        inpainted_reconstruction = reconstructed_f32 * mask_f32 + original * (
+            1.0 - mask_f32
         )
         lpips_loss = compute_lpips_loss(
             original,
@@ -182,7 +182,11 @@ def compute_loss_metrics(
     motion_rms = jnp.sqrt(state.motion_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     normalized_motion_loss = motion_loss / jax.lax.stop_gradient(motion_rms)
 
-    raw_loss = raw_reconstruction_loss + lpips_weight * lpips_loss + motion_loss_weight * motion_loss
+    raw_loss = (
+        raw_reconstruction_loss
+        + lpips_weight * lpips_loss
+        + motion_loss_weight * motion_loss
+    )
     loss = (
         normalized_reconstruction_loss
         + lpips_weight * normalized_lpips_loss
@@ -225,7 +229,7 @@ def compute_loss_metrics(
 )
 def train_step(
     state: TokenizerTrainState,
-    batch: PreprocessedVideoDataset,
+    batch: VideoDataset,
     sample_key: jax.Array,
     reconstruction_loss: str,
     motion_weighted_mse: bool,
@@ -285,7 +289,7 @@ def train_step(
 )
 def eval_step(
     state: TokenizerTrainState,
-    batch: PreprocessedVideoDataset,
+    batch: VideoDataset,
     sample_key: jax.Array,
     reconstruction_loss: str,
     motion_weighted_mse: bool,
@@ -357,7 +361,7 @@ def patches_to_images(
 
 
 def sample_sequence_frames(
-    batch: PreprocessedVideoDataset,
+    batch: VideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
     *,
@@ -519,7 +523,9 @@ def main(cfg: DictConfig):
     sample_batch = next(iter(train_dataloader))
     logger.info("First batch fetch took %.1fs", time.monotonic() - _t)
     if bool(cfg.overfit_single_batch):
-        logger.info("Overfit mode enabled: reusing the first sampled batch for training.")
+        logger.info(
+            "Overfit mode enabled: reusing the first sampled batch for training."
+        )
 
     _t = time.monotonic()
     key = jax.random.key(cfg.seed)

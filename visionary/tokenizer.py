@@ -2,7 +2,7 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 
-from visionary.dataset import PreprocessedVideoDataset
+from visionary.dataset import VideoDataset
 from visionary.transformer import (
     SpatioTemporalTransformer,
     create_spatial_rope,
@@ -307,14 +307,12 @@ class Tokenizer(nn.Module):
             )
         else:
             mask_prob = jnp.full((batch_size, seq_len), mask_prob)
-        rand_vals = jax.random.uniform(
-            rng, shape=(batch_size, seq_len, num_tokens)
-        )
+        rand_vals = jax.random.uniform(rng, shape=(batch_size, seq_len, num_tokens))
         return rand_vals < jnp.expand_dims(mask_prob, axis=-1)
 
     def __call__(
         self,
-        batch: PreprocessedVideoDataset,
+        batch: VideoDataset,
         mask_prob: float | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
@@ -328,9 +326,7 @@ class Tokenizer(nn.Module):
         reconstructed = self.decoder(latent, temporal_mask, patch_dim)
         return reconstructed, mask
 
-    def reconstruct_eval(
-        self, batch: PreprocessedVideoDataset
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+    def reconstruct_eval(self, batch: VideoDataset) -> tuple[jnp.ndarray, jnp.ndarray]:
         batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
 
         independent = jnp.zeros((batch_size,), dtype=bool)
@@ -342,7 +338,7 @@ class Tokenizer(nn.Module):
         reconstructed = self.decoder(latent, temporal_mask, patch_dim)
         return reconstructed, mask
 
-    def encode(self, batch: PreprocessedVideoDataset) -> jnp.ndarray:
+    def encode(self, batch: VideoDataset) -> jnp.ndarray:
         batch_size, seq_len, _, _ = batch["video"].shape
         temporal_mask = create_temporal_mask(
             jnp.zeros((batch_size,), dtype=bool), seq_len

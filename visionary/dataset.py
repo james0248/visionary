@@ -12,10 +12,6 @@ class VideoDataset(TypedDict):
     video: np.ndarray
 
 
-class PreprocessedVideoDataset(TypedDict):
-    video: np.ndarray
-
-
 class VideoDataSource(grain.RandomAccessDataSource):
     def __init__(self, data_dir: str):
         shard_dir = epath.Path(data_dir)
@@ -46,7 +42,9 @@ class RandomVideoCrop(grain.RandomMapTransform):
     ) -> VideoDataset:
         video = element["video"]
         start_idx = int(rng.integers(0, len(video) - self.frame_length + 1))
-        return VideoDataset(video=video[start_idx : start_idx + self.frame_length].copy())
+        return VideoDataset(
+            video=video[start_idx : start_idx + self.frame_length].copy()
+        )
 
 
 class PreprocessAndPatchify(grain.RandomMapTransform):
@@ -62,7 +60,7 @@ class PreprocessAndPatchify(grain.RandomMapTransform):
 
     def random_map(
         self, element: VideoDataset, rng: np.random.Generator
-    ) -> PreprocessedVideoDataset:
+    ) -> VideoDataset:
         video = element["video"]
         if self.resize_shape is not None:
             video = np.clip(
