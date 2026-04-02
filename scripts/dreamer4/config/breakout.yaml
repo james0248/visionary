@@ -36,8 +36,8 @@ tokenizer:
   head_dim: 64
   mlp_hidden_dim: 768
   channel_dim: 24
-  x_len: 15
-  y_len: 21
+  x_len: 21
+  y_len: 15
   base: 10000.0
   decoder_single_image_token: false
   bottleneck_norm: rmsnorm
