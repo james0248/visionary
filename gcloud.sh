@@ -2,12 +2,52 @@
 
 set -euo pipefail
 
-PROJECT_ID="${1:-}"
+PROJECT_ID=""
+LOGOUT=0
 SDK_ROOT="${HOME}/google-cloud-sdk"
 SDK_BIN="${SDK_ROOT}/bin"
 SDK_BIN_GCLOUD="${SDK_BIN}/gcloud"
 PATH_BLOCK_START="# >>> google-cloud-sdk >>>"
 PATH_BLOCK_END="# <<< google-cloud-sdk <<<"
+
+usage() {
+    echo "Usage: ./gcloud.sh [PROJECT_ID]"
+    echo "       ./gcloud.sh --logout"
+}
+
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --logout|-l)
+                LOGOUT=1
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                usage >&2
+                exit 1
+                ;;
+            *)
+                if [ -n "${PROJECT_ID}" ]; then
+                    echo "Only one project id can be provided." >&2
+                    usage >&2
+                    exit 1
+                fi
+                PROJECT_ID="$1"
+                ;;
+        esac
+        shift
+    done
+
+    if [ "${LOGOUT}" -eq 1 ] && [ -n "${PROJECT_ID}" ]; then
+        echo "The --logout flag cannot be combined with a project id." >&2
+        usage >&2
+        exit 1
+    fi
+}
 
 detect_archive_name() {
     local os arch
@@ -95,6 +135,40 @@ ensure_gcloud() {
     "${SDK_ROOT}/install.sh" --quiet --path-update=false
     export PATH="${SDK_BIN}:${PATH}"
 }
+
+use_existing_gcloud() {
+    if command -v gcloud >/dev/null 2>&1; then
+        echo "Using existing gcloud installation: $(command -v gcloud)"
+        return 0
+    fi
+
+    if [ -x "${SDK_BIN_GCLOUD}" ]; then
+        export PATH="${SDK_BIN}:${PATH}"
+        echo "Using local gcloud installation: ${SDK_BIN_GCLOUD}"
+        return 0
+    fi
+
+    return 1
+}
+
+logout_gcloud() {
+    if ! use_existing_gcloud; then
+        echo "gcloud is not installed. Nothing to log out."
+        exit 0
+    fi
+
+    gcloud auth revoke --all --quiet || true
+    gcloud auth application-default revoke --quiet || true
+
+    echo "Logged out from gcloud."
+}
+
+parse_args "$@"
+
+if [ "${LOGOUT}" -eq 1 ]; then
+    logout_gcloud
+    exit 0
+fi
 
 ensure_gcloud
 persist_path
