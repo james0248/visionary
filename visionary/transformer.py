@@ -105,6 +105,7 @@ class Attention(nn.Module):
         v = jnp.repeat(v, repeats=num_groups, axis=2)
 
         out = jax.nn.dot_product_attention(q, k, v, mask=mask, scale=1.0 / jnp.sqrt(self.head_dim))
+        out = rearrange(out, "b t h d -> b t (h d)")
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
 
         return out
