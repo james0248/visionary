@@ -156,9 +156,7 @@ def main():
     original = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
     patch_dim = int(batch["video"].shape[-1])
 
-    latent = state.apply_fn(state.params, batch, method=Tokenizer.encode).astype(
-        jnp.float32
-    )
+    latent = state.apply_fn(state.params, batch, method=Tokenizer.encode).astype(jnp.float32)
     reconstructed = state.apply_fn(
         state.params,
         latent,
@@ -199,9 +197,7 @@ def main():
         "mse_shuffled_latent": compute_mse(shuffled_latent, original),
         "mse_mean_baseline": compute_mse(mean_baseline, original),
         "recon_vs_zero_l1": float(jnp.mean(jnp.abs(reconstructed - zero_latent))),
-        "recon_vs_shuffled_l1": float(
-            jnp.mean(jnp.abs(reconstructed - shuffled_latent))
-        ),
+        "recon_vs_shuffled_l1": float(jnp.mean(jnp.abs(reconstructed - shuffled_latent))),
     }
 
     original_images = patches_to_images(

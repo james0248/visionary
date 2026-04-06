@@ -76,9 +76,7 @@ class CheckpointManager:
             if step is None:
                 raise FileNotFoundError(f"No checkpoints found in {self.directory}")
 
-        abstract_target = jax.tree_util.tree_map(
-            ocp.utils.to_shape_dtype_struct, target
-        )
+        abstract_target = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, target)
         try:
             restored = self._manager.restore(
                 step,
@@ -89,9 +87,7 @@ class CheckpointManager:
                 raise
             restored = self._manager.restore(
                 step,
-                args=ocp.args.Composite(
-                    default=ocp.args.StandardRestore(abstract_target)
-                ),
+                args=ocp.args.Composite(default=ocp.args.StandardRestore(abstract_target)),
             )["default"]
         logger.info("Checkpoint restored from step %d in %s", step, self.directory)
 

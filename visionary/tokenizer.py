@@ -127,9 +127,7 @@ class TokenizerEncoder(nn.Module):
             t=seq_len,
             total_tokens=num_tokens + self.num_latents,
             spatial_rope_emb=spatial_rope,
-            spatial_mask=create_spatial_mask(
-                num_tokens, self.num_latents, encoder=True
-            ),
+            spatial_mask=create_spatial_mask(num_tokens, self.num_latents, encoder=True),
             temporal_rope_emb=temporal_rope,
             temporal_mask=temporal_mask,
         )
@@ -213,9 +211,7 @@ class TokenizerDecoder(nn.Module):
             t=seq_len,
             total_tokens=num_tokens + self.num_latents,
             spatial_rope_emb=spatial_rope,
-            spatial_mask=create_spatial_mask(
-                num_tokens, self.num_latents, encoder=False
-            ),
+            spatial_mask=create_spatial_mask(num_tokens, self.num_latents, encoder=False),
             temporal_rope_emb=temporal_rope,
             temporal_mask=temporal_mask,
         )
@@ -340,15 +336,11 @@ class Tokenizer(nn.Module):
 
     def encode(self, batch: VideoDataset) -> jnp.ndarray:
         batch_size, seq_len, _, _ = batch["video"].shape
-        temporal_mask = create_temporal_mask(
-            jnp.zeros((batch_size,), dtype=bool), seq_len
-        )
+        temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
         video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
         return self.encoder(video, temporal_mask)
 
     def decode(self, latent: jnp.ndarray, patch_dim: int) -> jnp.ndarray:
         batch_size, seq_len, _, _ = latent.shape
-        temporal_mask = create_temporal_mask(
-            jnp.zeros((batch_size,), dtype=bool), seq_len
-        )
+        temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
         return self.decoder(latent, temporal_mask, patch_dim)

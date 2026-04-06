@@ -87,13 +87,9 @@ def train_step(
         q_values = state.apply_fn(params, obs)
         q_values_next = state.apply_fn(state.target_params, next_obs)
 
-        q_values = jnp.take_along_axis(
-            q_values, actions.astype(jnp.int32), axis=1
-        ).squeeze(-1)
+        q_values = jnp.take_along_axis(q_values, actions.astype(jnp.int32), axis=1).squeeze(-1)
         q_values_next = jnp.max(q_values_next, axis=1)
-        q_values_target = jax.lax.stop_gradient(
-            rewards + (1 - dones) * gamma * q_values_next
-        )
+        q_values_target = jax.lax.stop_gradient(rewards + (1 - dones) * gamma * q_values_next)
         loss = jnp.mean((q_values_target - q_values) ** 2)
 
         return loss, (jnp.mean(q_values), jnp.mean(q_values_next))
@@ -186,9 +182,7 @@ def main(cfg: DictConfig):
             cfg.start_epsilon, cfg.end_epsilon, exploration_duration, global_step
         )
         actions = select_action(state, obs, action_key, jnp.array(epsilon), action_size)
-        next_obs, rewards, terminated, truncated, infos = env.step(
-            jax.device_get(actions)
-        )
+        next_obs, rewards, terminated, truncated, infos = env.step(jax.device_get(actions))
         dones = np.logical_or(terminated, truncated)
 
         if np.any(truncated):
@@ -229,16 +223,11 @@ def main(cfg: DictConfig):
                 state=state,
                 force=True,
             )
-            steps, reward, video_path = record_rollout(
-                eval_env, state, output_dir, global_step
-            )
+            steps, reward, video_path = record_rollout(eval_env, state, output_dir, global_step)
             wb.log({"eval/steps": steps, "eval/reward": reward}, step=global_step)
             wb.log_video("eval/rollout", video_path, step=global_step)
 
-        if (
-            global_step >= cfg.learning_starts
-            and global_step % cfg.train_freq < cfg.n_envs
-        ):
+        if global_step >= cfg.learning_starts and global_step % cfg.train_freq < cfg.n_envs:
             n_updates = max(1, cfg.n_envs // cfg.train_freq)
             for _ in range(n_updates):
                 batch = replay_buffer.sample(cfg.batch_size)

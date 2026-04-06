@@ -59,9 +59,7 @@ def compute_lpips_loss(
     height_tokens: int,
 ) -> jax.Array:
     original_images = unpatchify(original, patch_size, width_tokens, height_tokens)
-    reconstructed_images = unpatchify(
-        reconstructed, patch_size, width_tokens, height_tokens
-    )
+    reconstructed_images = unpatchify(reconstructed, patch_size, width_tokens, height_tokens)
     original_images, reconstructed_images = (
         original_images * 2.0 - 1.0,
         reconstructed_images * 2.0 - 1.0,
@@ -159,9 +157,7 @@ def compute_loss_metrics(
 
     lpips_rms = jnp.sqrt(state.lpips_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if lpips_weight > 0:
-        inpainted_reconstruction = reconstructed_f32 * mask_f32 + original * (
-            1.0 - mask_f32
-        )
+        inpainted_reconstruction = reconstructed_f32 * mask_f32 + original * (1.0 - mask_f32)
         lpips_loss = compute_lpips_loss(
             original,
             inpainted_reconstruction,
@@ -183,9 +179,7 @@ def compute_loss_metrics(
     normalized_motion_loss = motion_loss / jax.lax.stop_gradient(motion_rms)
 
     raw_loss = (
-        raw_reconstruction_loss
-        + lpips_weight * lpips_loss
-        + motion_loss_weight * motion_loss
+        raw_reconstruction_loss + lpips_weight * lpips_loss + motion_loss_weight * motion_loss
     )
     loss = (
         normalized_reconstruction_loss
@@ -421,9 +415,7 @@ def build_reconstruction_grid(
     num_frames = min(int(num_frames), total_frames)
     frame_indices = np.asarray(
         jax.device_get(
-            jax.random.choice(
-                frame_key, total_frames, shape=(num_frames,), replace=False
-            )
+            jax.random.choice(frame_key, total_frames, shape=(num_frames,), replace=False)
         )
     )
 
@@ -465,9 +457,7 @@ def main(cfg: DictConfig):
         len(train_source),
         len(eval_source),
     )
-    effective_read_threads = max(int(cfg.dataset.worker_count), 1) * int(
-        cfg.dataset.num_threads
-    )
+    effective_read_threads = max(int(cfg.dataset.worker_count), 1) * int(cfg.dataset.num_threads)
     logger.info(
         "Data loader settings: worker_count=%d num_threads=%d "
         "prefetch_buffer_size=%d effective_read_threads=%d",
@@ -523,9 +513,7 @@ def main(cfg: DictConfig):
     sample_batch = next(iter(train_dataloader))
     logger.info("First batch fetch took %.1fs", time.monotonic() - _t)
     if bool(cfg.overfit_single_batch):
-        logger.info(
-            "Overfit mode enabled: reusing the first sampled batch for training."
-        )
+        logger.info("Overfit mode enabled: reusing the first sampled batch for training.")
 
     _t = time.monotonic()
     key = jax.random.key(cfg.seed)
@@ -578,9 +566,7 @@ def main(cfg: DictConfig):
 
     t0 = time.monotonic()
     train_batches = (
-        itertools.repeat(sample_batch)
-        if bool(cfg.overfit_single_batch)
-        else train_dataloader
+        itertools.repeat(sample_batch) if bool(cfg.overfit_single_batch) else train_dataloader
     )
     for batch in train_batches:
         t1 = time.monotonic()
@@ -622,9 +608,7 @@ def main(cfg: DictConfig):
                     drop_remainder=False,
                     seed=int(cfg.seed) + step,
                 )
-                eval_batches = itertools.islice(
-                    iter(eval_dataloader), cfg.dataset.eval.max_batches
-                )
+                eval_batches = itertools.islice(iter(eval_dataloader), cfg.dataset.eval.max_batches)
             vis_original_batches = []
             vis_reconstruction_batches = []
             vis_masked_batches = []
@@ -646,8 +630,8 @@ def main(cfg: DictConfig):
                 )
                 for k, v in batch_metrics.items():
                     totals[k] = totals.get(k, 0.0) + float(v)
-                sampled_originals, sampled_reconstructions, sampled_masked_inputs = (
-                    jax.device_get(sampled_frames)
+                sampled_originals, sampled_reconstructions, sampled_masked_inputs = jax.device_get(
+                    sampled_frames
                 )
                 vis_original_batches.append(np.asarray(sampled_originals))
                 vis_reconstruction_batches.append(np.asarray(sampled_reconstructions))
@@ -673,9 +657,7 @@ def main(cfg: DictConfig):
                     caption="Columns: original, reconstructed, masked input",
                 )
             t_eval = time.monotonic() - t_eval_start
-            logger.info(
-                "Eval at step %d — %d batches in %.3fs", step, num_batches, t_eval
-            )
+            logger.info("Eval at step %d — %d batches in %.3fs", step, num_batches, t_eval)
 
         if step % cfg.log_interval == 0:
             wb.log(
@@ -696,9 +678,7 @@ def main(cfg: DictConfig):
             t4 - t3 - t_eval,
         )
         if step >= total_steps:
-            logger.info(
-                "Reached total_steps=%d; stopping tokenizer training.", total_steps
-            )
+            logger.info("Reached total_steps=%d; stopping tokenizer training.", total_steps)
             break
         t0 = time.monotonic()
 

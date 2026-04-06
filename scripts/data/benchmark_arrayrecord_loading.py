@@ -92,13 +92,10 @@ def main():
     t = time.monotonic()
     source = make_source(args.data_dir, args.source_type)
     print(
-        f"source_init={time.monotonic() - t:.3f}s len={len(source)} "
-        f"source_type={args.source_type}"
+        f"source_init={time.monotonic() - t:.3f}s len={len(source)} source_type={args.source_type}"
     )
 
-    sample_indices = sorted(
-        {0, min(1, len(source) - 1), len(source) // 2, len(source) - 1}
-    )
+    sample_indices = sorted({0, min(1, len(source) - 1), len(source) // 2, len(source) - 1})
     summarize_samples(source, sample_indices)
 
     sampler = grain.IndexSampler(
@@ -130,10 +127,7 @@ def main():
 
     t = time.monotonic()
     first_batch = next(iter(loader))
-    print(
-        f"first_batch={time.monotonic() - t:.3f}s "
-        f"batch_video_shape={first_batch['video'].shape}"
-    )
+    print(f"first_batch={time.monotonic() - t:.3f}s batch_video_shape={first_batch['video'].shape}")
 
     iterator = iter(loader)
     next(iterator)

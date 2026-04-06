@@ -29,6 +29,7 @@ build-backend = "hatchling.build"
 packages = ["visionary"]
 
 [dependency-groups]
-dev = [
-    "ruff>=0.15.6",
-]
+dev = ["ruff>=0.15.6"]
+
+[tool.ruff]
+line-length = 100

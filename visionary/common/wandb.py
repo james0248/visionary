@@ -1,5 +1,6 @@
-import wandb
 from omegaconf import DictConfig, OmegaConf
+
+import wandb
 
 
 class WandbLogger:

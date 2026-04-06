@@ -137,12 +137,12 @@ def main():
 
     episode_indices = np.arange(original.shape[0])
     frame_indices = rng.integers(0, original.shape[1], size=original.shape[0])
-    original = np.clip(
-        np.rint(original[episode_indices, frame_indices] * 255.0), 0, 255
-    ).astype(np.uint8)
-    masked = np.clip(
-        np.rint(masked[episode_indices, frame_indices] * 255.0), 0, 255
-    ).astype(np.uint8)
+    original = np.clip(np.rint(original[episode_indices, frame_indices] * 255.0), 0, 255).astype(
+        np.uint8
+    )
+    masked = np.clip(np.rint(masked[episode_indices, frame_indices] * 255.0), 0, 255).astype(
+        np.uint8
+    )
     reconstructed = np.clip(
         np.rint(reconstructed[episode_indices, frame_indices] * 255.0), 0, 255
     ).astype(np.uint8)

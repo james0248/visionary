@@ -25,9 +25,7 @@ def load_run_config(run_dir: str) -> dict:
         return yaml.safe_load(f)
 
 
-def save_episode(
-    episode_buffer: list, output_dir: str, step: int, episode_idx: int
-) -> None:
+def save_episode(episode_buffer: list, output_dir: str, step: int, episode_idx: int) -> None:
     step_dir = os.path.join(output_dir, f"step_{step}")
     os.makedirs(step_dir, exist_ok=True)
 
@@ -112,9 +110,7 @@ def main(cfg: DictConfig):
     recorders: list[FrameRecorder] = []
 
     def make_rollout_env(env_id: str, screen_size: int = 84):
-        env = gym.make(
-            env_id, render_mode="rgb_array", frameskip=1, max_episode_steps=10_800
-        )
+        env = gym.make(env_id, render_mode="rgb_array", frameskip=1, max_episode_steps=10_800)
         recorder = FrameRecorder(env)
         recorders.append(recorder)
         env = gym.wrappers.AtariPreprocessing(
