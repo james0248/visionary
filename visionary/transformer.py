@@ -1,4 +1,5 @@
 import flax.linen as nn
+import jax
 import jax.numpy as jnp
 from einops import rearrange
 
@@ -9,18 +10,14 @@ class SwiGLU(nn.Module):
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        gate = nn.swish(
-            nn.Dense(self.hidden_dim, use_bias=False, dtype=self.dtype)(x)
-        )
+        gate = nn.swish(nn.Dense(self.hidden_dim, use_bias=False, dtype=self.dtype)(x))
         value = nn.Dense(self.hidden_dim, use_bias=False, dtype=self.dtype)(x)
         hidden = gate * value
 
         return nn.Dense(x.shape[-1], use_bias=False, dtype=self.dtype)(hidden)
 
 
-def apply_rotary_embedding(
-    x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray
-) -> jnp.ndarray:
+def apply_rotary_embedding(x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray) -> jnp.ndarray:
     x_rot = jnp.stack([-x[..., 1::2], x[..., 0::2]], axis=-1)
     x_rot = x_rot.reshape(*x_rot.shape[:-2], -1)
 
@@ -89,15 +86,9 @@ class Attention(nn.Module):
     ) -> jnp.ndarray:
         num_groups = self.num_heads // self.num_kv_heads
 
-        q = nn.Dense(
-            self.num_heads * self.head_dim, use_bias=False, dtype=self.dtype
-        )(x)
-        k = nn.Dense(
-            self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype
-        )(x)
-        v = nn.Dense(
-            self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype
-        )(x)
+        q = nn.Dense(self.num_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+        k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+        v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
 
         q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
         k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
@@ -113,18 +104,7 @@ class Attention(nn.Module):
         k = jnp.repeat(k, repeats=num_groups, axis=2)
         v = jnp.repeat(v, repeats=num_groups, axis=2)
 
-        scores = jnp.einsum("b q h d, b k h d -> b h q k", q, k)
-        scores = scores / jnp.sqrt(jnp.asarray(self.head_dim, dtype=scores.dtype))
-        scores = scores.astype(jnp.float32)
-        if self.attention_logit_soft_cap is not None:
-            cap = jnp.asarray(self.attention_logit_soft_cap, dtype=scores.dtype)
-            scores = cap * jnp.tanh(scores / cap)
-        if mask is not None:
-            scores = jnp.where(mask, scores, jnp.finfo(scores.dtype).min)
-
-        attn_weights = nn.softmax(scores, axis=-1).astype(self.dtype)
-        out = jnp.einsum("b h q k, b k h d -> b q h d", attn_weights, v)
-        out = rearrange(out, "b t h d -> b t (h d)")
+        out = jax.nn.dot_product_attention(q, k, v, mask=mask, scale=1.0 / jnp.sqrt(self.head_dim))
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
 
         return out
