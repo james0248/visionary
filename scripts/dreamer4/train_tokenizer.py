@@ -109,6 +109,8 @@ def compute_loss_metrics(
     mask: jax.Array,
     reconstruction_loss: str,
     motion_weighted_mse: bool,
+    motion_reference: float,
+    motion_max_boost: float,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -129,10 +131,10 @@ def compute_loss_metrics(
             jnp.pad(frame_diffs, ((0, 0), (1, 0), (0, 0), (0, 0)), constant_values=0),
             jnp.pad(frame_diffs, ((0, 0), (0, 1), (0, 0), (0, 0)), constant_values=0),
         )
-        motion_scale = motion_magnitude / (
-            jax.lax.stop_gradient(jnp.mean(motion_magnitude) + LOSS_RMS_EPS)
-        )
-        mse_weights = mse_weights * (1.0 + motion_scale)
+        # Per-patch motion: average over patch_dim, keep (b, t, patches)
+        motion_per_patch = jnp.mean(motion_magnitude, axis=-1)
+        motion_boost = jnp.clip(motion_per_patch / motion_reference, 0.0, motion_max_boost)
+        mse_weights = mse_weights * (1.0 + motion_boost[..., None])
     num_mse = jnp.maximum(jnp.sum(mse_weights), 1.0)
     mse_loss = jnp.sum(jnp.square(reconstruction_error) * mse_weights) / num_mse
     mse_rms = jnp.sqrt(state.mse_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
@@ -213,6 +215,8 @@ def compute_loss_metrics(
     static_argnames=(
         "reconstruction_loss",
         "motion_weighted_mse",
+        "motion_reference",
+        "motion_max_boost",
         "lpips_weight",
         "motion_loss_weight",
         "masked_mse",
@@ -227,6 +231,8 @@ def train_step(
     sample_key: jax.Array,
     reconstruction_loss: str,
     motion_weighted_mse: bool,
+    motion_reference: float,
+    motion_max_boost: float,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -247,6 +253,8 @@ def train_step(
             mask,
             reconstruction_loss,
             motion_weighted_mse,
+            motion_reference,
+            motion_max_boost,
             lpips_weight,
             motion_loss_weight,
             masked_mse,
@@ -272,6 +280,8 @@ def train_step(
     static_argnames=(
         "reconstruction_loss",
         "motion_weighted_mse",
+        "motion_reference",
+        "motion_max_boost",
         "lpips_weight",
         "motion_loss_weight",
         "masked_mse",
@@ -287,6 +297,8 @@ def eval_step(
     sample_key: jax.Array,
     reconstruction_loss: str,
     motion_weighted_mse: bool,
+    motion_reference: float,
+    motion_max_boost: float,
     lpips_weight: float,
     motion_loss_weight: float,
     masked_mse: bool,
@@ -309,6 +321,8 @@ def eval_step(
         mask,
         reconstruction_loss,
         motion_weighted_mse,
+        motion_reference,
+        motion_max_boost,
         lpips_weight,
         motion_loss_weight,
         masked_mse,
@@ -581,6 +595,8 @@ def main(cfg: DictConfig):
             sample_key,
             cfg.reconstruction_loss,
             bool(cfg.motion_weighted_mse),
+            float(cfg.motion_reference),
+            float(cfg.motion_max_boost),
             cfg.lpips_weight,
             cfg.motion_loss_weight,
             bool(cfg.masked_mse),
@@ -620,6 +636,8 @@ def main(cfg: DictConfig):
                     eval_sample_key,
                     cfg.reconstruction_loss,
                     bool(cfg.motion_weighted_mse),
+                    float(cfg.motion_reference),
+                    float(cfg.motion_max_boost),
                     cfg.lpips_weight,
                     cfg.motion_loss_weight,
                     bool(cfg.masked_mse),

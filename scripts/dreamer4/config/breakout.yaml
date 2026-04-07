@@ -2,6 +2,8 @@ seed: 42
 learning_rate: 2e-4
 reconstruction_loss: mse
 motion_weighted_mse: false
+motion_reference: 0.05
+motion_max_boost: 2.0
 lpips_weight: 0.2
 motion_loss_weight: 0.0
 masked_mse: false
