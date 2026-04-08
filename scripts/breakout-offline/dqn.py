@@ -1,5 +1,6 @@
 import functools
 import logging
+import os
 
 import flax.linen as nn
 import gymnasium as gym
@@ -8,6 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import orbax.checkpoint as ocp
 from einops import rearrange
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
@@ -17,7 +19,7 @@ from visionary.common.buffers import (
     get_action_dim,
     get_obs_shape,
 )
-from visionary.common.checkpoint import save_checkpoint
+from visionary.common.checkpoint import CheckpointManager
 from visionary.common.env import (
     ClipRewardEnv,
     EpisodicLifeEnv,
@@ -85,13 +87,9 @@ def train_step(
         q_values = state.apply_fn(params, obs)
         q_values_next = state.apply_fn(state.target_params, next_obs)
 
-        q_values = jnp.take_along_axis(
-            q_values, actions.astype(jnp.int32), axis=1
-        ).squeeze(-1)
+        q_values = jnp.take_along_axis(q_values, actions.astype(jnp.int32), axis=1).squeeze(-1)
         q_values_next = jnp.max(q_values_next, axis=1)
-        q_values_target = jax.lax.stop_gradient(
-            rewards + (1 - dones) * gamma * q_values_next
-        )
+        q_values_target = jax.lax.stop_gradient(rewards + (1 - dones) * gamma * q_values_next)
         loss = jnp.mean((q_values_target - q_values) ** 2)
 
         return loss, (jnp.mean(q_values), jnp.mean(q_values_next))
@@ -114,7 +112,7 @@ def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
     return max(slope * t + start_e, end_e)
 
 
-@hydra.main(config_path="../config", config_name="dqn", version_base=None)
+@hydra.main(config_path="config", config_name="dqn", version_base=None)
 def main(cfg: DictConfig):
     key = jax.random.key(cfg.seed)
 
@@ -165,6 +163,13 @@ def main(cfg: DictConfig):
 
     eval_env = make_env(eval=True)
     output_dir = HydraConfig.get().runtime.output_dir
+    checkpoint_manager = CheckpointManager(
+        directory=os.path.join(output_dir, "checkpoints"),
+        options=ocp.CheckpointManagerOptions(
+            save_interval_steps=1,
+            enable_async_checkpointing=True,
+        ),
+    )
 
     action_size = env.single_action_space.n
     exploration_duration = cfg.exploration_fraction * cfg.total_steps
@@ -177,9 +182,7 @@ def main(cfg: DictConfig):
             cfg.start_epsilon, cfg.end_epsilon, exploration_duration, global_step
         )
         actions = select_action(state, obs, action_key, jnp.array(epsilon), action_size)
-        next_obs, rewards, terminated, truncated, infos = env.step(
-            jax.device_get(actions)
-        )
+        next_obs, rewards, terminated, truncated, infos = env.step(jax.device_get(actions))
         dones = np.logical_or(terminated, truncated)
 
         if np.any(truncated):
@@ -215,17 +218,16 @@ def main(cfg: DictConfig):
         global_step += cfg.n_envs
 
         if cfg.eval_steps > 0 and global_step % cfg.eval_steps < cfg.n_envs:
-            save_checkpoint(state.params, output_dir, global_step)
-            steps, reward, video_path = record_rollout(
-                eval_env, state, output_dir, global_step
+            checkpoint_manager.save(
+                step=global_step,
+                state=state,
+                force=True,
             )
+            steps, reward, video_path = record_rollout(eval_env, state, output_dir, global_step)
             wb.log({"eval/steps": steps, "eval/reward": reward}, step=global_step)
             wb.log_video("eval/rollout", video_path, step=global_step)
 
-        if (
-            global_step >= cfg.learning_starts
-            and global_step % cfg.train_freq < cfg.n_envs
-        ):
+        if global_step >= cfg.learning_starts and global_step % cfg.train_freq < cfg.n_envs:
             n_updates = max(1, cfg.n_envs // cfg.train_freq)
             for _ in range(n_updates):
                 batch = replay_buffer.sample(cfg.batch_size)
@@ -243,7 +245,10 @@ def main(cfg: DictConfig):
                     step=global_step,
                 )
 
+    checkpoint_manager.wait_until_finished()
+    checkpoint_manager.close()
     wb.finish()
+    env.close()
     eval_env.close()
 
 

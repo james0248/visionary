@@ -1,19 +1,20 @@
-import glob
 import logging
 import os
-import re
 
 import gymnasium as gym
 import hydra
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
+import orbax.checkpoint as ocp
 import yaml
+from dqn import DQN
 from omegaconf import DictConfig
 
-from visionary.common.checkpoint import load_checkpoint
+from visionary.common.checkpoint import CheckpointManager
 from visionary.common.env import FireResetEnv, FrameRecorder, make_vec_env
-from visionary.models.dqn import DQN
+from visionary.common.train_state import TargetTrainState
 
 logger = logging.getLogger(__name__)
 
@@ -24,31 +25,7 @@ def load_run_config(run_dir: str) -> dict:
         return yaml.safe_load(f)
 
 
-def discover_checkpoints(run_dir: str) -> list[tuple[int, str]]:
-    ckpt_dir = os.path.join(run_dir, "checkpoints")
-    pattern = os.path.join(ckpt_dir, "step_*.msgpack")
-    paths = glob.glob(pattern)
-    results = []
-    for path in paths:
-        match = re.search(r"step_(\d+)\.msgpack", os.path.basename(path))
-        if match:
-            results.append((int(match.group(1)), path))
-    results.sort(key=lambda x: x[0])
-    return results
-
-
-def init_model(env, seed: int = 0):
-    action_size = env.single_action_space.n
-    model = DQN(action_size=action_size)
-    obs_shape = env.single_observation_space.shape
-    dummy_obs = jnp.zeros((1,) + obs_shape, dtype=jnp.uint8)
-    init_params = model.init(jax.random.key(seed), dummy_obs)
-    return model, init_params
-
-
-def save_episode(
-    episode_buffer: list, output_dir: str, step: int, episode_idx: int
-) -> None:
+def save_episode(episode_buffer: list, output_dir: str, step: int, episode_idx: int) -> None:
     step_dir = os.path.join(output_dir, f"step_{step}")
     os.makedirs(step_dir, exist_ok=True)
 
@@ -117,18 +94,23 @@ def main(cfg: DictConfig):
     frame_skip = run_cfg["frame_skip"]
 
     output_dir = os.path.join(cfg.run_dir, "rollouts")
+    checkpoint_manager = CheckpointManager(
+        os.path.join(cfg.run_dir, "checkpoints"),
+        options=ocp.CheckpointManagerOptions(
+            enable_async_checkpointing=False,
+            read_only=True,
+        ),
+    )
 
-    checkpoints = discover_checkpoints(cfg.run_dir)
+    checkpoints = checkpoint_manager.all_steps()
     if cfg.start_from_step is not None:
-        checkpoints = [(s, p) for s, p in checkpoints if s >= cfg.start_from_step]
+        checkpoints = [step for step in checkpoints if step >= cfg.start_from_step]
     logger.info("Found %d checkpoints in %s", len(checkpoints), cfg.run_dir)
 
     recorders: list[FrameRecorder] = []
 
     def make_rollout_env(env_id: str, screen_size: int = 84):
-        env = gym.make(
-            env_id, render_mode="rgb_array", frameskip=1, max_episode_steps=10_800
-        )
+        env = gym.make(env_id, render_mode="rgb_array", frameskip=1, max_episode_steps=10_800)
         recorder = FrameRecorder(env)
         recorders.append(recorder)
         env = gym.wrappers.AtariPreprocessing(
@@ -145,16 +127,32 @@ def main(cfg: DictConfig):
         return env
 
     env = make_vec_env(lambda: make_rollout_env(env_id, cfg.screen_size), cfg.n_envs)
-    model, init_params = init_model(env)
+
+    action_size = env.single_action_space.n
+    model = DQN(action_size=action_size)
+    obs_shape = env.single_observation_space.shape
+    dummy_obs = jnp.zeros((1,) + obs_shape, dtype=jnp.uint8)
+    params = model.init(jax.random.key(0), dummy_obs)
+    optimizer = optax.adam(run_cfg["learning_rate"])
+    init_state = TargetTrainState.create(
+        apply_fn=model.apply,
+        params=params,
+        target_params=params,
+        tx=optimizer,
+    )
 
     @jax.jit
     def get_actions(params, obs):
         q_values = model.apply(params, obs)
         return jnp.argmax(q_values, axis=-1)
 
-    for step, ckpt_path in checkpoints:
+    for step in checkpoints:
         logger.info("Collecting rollouts for checkpoint step=%d", step)
-        params = load_checkpoint(ckpt_path, init_params)
+        params = checkpoint_manager.restore(
+            step=step,
+            target=init_state,
+            params_only=True,
+        )
         collect_rollouts_for_checkpoint(
             env,
             recorders,
@@ -165,6 +163,7 @@ def main(cfg: DictConfig):
             step,
         )
 
+    checkpoint_manager.close()
     env.close()
     logger.info("Done. Rollouts saved to %s", output_dir)
 
