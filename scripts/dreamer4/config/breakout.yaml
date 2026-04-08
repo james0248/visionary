@@ -9,7 +9,7 @@ motion_loss_weight: 0.0
 masked_mse: false
 log_interval: 100
 eval_steps: 1000
-total_steps: 150000
+total_steps: 500000
 overfit_single_batch: false
 exp_name: ???
 
@@ -22,8 +22,8 @@ dataset:
   worker_count: 0
   num_threads: 2
   prefetch_buffer_size: 2
-  resize_shape: [224, 160]
-  patch_size: 16
+  resize_shape: [168, 120]
+  patch_size: 8
   pad_width: [0, 0]
   eval:
     max_batches: 16
@@ -31,16 +31,16 @@ dataset:
 
 tokenizer:
   _target_: visionary.tokenizer.Tokenizer
-  num_layers: 8
-  num_latents: 64
+  num_layers: 4
+  num_latents: 96
   num_heads: 8
   num_kv_heads: 2
   model_dim: 256
   head_dim: 64
   mlp_hidden_dim: 768
   channel_dim: 96
-  x_len: 10
-  y_len: 14
+  x_len: 15
+  y_len: 21
   base: 10000.0
   decoder_single_image_token: false
   bottleneck_norm: rmsnorm
@@ -53,7 +53,7 @@ checkpoint:
     directory: gs://visionary-exp/breakout/checkpoints/${exp_name}
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
-      save_interval_steps: 5000
+      save_interval_steps: 10000
       max_to_keep: 5
       enable_async_checkpointing: true
   resume_step: null
