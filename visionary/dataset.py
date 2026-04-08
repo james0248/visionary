@@ -12,6 +12,35 @@ class VideoDataset(TypedDict):
     video: np.ndarray
 
 
+class DynamicsDataset(TypedDict):
+    video: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+
+
+class DynamicsDataSource(grain.RandomAccessDataSource):
+    def __init__(self, data_dir: str):
+        shard_dir = epath.Path(data_dir)
+        paths = sorted(
+            [p for p in shard_dir.iterdir() if p.suffix == ".arecord"],
+            key=lambda p: p.as_posix(),
+        )
+        if not paths:
+            raise FileNotFoundError(f"No .arecord files found in {data_dir}")
+        self._source = grain.ArrayRecordDataSource([p.as_posix() for p in paths])
+
+    def __len__(self):
+        return len(self._source)
+
+    def __getitem__(self, idx: int) -> DynamicsDataset:
+        record_bytes = self._source[idx]
+        with np.load(io.BytesIO(record_bytes)) as data:
+            video = np.asarray(data["frames"])
+            actions = np.asarray(data["actions"])
+            rewards = np.asarray(data["rewards"])
+        return DynamicsDataset(video=video, actions=actions, rewards=rewards)
+
+
 class VideoDataSource(grain.RandomAccessDataSource):
     def __init__(self, data_dir: str):
         shard_dir = epath.Path(data_dir)
