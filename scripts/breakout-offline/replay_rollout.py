@@ -4,8 +4,16 @@ import cv2
 import numpy as np
 
 
-def draw_hud(frame: np.ndarray, step: int, total: int, action: int,
-             reward: float, cumulative_reward: float, fps: int, paused: bool) -> None:
+def draw_hud(
+    frame: np.ndarray,
+    step: int,
+    total: int,
+    action: int,
+    reward: float,
+    cumulative_reward: float,
+    fps: int,
+    paused: bool,
+) -> None:
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.5
     color = (255, 255, 255)
@@ -52,8 +60,9 @@ def main():
     while i < total:
         if i != last_i or fps != last_fps or paused != last_paused:
             frame = cv2.cvtColor(frames[i], cv2.COLOR_RGB2BGR)
-            frame = cv2.resize(frame, None, fx=args.scale, fy=args.scale,
-                               interpolation=cv2.INTER_NEAREST)
+            frame = cv2.resize(
+                frame, None, fx=args.scale, fy=args.scale, interpolation=cv2.INTER_NEAREST
+            )
             draw_hud(frame, i, total, actions[i], rewards[i], cum_rewards[i], fps, paused)
             display = frame
             last_i, last_fps, last_paused = i, fps, paused

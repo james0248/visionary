@@ -6,14 +6,18 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "ale-py>=0.11.2",
+    "array-record>=0.8.3",
     "einops>=0.8.2",
     "flax>=0.12.5",
+    "gcsfs>=2026.3.0",
     "grain>=0.2.16",
     "gymnasium[other]>=1.2.3",
     "hydra-core>=1.3.2",
     "importlib-resources>=6.5.2",
     "jax>=0.9.1",
+    "jaxlpips>=1.2.0",
     "moviepy>=2.2.1",
+    "orbax-checkpoint>=0.11.33",
     "wandb>=0.19.11",
 ]
 
@@ -25,6 +29,7 @@ build-backend = "hatchling.build"
 packages = ["visionary"]
 
 [dependency-groups]
-dev = [
-    "ruff>=0.15.6",
-]
+dev = ["ruff>=0.15.6"]
+
+[tool.ruff]
+line-length = 100

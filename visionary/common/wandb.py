@@ -1,5 +1,6 @@
-import wandb
 from omegaconf import DictConfig, OmegaConf
+
+import wandb
 
 
 class WandbLogger:
@@ -18,6 +19,10 @@ class WandbLogger:
     def log_video(self, key: str, video_path: str, step: int):
         if self.enabled:
             wandb.log({key: wandb.Video(video_path)}, step=step)
+
+    def log_image(self, key: str, image, step: int, caption: str | None = None):
+        if self.enabled:
+            wandb.log({key: wandb.Image(image, caption=caption)}, step=step)
 
     def finish(self):
         if self.enabled:

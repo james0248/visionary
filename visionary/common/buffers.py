@@ -24,9 +24,7 @@ class ReplayBuffer:
         self.action_dim = action_dim
         self.obs = np.empty((self.buffer_size, n_envs, *obs_shape), dtype=obs_dtype)
         self.next_obs = np.empty((self.buffer_size, n_envs, *obs_shape), dtype=obs_dtype)
-        self.actions = np.empty(
-            (self.buffer_size, n_envs, action_dim), dtype=action_dtype
-        )
+        self.actions = np.empty((self.buffer_size, n_envs, action_dim), dtype=action_dtype)
         self.rewards = np.empty((self.buffer_size, n_envs), dtype=np.float32)
         self.dones = np.empty((self.buffer_size, n_envs), dtype=np.float32)
 
@@ -87,14 +85,11 @@ def get_obs_shape(
         return observation_space.shape
     elif isinstance(observation_space, spaces.Dict):
         return {
-            key: get_obs_shape(subspace)
-            for (key, subspace) in observation_space.spaces.items()
+            key: get_obs_shape(subspace) for (key, subspace) in observation_space.spaces.items()
         }  # type: ignore[misc]
 
     else:
-        raise NotImplementedError(
-            f"{observation_space} observation space is not supported"
-        )
+        raise NotImplementedError(f"{observation_space} observation space is not supported")
 
 
 def get_action_dim(action_space: spaces.Space) -> int:

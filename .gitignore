@@ -27,3 +27,4 @@ build/
 outputs/
 wandb/
 artifacts/
+data/
