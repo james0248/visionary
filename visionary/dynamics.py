@@ -1,3 +1,5 @@
+import math
+
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
@@ -167,9 +169,94 @@ class DynamicsModel(nn.Module):
             bias_init=nn.initializers.zeros,
         )(observation_hidden)
 
+    def generate_next(
+        self,
+        video_prefix: jnp.ndarray,
+        actions: jnp.ndarray | None,
+        context_noise: jnp.ndarray,
+        sample_noise: jnp.ndarray,
+        target_index: jnp.ndarray,
+        *,
+        context_tau: float,
+        sample_steps: int,
+    ) -> jnp.ndarray:
+        batch_size, seq_len, _, latent_dim = video_prefix.shape
+        target_index = jnp.asarray(target_index, dtype=jnp.int32)
+
+        context_step_level = self.max_step_size - 1
+        context_step_count = 1 << context_step_level
+        context_signal_level = min(
+            max(int(round(context_tau * context_step_count)), 0),
+            context_step_count - 1,
+        )
+        context_tau = jnp.float32(context_signal_level / context_step_count)
+
+        sample_step_level = int(round(math.log2(sample_steps)))
+        sample_step_count = 1 << sample_step_level
+        sample_step_size = jnp.float32(1.0 / sample_step_count)
+
+        z_prefix = rearrange(
+            video_prefix,
+            "b t (n k) d -> b t n (k d)",
+            n=self.num_obs_tokens,
+        )
+        z_context_noise = rearrange(
+            context_noise,
+            "b t (n k) d -> b t n (k d)",
+            n=self.num_obs_tokens,
+        )
+        z_sample_noise = rearrange(
+            sample_noise[:, None],
+            "b t (n k) d -> b t n (k d)",
+            n=self.num_obs_tokens,
+        )[:, 0]
+        _, _, num_obs_tokens, token_dim = z_prefix.shape
+
+        past_mask = jnp.arange(seq_len, dtype=jnp.int32) < target_index
+        past_mask_z = past_mask[None, :, None, None]
+        past_mask_t = jnp.broadcast_to(past_mask[None, :], (batch_size, seq_len))
+
+        noised_prefix = (
+            context_tau * z_prefix.astype(jnp.float32)
+            + (1.0 - context_tau) * z_context_noise.astype(jnp.float32)
+        )
+        base_z = jnp.where(
+            past_mask_z,
+            noised_prefix,
+            jnp.zeros((batch_size, seq_len, num_obs_tokens, token_dim), dtype=jnp.float32),
+        )
+        base_step_levels = jnp.where(
+            past_mask_t,
+            jnp.full((batch_size, seq_len), context_step_level, dtype=jnp.int32),
+            jnp.zeros((batch_size, seq_len), dtype=jnp.int32),
+        )
+        base_signal_levels = jnp.where(
+            past_mask_t,
+            jnp.full((batch_size, seq_len), context_signal_level, dtype=jnp.int32),
+            jnp.zeros((batch_size, seq_len), dtype=jnp.int32),
+        )
+
+        current_z = z_sample_noise.astype(jnp.float32)
+        for sample_signal_level in range(sample_step_count):
+            step_levels = base_step_levels.at[:, target_index].set(sample_step_level)
+            signal_levels = base_signal_levels.at[:, target_index].set(sample_signal_level)
+            z_input = base_z.at[:, target_index].set(current_z)
+            predicted = self(z_input, actions, step_levels, signal_levels)[:, target_index].astype(
+                jnp.float32
+            )
+
+            tau = jnp.float32(sample_signal_level / sample_step_count)
+            velocity = (predicted - current_z) / jnp.maximum(1.0 - tau, 1e-6)
+            current_z = current_z + velocity * sample_step_size
+
+        return rearrange(current_z[:, None], "b t n (k d) -> b t (n k) d", d=latent_dim)[:, 0]
+
     def loss(self, batch: DynamicsBatch) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
-        z_target = jnp.asarray(batch["video"], dtype=jnp.float32)
-        z_target = rearrange(z_target, "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)
+        z_target = rearrange(
+            jnp.asarray(batch["video"], dtype=jnp.float32),
+            "b t (n k) d -> b t n (k d)",
+            n=self.num_obs_tokens,
+        )
         actions = jnp.asarray(batch["actions"], dtype=jnp.int32)
 
         batch_size, seq_len, _, _ = z_target.shape

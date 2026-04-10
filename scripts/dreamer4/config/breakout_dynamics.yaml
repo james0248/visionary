@@ -6,15 +6,27 @@ total_steps: 500000
 overfit_single_batch: false
 exp_name: ???
 
+video_eval:
+  context_frames: 16
+  generated_frames: 48
+  sample_steps: 4
+  context_tau: 0.9
+  fps: 20
+  output_dir: artifacts/dreamer4_dynamics_eval
+  tokenizer:
+    config_path: scripts/dreamer4/config/breakout.yaml
+    checkpoint_dir: null
+    checkpoint_step: null
+
 dataset:
   train_dir: data/tokenized/train/
   eval_dir: data/tokenized/eval/
-  batch_size: 2
+  batch_size: 32
   batch_length: 256
   alternating_lengths:
     enabled: true
-    short: 64
-    long: 256
+    short: 32
+    long: 128
     long_every: 4
     final_long_only_steps: 0
   worker_count: 0
@@ -26,17 +38,17 @@ dataset:
 
 dynamics:
   _target_: visionary.dynamics.DynamicsModel
-  num_layers: 8
+  num_layers: 12
   num_heads: 8
   num_kv_heads: 2
   num_registers: 4
-  num_obs_tokens: 64
+  num_obs_tokens: 32
   num_actions: 4
-  max_step_size: 3
+  max_step_size: 8
   model_dim: 256
   head_dim: 64
   mlp_hidden_dim: 768
-  context_length: 192
+  context_length: 64
   base: 10000.0
   attention_logit_soft_cap: 50.0
 
