@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 
-from visionary.dataset import DynamicsDataset
+from visionary.dataset import DynamicsBatch
 from visionary.transformer import SpatioTemporalTransformer, create_temporal_rope
 
 
@@ -167,7 +167,7 @@ class DynamicsModel(nn.Module):
             bias_init=nn.initializers.zeros,
         )(observation_hidden)
 
-    def loss(self, batch: DynamicsDataset) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+    def loss(self, batch: DynamicsBatch) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         z_target = jnp.asarray(batch["video"], dtype=jnp.float32)
         z_target = rearrange(z_target, "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)
         actions = jnp.asarray(batch["actions"], dtype=jnp.int32)

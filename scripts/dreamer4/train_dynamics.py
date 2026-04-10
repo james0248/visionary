@@ -1,12 +1,10 @@
 import itertools
 import logging
 import time
-from typing import TypedDict
 
 import grain.python as grain
 import hydra
 import jax
-import numpy as np
 import optax
 from hydra.utils import instantiate
 from omegaconf import DictConfig
@@ -14,39 +12,10 @@ from omegaconf import DictConfig
 from visionary.common.checkpoint import CheckpointManager
 from visionary.common.train_state import DynamicsTrainState
 from visionary.common.wandb import WandbLogger
-from visionary.dataset import DynamicsDataSource, DynamicsDataset
+from visionary.dataset import DynamicsBatch, DynamicsDataSource, RandomDynamicsCrop
 from visionary.dynamics import DynamicsModel
 
 logger = logging.getLogger(__name__)
-
-
-class DynamicsBatch(TypedDict):
-    video: np.ndarray
-    actions: np.ndarray
-
-
-class RandomDynamicsCrop(grain.RandomMapTransform):
-    def __init__(self, sequence_length: int):
-        self.sequence_length = sequence_length
-
-    def random_map(
-        self,
-        element: DynamicsDataset,
-        rng: np.random.Generator,
-    ) -> DynamicsBatch:
-        video = element["video"]
-        actions = element["actions"]
-        if len(video) < self.sequence_length:
-            raise ValueError(f"Sequence shorter than crop: {len(video)} < {self.sequence_length}")
-        if len(video) == self.sequence_length:
-            return DynamicsBatch(video=video, actions=actions)
-
-        start_idx = int(rng.integers(0, len(video) - self.sequence_length + 1))
-        stop_idx = start_idx + self.sequence_length
-        return DynamicsBatch(
-            video=video[start_idx:stop_idx],
-            actions=actions[start_idx:stop_idx],
-        )
 
 
 @jax.jit
@@ -87,7 +56,7 @@ def eval_step(
 def main(cfg: DictConfig):
     logger.info("JAX backend: %s, devices: %s", jax.default_backend(), jax.devices())
     wb = WandbLogger(cfg)
-    total_steps = int(cfg.total_steps)
+    total_steps = cfg.total_steps
 
     train_source = DynamicsDataSource(cfg.dataset.train_dir)
     eval_source = DynamicsDataSource(cfg.dataset.eval_dir)
@@ -96,25 +65,25 @@ def main(cfg: DictConfig):
         len(train_source),
         len(eval_source),
     )
-    effective_read_threads = max(int(cfg.dataset.worker_count), 1) * int(cfg.dataset.num_threads)
+    effective_read_threads = max(cfg.dataset.worker_count, 1) * cfg.dataset.num_threads
     logger.info(
         "Data loader settings: worker_count=%d num_threads=%d "
         "prefetch_buffer_size=%d effective_read_threads=%d",
-        int(cfg.dataset.worker_count),
-        int(cfg.dataset.num_threads),
-        int(cfg.dataset.prefetch_buffer_size),
+        cfg.dataset.worker_count,
+        cfg.dataset.num_threads,
+        cfg.dataset.prefetch_buffer_size,
         effective_read_threads,
     )
 
     train_sequence_lengths = (
-        sorted({int(cfg.dataset.alternating_lengths.short), int(cfg.dataset.alternating_lengths.long)})
-        if bool(cfg.dataset.alternating_lengths.enabled)
-        else [int(cfg.dataset.batch_length)]
+        sorted({cfg.dataset.alternating_lengths.short, cfg.dataset.alternating_lengths.long})
+        if cfg.dataset.alternating_lengths.enabled
+        else [cfg.dataset.batch_length]
     )
     logger.info(
         "Training sequence lengths: %s; eval sequence length: %d",
         train_sequence_lengths,
-        int(cfg.dataset.eval.batch_length),
+        cfg.dataset.eval.batch_length,
     )
 
     def make_loader(
@@ -124,7 +93,7 @@ def main(cfg: DictConfig):
         shuffle: bool,
         drop_remainder: bool,
         seed: int,
-    ):
+    ) -> grain.DataLoader:
         sampler = grain.IndexSampler(
             num_records=len(source),
             shard_options=grain.ShardByJaxProcess(),
@@ -132,8 +101,8 @@ def main(cfg: DictConfig):
             seed=seed,
         )
         read_options = grain.ReadOptions(
-            num_threads=int(cfg.dataset.num_threads),
-            prefetch_buffer_size=int(cfg.dataset.prefetch_buffer_size),
+            num_threads=cfg.dataset.num_threads,
+            prefetch_buffer_size=cfg.dataset.prefetch_buffer_size,
         )
         return grain.DataLoader(
             data_source=source,
@@ -141,11 +110,11 @@ def main(cfg: DictConfig):
             operations=[
                 RandomDynamicsCrop(sequence_length),
                 grain.Batch(
-                    batch_size=int(cfg.dataset.batch_size),
+                    batch_size=cfg.dataset.batch_size,
                     drop_remainder=drop_remainder,
                 ),
             ],
-            worker_count=int(cfg.dataset.worker_count),
+            worker_count=cfg.dataset.worker_count,
             read_options=read_options,
         )
 
@@ -156,7 +125,7 @@ def main(cfg: DictConfig):
             sequence_length=sequence_length,
             shuffle=True,
             drop_remainder=True,
-            seed=int(cfg.seed) + sequence_length,
+            seed=cfg.seed + sequence_length,
         )
         for sequence_length in train_sequence_lengths
     }
@@ -168,21 +137,21 @@ def main(cfg: DictConfig):
     logger.info("First batch fetch took %.1fs", time.monotonic() - _t)
 
     overfit_batches = {init_sequence_length: sample_batch}
-    if bool(cfg.overfit_single_batch):
+    if cfg.overfit_single_batch:
         logger.info("Overfit mode enabled: reusing one sampled batch per train sequence length.")
         for sequence_length in train_sequence_lengths:
             if sequence_length in overfit_batches:
                 continue
             overfit_batches[sequence_length] = next(iter(train_loaders[sequence_length]))
-        if int(cfg.dataset.eval.batch_length) not in overfit_batches:
-            overfit_batches[int(cfg.dataset.eval.batch_length)] = next(
+        if cfg.dataset.eval.batch_length not in overfit_batches:
+            overfit_batches[cfg.dataset.eval.batch_length] = next(
                 iter(
                     make_loader(
                         eval_source,
-                        sequence_length=int(cfg.dataset.eval.batch_length),
+                        sequence_length=cfg.dataset.eval.batch_length,
                         shuffle=False,
                         drop_remainder=False,
-                        seed=int(cfg.seed),
+                        seed=cfg.seed,
                     )
                 )
             )
@@ -190,10 +159,10 @@ def main(cfg: DictConfig):
         _t = time.monotonic()
         eval_loader = make_loader(
             eval_source,
-            sequence_length=int(cfg.dataset.eval.batch_length),
+            sequence_length=cfg.dataset.eval.batch_length,
             shuffle=False,
             drop_remainder=False,
-            seed=int(cfg.seed),
+            seed=cfg.seed,
         )
         logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
 
@@ -223,7 +192,7 @@ def main(cfg: DictConfig):
     if cfg.checkpoint.resume_step is not None:
         state = checkpoint_manager.restore(
             target=state,
-            step=int(cfg.checkpoint.resume_step),
+            step=cfg.checkpoint.resume_step,
         )
         logger.info("Resumed dynamics training from step %d", int(state.step))
 
@@ -248,17 +217,17 @@ def main(cfg: DictConfig):
     while True:
         t1 = time.monotonic()
 
-        if bool(cfg.dataset.alternating_lengths.enabled) and (
-            step >= total_steps - int(cfg.dataset.alternating_lengths.final_long_only_steps)
-            or (step + 1) % int(cfg.dataset.alternating_lengths.long_every) == 0
+        if cfg.dataset.alternating_lengths.enabled and (
+            step >= total_steps - cfg.dataset.alternating_lengths.final_long_only_steps
+            or (step + 1) % cfg.dataset.alternating_lengths.long_every == 0
         ):
-            sequence_length = int(cfg.dataset.alternating_lengths.long)
-        elif bool(cfg.dataset.alternating_lengths.enabled):
-            sequence_length = int(cfg.dataset.alternating_lengths.short)
+            sequence_length = cfg.dataset.alternating_lengths.long
+        elif cfg.dataset.alternating_lengths.enabled:
+            sequence_length = cfg.dataset.alternating_lengths.short
         else:
-            sequence_length = int(cfg.dataset.batch_length)
+            sequence_length = cfg.dataset.batch_length
 
-        if bool(cfg.overfit_single_batch):
+        if cfg.overfit_single_batch:
             batch = overfit_batches[sequence_length]
         else:
             try:
@@ -282,10 +251,10 @@ def main(cfg: DictConfig):
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
             t_eval_start = time.monotonic()
             totals: dict[str, float] = {}
-            if bool(cfg.overfit_single_batch):
-                eval_batches = (overfit_batches[int(cfg.dataset.eval.batch_length)],)
+            if cfg.overfit_single_batch:
+                eval_batches = (overfit_batches[cfg.dataset.eval.batch_length],)
             else:
-                eval_batches = itertools.islice(iter(eval_loader), int(cfg.dataset.eval.max_batches))
+                eval_batches = itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches)
 
             num_batches = 0
             for batch_idx, eval_batch in enumerate(eval_batches):
