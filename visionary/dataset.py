@@ -21,6 +21,13 @@ class DynamicsDataset(DynamicsBatch):
     rewards: np.ndarray
 
 
+def align_actions_to_frames(actions: np.ndarray) -> np.ndarray:
+    aligned = np.empty_like(actions)
+    aligned[0] = -1
+    aligned[1:] = actions[:-1]
+    return aligned
+
+
 def _array_record_source(data_dir: str) -> grain.ArrayRecordDataSource:
     shard_dir = epath.Path(data_dir)
     paths = sorted(
@@ -86,13 +93,14 @@ class RandomDynamicsCrop(grain.RandomMapTransform):
         if len(video) < self.sequence_length:
             raise ValueError(f"Sequence shorter than crop: {len(video)} < {self.sequence_length}")
         if len(video) == self.sequence_length:
-            return DynamicsBatch(video=video, actions=actions)
+            return DynamicsBatch(video=video, actions=align_actions_to_frames(actions))
 
         start_idx = int(rng.integers(0, len(video) - self.sequence_length + 1))
         stop_idx = start_idx + self.sequence_length
+        cropped_actions = actions[start_idx:stop_idx]
         return DynamicsBatch(
             video=video[start_idx:stop_idx],
-            actions=actions[start_idx:stop_idx],
+            actions=align_actions_to_frames(cropped_actions),
         )
 
 

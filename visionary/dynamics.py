@@ -30,13 +30,17 @@ class ActionEmbedding(nn.Module):
         if actions is None:
             return jnp.broadcast_to(base_token, (batch_size, seq_len, self.model_dim))
 
+        actions = jnp.asarray(actions, dtype=jnp.int32)
+        valid_actions = actions >= 0
+        safe_actions = jnp.where(valid_actions, actions, 0)
         action_tokens = nn.Embed(
             num_embeddings=self.num_actions,
             features=self.model_dim,
             embedding_init=nn.initializers.normal(stddev=0.02),
             dtype=self.dtype,
             name="action_embedding",
-        )(jnp.asarray(actions, dtype=jnp.int32))
+        )(safe_actions)
+        action_tokens = jnp.where(valid_actions[..., None], action_tokens, 0)
         return action_tokens + base_token
 
 
@@ -216,10 +220,9 @@ class DynamicsModel(nn.Module):
         past_mask_z = past_mask[None, :, None, None]
         past_mask_t = jnp.broadcast_to(past_mask[None, :], (batch_size, seq_len))
 
-        noised_prefix = (
-            context_tau * z_prefix.astype(jnp.float32)
-            + (1.0 - context_tau) * z_context_noise.astype(jnp.float32)
-        )
+        noised_prefix = context_tau * z_prefix.astype(jnp.float32) + (
+            1.0 - context_tau
+        ) * z_context_noise.astype(jnp.float32)
         base_z = jnp.where(
             past_mask_z,
             noised_prefix,
