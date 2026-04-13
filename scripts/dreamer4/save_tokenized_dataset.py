@@ -50,22 +50,7 @@ class FileSplits:
         def list_files(data_dir: str) -> list[Path]:
             return sorted(Path(data_dir).rglob("*.npz"), key=lambda path: path.as_posix())
 
-        if build_cfg.eval_input_dir is not None:
-            train_files = list_files(build_cfg.input_dir)
-            eval_files = list_files(build_cfg.eval_input_dir)
-            if build_cfg.max_files is not None:
-                train_files = train_files[: build_cfg.max_files]
-                eval_files = eval_files[: build_cfg.max_files]
-            metadata = {
-                "split_mode": "separate_dirs",
-                "train_input_dir": build_cfg.input_dir,
-                "eval_input_dir": build_cfg.eval_input_dir,
-            }
-            return cls(train_files=train_files, eval_files=eval_files, metadata=metadata)
-
         files = list_files(build_cfg.input_dir)
-        if build_cfg.max_files is not None:
-            files = files[: build_cfg.max_files]
 
         train_files: list[Path] = []
         eval_files: list[Path] = []
@@ -91,12 +76,10 @@ class BuildConfig:
     checkpoint_dir: str
     checkpoint_step: int | None
     input_dir: str
-    eval_input_dir: str | None
     output_dir: Path
     config_path: str
     seed: int
     eval_ratio: float
-    max_files: int | None
     chunk_length: int
     chunk_overlap: int
     min_length: int
@@ -109,7 +92,6 @@ class BuildConfig:
     record_workers: int
     records_per_shard: int
     latent_dtype_name: str
-    compressed: bool
 
     @property
     def latent_dtype(self) -> np.dtype:
@@ -124,19 +106,13 @@ class BuildConfig:
         if encode_window_length is None:
             encode_window_length = int(cfg.dataset.frame_length)
 
-        min_length = args.min_length
-        if min_length is None:
-            min_length = int(cfg.dataset.frame_length)
+        min_length = int(cfg.dataset.frame_length)
+        encode_window_overlap = 0
 
         if not 0 <= args.chunk_overlap < args.chunk_length:
             raise ValueError(
                 f"Expected 0 <= chunk_overlap < chunk_length, got "
                 f"{args.chunk_overlap=} {args.chunk_length=}"
-            )
-        if not 0 <= args.encode_window_overlap < encode_window_length:
-            raise ValueError(
-                f"Expected 0 <= encode_window_overlap < encode_window_length, got "
-                f"{args.encode_window_overlap=} {encode_window_length=}"
             )
         if args.encode_batch_size <= 0:
             raise ValueError(f"Expected encode_batch_size > 0, got {args.encode_batch_size}")
@@ -155,17 +131,15 @@ class BuildConfig:
             checkpoint_dir=args.checkpoint_dir,
             checkpoint_step=args.step,
             input_dir=args.input_dir,
-            eval_input_dir=args.eval_input_dir,
             output_dir=Path(args.output_dir),
             config_path=args.config,
             seed=args.seed,
             eval_ratio=args.eval_ratio,
-            max_files=args.max_files,
             chunk_length=args.chunk_length,
             chunk_overlap=args.chunk_overlap,
             min_length=min_length,
             encode_window_length=encode_window_length,
-            encode_window_overlap=args.encode_window_overlap,
+            encode_window_overlap=encode_window_overlap,
             encode_batch_size=args.encode_batch_size,
             encode_episode_batch_size=args.encode_episode_batch_size,
             read_workers=args.read_workers,
@@ -173,7 +147,6 @@ class BuildConfig:
             record_workers=args.record_workers,
             records_per_shard=args.records_per_shard,
             latent_dtype_name=args.latent_dtype,
-            compressed=bool(args.compressed),
         )
 
 
@@ -255,7 +228,6 @@ def encode_record(
     episode_id: int,
     start: int,
     stop: int,
-    compressed: bool,
 ) -> bytes:
     payload: dict[str, np.ndarray] = {
         "frames": latents[start:stop],
@@ -268,10 +240,7 @@ def encode_record(
             payload[key] = value[start:stop]
 
     buffer = io.BytesIO()
-    if compressed:
-        np.savez_compressed(buffer, **payload)
-    else:
-        np.savez(buffer, **payload)
+    np.savez(buffer, **payload)
     return buffer.getvalue()
 
 
@@ -467,7 +436,6 @@ def iter_record_bytes(
     chunk_length: int,
     overlap: int,
     min_length: int,
-    compressed: bool,
     executor: ThreadPoolExecutor | None,
 ):
     bounds = record_bounds(
@@ -479,7 +447,7 @@ def iter_record_bytes(
 
     if executor is None:
         for start, stop in bounds:
-            yield encode_record(arrays, latents, episode_id, start, stop, compressed)
+            yield encode_record(arrays, latents, episode_id, start, stop)
         return
 
     yield from executor.map(
@@ -489,7 +457,6 @@ def iter_record_bytes(
         itertools.repeat(episode_id),
         (start for start, _ in bounds),
         (stop for _, stop in bounds),
-        itertools.repeat(compressed),
     )
 
 
@@ -530,7 +497,6 @@ def write_split(
                 chunk_length=build_cfg.chunk_length,
                 overlap=build_cfg.chunk_overlap,
                 min_length=build_cfg.min_length,
-                compressed=build_cfg.compressed,
                 executor=record_executor,
             ):
                 shard_writer.write(record_bytes)
@@ -592,15 +558,8 @@ def create_parser() -> argparse.ArgumentParser:
         help="Hydra config used to instantiate the tokenizer and preprocessing.",
     )
     parser.add_argument("--step", type=int, help="Checkpoint step to restore. Defaults to latest.")
-    parser.add_argument(
-        "--eval_input_dir",
-        help="Optional separate eval directory. If omitted, train/eval are split by hash.",
-    )
     parser.add_argument("--eval_ratio", type=float, default=0.1, help="Eval ratio for hash split.")
     parser.add_argument("--seed", type=int, default=42, help="Hash-split and init seed.")
-    parser.add_argument(
-        "--max_files", type=int, help="Optional cap on the number of episodes per split."
-    )
     parser.add_argument(
         "--chunk_length",
         type=int,
@@ -614,20 +573,9 @@ def create_parser() -> argparse.ArgumentParser:
         help="Overlap between output token records, in frames.",
     )
     parser.add_argument(
-        "--min_length",
-        type=int,
-        help="Skip records and episodes shorter than this many frames. Defaults to tokenizer frame_length.",
-    )
-    parser.add_argument(
         "--encode_window_length",
         type=int,
         help="Frames per tokenizer forward pass. Defaults to tokenizer frame_length.",
-    )
-    parser.add_argument(
-        "--encode_window_overlap",
-        type=int,
-        default=0,
-        help="Overlap between tokenizer encode windows, in frames.",
     )
     parser.add_argument(
         "--encode_batch_size",
@@ -667,11 +615,6 @@ def create_parser() -> argparse.ArgumentParser:
         choices=("float16", "float32"),
         default="float32",
         help="Latent dtype stored on disk.",
-    )
-    parser.add_argument(
-        "--compressed",
-        action="store_true",
-        help="Use np.savez_compressed for each payload instead of np.savez.",
     )
     return parser
 
@@ -719,7 +662,6 @@ def main() -> None:
         "token_dataset": {
             "latent_shape_per_frame": encoder.latents_per_frame,
             "latent_dtype": build_cfg.latent_dtype_name,
-            "compressed": build_cfg.compressed,
             "chunk_length": build_cfg.chunk_length,
             "chunk_overlap": build_cfg.chunk_overlap,
             "min_length": build_cfg.min_length,
