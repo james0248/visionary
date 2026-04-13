@@ -31,11 +31,13 @@ def train_step(
     state: DynamicsTrainState,
     batch: DynamicsBatch,
     sample_key: jax.Array,
+    bootstrap_ratio: float,
 ):
     def loss_fn(params):
         return state.apply_fn(
             params,
             batch,
+            bootstrap_ratio=bootstrap_ratio,
             method=DynamicsModel.loss,
             rngs={"sample": sample_key},
         )
@@ -50,10 +52,12 @@ def eval_step(
     state: DynamicsTrainState,
     batch: DynamicsBatch,
     sample_key: jax.Array,
+    bootstrap_ratio: float,
 ):
     _, metrics = state.apply_fn(
         state.params,
         batch,
+        bootstrap_ratio=bootstrap_ratio,
         method=DynamicsModel.loss,
         rngs={"sample": sample_key},
     )
@@ -225,6 +229,11 @@ def main(cfg: DictConfig):
         train_sequence_lengths,
         cfg.dataset.eval.batch_length,
     )
+    logger.info(
+        "Loss schedule: bootstrap_ratio=%.2f bootstrap_start_step=%d",
+        float(cfg.loss.bootstrap_ratio),
+        int(cfg.loss.bootstrap_start_step),
+    )
 
     def make_loader(
         source: DynamicsDataSource,
@@ -313,6 +322,7 @@ def main(cfg: DictConfig):
     params = model.init(
         {"params": init_key, "sample": init_sample_key},
         sample_batch,
+        bootstrap_ratio=0.0,
         method=DynamicsModel.loss,
     )
     logger.info("Model init took %.1fs", time.monotonic() - _t)
@@ -459,7 +469,17 @@ def main(cfg: DictConfig):
         t3 = time.monotonic()
 
         sample_key = jax.random.fold_in(train_key, step)
-        state, metrics = train_step(state, batch, sample_key)
+        bootstrap_ratio = (
+            float(cfg.loss.bootstrap_ratio)
+            if step >= int(cfg.loss.bootstrap_start_step)
+            else 0.0
+        )
+        state, metrics = train_step(
+            state,
+            batch,
+            sample_key,
+            bootstrap_ratio,
+        )
         jax.block_until_ready(metrics)
         t4 = time.monotonic()
 
@@ -480,8 +500,18 @@ def main(cfg: DictConfig):
             num_batches = 0
             for batch_idx, eval_batch in enumerate(eval_batches):
                 eval_sample_key = jax.random.fold_in(eval_run_key, batch_idx)
+                eval_bootstrap_ratio = (
+                    float(cfg.loss.bootstrap_ratio)
+                    if step >= int(cfg.loss.bootstrap_start_step)
+                    else 0.0
+                )
                 batch_metrics = jax.device_get(
-                    eval_step(state, jax.device_put(eval_batch), eval_sample_key)
+                    eval_step(
+                        state,
+                        jax.device_put(eval_batch),
+                        eval_sample_key,
+                        eval_bootstrap_ratio,
+                    )
                 )
                 for k, v in batch_metrics.items():
                     totals[k] = totals.get(k, 0.0) + float(v)

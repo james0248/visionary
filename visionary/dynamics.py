@@ -72,6 +72,21 @@ class ShortcutEmbedding(nn.Module):
         return jnp.concatenate([step_tokens, signal_tokens], axis=-1)
 
 
+def tail_row_mask(
+    batch_size: int,
+    seq_len: int,
+    active_ratio: float | jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    active_ratio = jnp.clip(jnp.asarray(active_ratio, dtype=jnp.float32), 0.0, 1.0)
+    batch_size_i32 = jnp.asarray(batch_size, dtype=jnp.int32)
+    active_rows = jnp.rint(active_ratio * jnp.asarray(batch_size, dtype=jnp.float32)).astype(
+        jnp.int32
+    )
+    active_rows = jnp.clip(active_rows, 0, batch_size_i32)
+    row_mask = jnp.arange(batch_size, dtype=jnp.int32) >= (batch_size_i32 - active_rows)
+    return jnp.broadcast_to(row_mask[:, None], (batch_size, seq_len)), active_rows
+
+
 class DynamicsModel(nn.Module):
     num_layers: int
     num_heads: int
@@ -254,7 +269,11 @@ class DynamicsModel(nn.Module):
 
         return rearrange(current_z[:, None], "b t n (k d) -> b t (n k) d", d=latent_dim)[:, 0]
 
-    def loss(self, batch: DynamicsBatch) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+    def loss(
+        self,
+        batch: DynamicsBatch,
+        bootstrap_ratio: float = 0.0,
+    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         z_target = rearrange(
             jnp.asarray(batch["video"], dtype=jnp.float32),
             "b t (n k) d -> b t n (k d)",
@@ -266,13 +285,20 @@ class DynamicsModel(nn.Module):
         sample_rng = self.make_rng("sample")
         step_rng, signal_rng, noise_rng = jax.random.split(sample_rng, 3)
 
-        step_levels = jax.random.randint(
+        bootstrap_row_mask, bootstrap_rows = tail_row_mask(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            active_ratio=bootstrap_ratio,
+        )
+        sampled_bootstrap_levels = jax.random.randint(
             step_rng,
             shape=(batch_size, seq_len),
             minval=0,
-            maxval=self.max_step_size,
+            maxval=self.max_step_size - 1,
             dtype=jnp.int32,
         )
+        step_levels = jnp.full((batch_size, seq_len), self.max_step_size - 1, dtype=jnp.int32)
+        step_levels = jnp.where(bootstrap_row_mask, sampled_bootstrap_levels, step_levels)
         step_counts = 1 << step_levels
         signal_levels = jax.random.randint(
             signal_rng,
@@ -308,18 +334,32 @@ class DynamicsModel(nn.Module):
         bootstrap_target = jax.lax.stop_gradient((b1 + b2) / 2.0)
         bootstrap_loss = ((z_pred_1 - z_noised) - (1.0 - tau) * bootstrap_target) ** 2
 
-        is_min_step = (step_levels == self.max_step_size - 1)[..., None, None]
-        loss = jnp.where(is_min_step, flow_loss, bootstrap_loss)
+        use_bootstrap_loss = bootstrap_row_mask[..., None, None]
         loss_weight = 0.9 * tau + 0.1
-        weighted_loss = loss * loss_weight
+        weighted_flow_loss = loss_weight * flow_loss
+        weighted_bootstrap_loss = loss_weight * bootstrap_loss
+        weighted_loss = jnp.where(use_bootstrap_loss, weighted_bootstrap_loss, weighted_flow_loss)
         total_loss = jnp.mean(weighted_loss)
+
+        def masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
+            mask = mask.astype(values.dtype)
+            return jnp.sum(values * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+
+        flow_mask = (~use_bootstrap_loss).astype(jnp.float32)
+        bootstrap_mask = use_bootstrap_loss.astype(jnp.float32)
 
         metrics = {
             "loss": total_loss,
-            "flow_loss": jnp.mean(loss_weight * flow_loss),
-            "bootstrap_loss": jnp.mean(loss_weight * bootstrap_loss),
+            "flow_loss": jnp.mean(weighted_flow_loss),
+            "bootstrap_loss": jnp.mean(weighted_bootstrap_loss),
+            "active_flow_loss": masked_mean(weighted_flow_loss, flow_mask),
+            "active_bootstrap_loss": masked_mean(weighted_bootstrap_loss, bootstrap_mask),
             "mean_tau": jnp.mean(tau),
             "mean_step_size": jnp.mean(step_sizes),
-            "min_step_fraction": jnp.mean(is_min_step),
+            "min_step_fraction": jnp.mean(
+                (step_levels == self.max_step_size - 1).astype(jnp.float32)
+            ),
+            "bootstrap_active_fraction": jnp.mean(bootstrap_row_mask.astype(jnp.float32)),
+            "bootstrap_active_rows": bootstrap_rows.astype(jnp.float32),
         }
         return total_loss, metrics

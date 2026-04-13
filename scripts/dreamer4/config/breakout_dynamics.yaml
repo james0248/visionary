@@ -6,6 +6,10 @@ total_steps: 500000
 overfit_single_batch: false
 exp_name: ???
 
+loss:
+  bootstrap_ratio: 0.25
+  bootstrap_start_step: 10000
+
 video_eval:
   context_frames: 16
   generated_frames: 112
@@ -15,7 +19,7 @@ video_eval:
   output_dir: artifacts/dreamer4_dynamics_eval
   tokenizer:
     config_path: scripts/dreamer4/config/breakout.yaml
-    checkpoint_dir: null
+    checkpoint_dir: gs://visionary-exp/breakout/checkpoints/tokenizer_l8p8
     checkpoint_step: null
 
 dataset:
@@ -27,7 +31,7 @@ dataset:
     enabled: true
     short: 32
     long: 128
-    long_every: 4
+    long_every: 8
     final_long_only_steps: 0
   worker_count: 0
   num_threads: 2
@@ -38,7 +42,7 @@ dataset:
 
 dynamics:
   _target_: visionary.dynamics.DynamicsModel
-  num_layers: 12
+  num_layers: 24
   num_heads: 8
   num_kv_heads: 2
   num_registers: 2
@@ -55,7 +59,7 @@ dynamics:
 checkpoint:
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
-    directory: gs://visionary-exp/breakout/dynamics/${exp_name}
+    directory: gs://visionary-exp/breakout/checkpoints/${exp_name}
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
       save_interval_steps: 10000
