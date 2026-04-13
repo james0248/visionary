@@ -574,8 +574,7 @@ def write_split(
     finally:
         if record_executor is not None:
             record_executor.shutdown(wait=True)
-
-    stats.shards_written = shard_writer.close()
+        stats.shards_written = shard_writer.close()
     return stats
 
 
