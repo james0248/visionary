@@ -518,11 +518,40 @@ def main(cfg: DictConfig):
     _t = time.monotonic()
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
-    if cfg.checkpoint.resume_step is not None:
-        state = checkpoint_manager.restore(
-            target=state,
-            step=cfg.checkpoint.resume_step,
-        )
+    train_iterators = {
+        sequence_length: iter(loader) for sequence_length, loader in train_loaders.items()
+    }
+
+    def iterator_items():
+        if cfg.overfit_single_batch:
+            return None
+        return {
+            f"train_iterator_{sequence_length}": train_iterator
+            for sequence_length, train_iterator in train_iterators.items()
+        }
+
+    def sequence_length_for_step(current_step: int) -> int:
+        if cfg.dataset.alternating_lengths.enabled and (
+            current_step >= total_steps - cfg.dataset.alternating_lengths.final_long_only_steps
+            or (current_step + 1) % cfg.dataset.alternating_lengths.long_every == 0
+        ):
+            return cfg.dataset.alternating_lengths.long
+        if cfg.dataset.alternating_lengths.enabled:
+            return cfg.dataset.alternating_lengths.short
+        return cfg.dataset.batch_length
+
+    resume_spec = cfg.checkpoint.resume_step
+    resume_step = None
+    if resume_spec is not None:
+        if isinstance(resume_spec, str) and resume_spec.strip().lower() == "latest":
+            resume_step = checkpoint_manager.latest_step()
+            if resume_step is None:
+                logger.info("No dynamics checkpoint found in %s; starting fresh.", checkpoint_manager.directory)
+        else:
+            resume_step = int(resume_spec)
+
+    if resume_step is not None:
+        state = checkpoint_manager.restore(target=state, step=resume_step, extra_items=iterator_items())
         logger.info("Resumed dynamics training from step %d", int(state.step))
 
     state = flax_jax_utils.replicate(state, devices=local_devices)
@@ -539,23 +568,10 @@ def main(cfg: DictConfig):
         checkpoint_manager.close()
         wb.finish()
         return
-
-    train_iterators = {
-        sequence_length: iter(loader) for sequence_length, loader in train_loaders.items()
-    }
-
     while True:
         t1 = time.monotonic()
 
-        if cfg.dataset.alternating_lengths.enabled and (
-            step >= total_steps - cfg.dataset.alternating_lengths.final_long_only_steps
-            or (step + 1) % cfg.dataset.alternating_lengths.long_every == 0
-        ):
-            sequence_length = cfg.dataset.alternating_lengths.long
-        elif cfg.dataset.alternating_lengths.enabled:
-            sequence_length = cfg.dataset.alternating_lengths.short
-        else:
-            sequence_length = cfg.dataset.batch_length
+        sequence_length = sequence_length_for_step(step)
 
         if cfg.overfit_single_batch:
             batch = overfit_batches[sequence_length]
@@ -646,8 +662,8 @@ def main(cfg: DictConfig):
                 step=step,
             )
 
-        if is_primary_process and checkpoint_manager.should_save(step):
-            checkpoint_manager.save(step=step, state=to_host(state))
+        if checkpoint_manager.should_save(step):
+            checkpoint_manager.save(step=step, state=to_host(state), extra_items=iterator_items())
 
         t5 = time.monotonic()
         logger.info(
@@ -664,8 +680,13 @@ def main(cfg: DictConfig):
             break
 
     multihost_utils.sync_global_devices("dynamics_train_complete")
-    if is_primary_process and step >= total_steps and not checkpoint_manager.should_save(step):
-        checkpoint_manager.save(step=step, state=to_host(state), force=True)
+    if step >= total_steps and not checkpoint_manager.should_save(step):
+        checkpoint_manager.save(
+            step=step,
+            state=to_host(state),
+            extra_items=iterator_items(),
+            force=True,
+        )
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()
