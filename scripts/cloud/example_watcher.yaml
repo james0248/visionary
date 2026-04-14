@@ -1,4 +1,4 @@
-project: my-gcp-project
+project: visionary-491008
 
 job:
   name: breakout-dynamics
@@ -7,8 +7,8 @@ job:
   spot: true
 
 repo:
-  url: https://github.com/your-org/visionary.git
-  branch: main
+  url: https://github.com/james0248/visionary.git
+  branch: dynamics
 
 setup:
   accelerator: tpu
@@ -31,12 +31,12 @@ secrets:
   wandb_secret: wandb-api-key
 
 starter_service_account:
-  email: visionary-starter@my-gcp-project.iam.gserviceaccount.com
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
   scopes:
     - https://www.googleapis.com/auth/cloud-platform
 
 watcher:
-  impersonate_service_account: visionary-watcher@my-gcp-project.iam.gserviceaccount.com
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
 
 # Choose one machine directly.
 # Runtime version is derived automatically from `family` unless overridden:
@@ -51,9 +51,9 @@ watcher:
 machine:
   family: v6e
   chips: 1
-  region: europe-west4
+  region: us-east1
   spot: true
   data_disk:
-    source: projects/my-gcp-project/zones/europe-west4-a/disks/visionary-data-v6e-ew4a
-    mode: read-only
+    source: projects/visionary-491008/zones/us-east1-d/disks/visionary-data-ue1d
+    mode: read-write
     mount_path: /mnt/visionary-data
