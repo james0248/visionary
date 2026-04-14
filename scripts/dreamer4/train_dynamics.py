@@ -1,18 +1,23 @@
 import itertools
 import logging
+import os
 import time
+from functools import partial
 from pathlib import Path
 
 import grain.python as grain
+import flax.jax_utils as flax_jax_utils
 import hydra
 import imageio
 import jax
+import jax.lax as lax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import orbax.checkpoint as ocp
 import wandb
 from hydra.utils import instantiate, to_absolute_path
+from jax.experimental import multihost_utils
 from omegaconf import DictConfig, OmegaConf
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
@@ -26,13 +31,23 @@ from visionary.tokenizer import Tokenizer
 logger = logging.getLogger(__name__)
 
 
-@jax.jit
+PMAP_AXIS_NAME = "data"
+
+
+@partial(
+    jax.pmap,
+    axis_name=PMAP_AXIS_NAME,
+    in_axes=(0, 0, None, None),
+    donate_argnums=(0,),
+)
 def train_step(
     state: DynamicsTrainState,
     batch: DynamicsBatch,
-    sample_key: jax.Array,
+    base_sample_key: jax.Array,
     bootstrap_ratio: float,
 ):
+    sample_key = jax.random.fold_in(base_sample_key, lax.axis_index(PMAP_AXIS_NAME))
+
     def loss_fn(params):
         return state.apply_fn(
             params,
@@ -43,17 +58,24 @@ def train_step(
         )
 
     (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
+    grads = lax.pmean(grads, axis_name=PMAP_AXIS_NAME)
+    metrics = lax.pmean(metrics, axis_name=PMAP_AXIS_NAME)
     state = state.apply_gradients(grads=grads)
     return state, metrics
 
 
-@jax.jit
+@partial(
+    jax.pmap,
+    axis_name=PMAP_AXIS_NAME,
+    in_axes=(0, 0, None, None),
+)
 def eval_step(
     state: DynamicsTrainState,
     batch: DynamicsBatch,
-    sample_key: jax.Array,
+    base_sample_key: jax.Array,
     bootstrap_ratio: float,
 ):
+    sample_key = jax.random.fold_in(base_sample_key, lax.axis_index(PMAP_AXIS_NAME))
     _, metrics = state.apply_fn(
         state.params,
         batch,
@@ -61,12 +83,12 @@ def eval_step(
         method=DynamicsModel.loss,
         rngs={"sample": sample_key},
     )
-    return metrics
+    return lax.pmean(metrics, axis_name=PMAP_AXIS_NAME)
 
 
 def log_video_eval(
     wb: WandbLogger,
-    state: DynamicsTrainState,
+    params,
     batch: DynamicsBatch,
     *,
     step: int,
@@ -93,7 +115,7 @@ def log_video_eval(
 
     for frame_idx in range(context_frames, total_frames):
         next_representation = generate_next(
-            state.params,
+            params,
             rollout_video,
             actions,
             context_noise,
@@ -198,8 +220,48 @@ def log_video_eval(
 
 @hydra.main(config_path="config", config_name="breakout_dynamics", version_base=None)
 def main(cfg: DictConfig):
-    logger.info("JAX backend: %s, devices: %s", jax.default_backend(), jax.devices())
-    wb = WandbLogger(cfg)
+    if not jax.distributed.is_initialized():
+        if "JAX_COORDINATOR_ADDRESS" in os.environ:
+            kwargs = {
+                "coordinator_address": os.environ["JAX_COORDINATOR_ADDRESS"],
+                "num_processes": int(os.environ["JAX_PROCESS_COUNT"]),
+                "process_id": int(os.environ["JAX_PROCESS_INDEX"]),
+            }
+            if "JAX_LOCAL_DEVICE_IDS" in os.environ:
+                kwargs["local_device_ids"] = [
+                    int(value) for value in os.environ["JAX_LOCAL_DEVICE_IDS"].split(",")
+                ]
+            logger.info("Initializing JAX distributed with explicit JAX_* environment variables.")
+            jax.distributed.initialize(**kwargs)
+        elif any(
+            name in os.environ
+            for name in (
+                "TPU_WORKER_ID",
+                "TPU_WORKER_HOSTNAMES",
+                "TPU_MESH_CONTROLLER_ADDRESS",
+                "TPU_MESH_CONTROLLER_PORT",
+                "CLOUD_TPU_TASK_ID",
+            )
+        ):
+            logger.info("Initializing JAX distributed using TPU auto-detection.")
+            jax.distributed.initialize()
+
+    process_index = jax.process_index()
+    process_count = jax.process_count()
+    local_device_count = jax.local_device_count()
+    local_devices = jax.local_devices()
+    distributed = process_count > 1 or local_device_count > 1
+    is_primary_process = process_index == 0
+    logger.info(
+        "JAX backend: %s process=%d/%d local_devices=%d global_devices=%d devices=%s",
+        jax.default_backend(),
+        process_index,
+        process_count,
+        local_device_count,
+        jax.device_count(),
+        jax.local_devices(),
+    )
+    wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled) and is_primary_process)
     total_steps = cfg.total_steps
 
     train_source = DynamicsDataSource(cfg.dataset.train_dir)
@@ -229,11 +291,35 @@ def main(cfg: DictConfig):
         train_sequence_lengths,
         cfg.dataset.eval.batch_length,
     )
+    batch_size_per_process = int(cfg.dataset.batch_size)
+    if batch_size_per_process % local_device_count != 0:
+        raise ValueError(
+            "cfg.dataset.batch_size is interpreted per process and must be divisible by "
+            f"jax.local_device_count(); got {cfg.dataset.batch_size=} {local_device_count=}"
+        )
+    batch_size_per_device = batch_size_per_process // local_device_count
+    bootstrap_start_step = int(cfg.loss.bootstrap_start_step)
+    target_bootstrap_ratio = float(cfg.loss.bootstrap_ratio)
+    logger.info(
+        "Batch layout: per_process=%d per_device=%d global=%d",
+        batch_size_per_process,
+        batch_size_per_device,
+        batch_size_per_process * process_count,
+    )
     logger.info(
         "Loss schedule: bootstrap_ratio=%.2f bootstrap_start_step=%d",
-        float(cfg.loss.bootstrap_ratio),
-        int(cfg.loss.bootstrap_start_step),
+        target_bootstrap_ratio,
+        bootstrap_start_step,
     )
+
+    def reshape_batch(batch: DynamicsBatch) -> DynamicsBatch:
+        return {
+            key: np.reshape(value, (local_device_count, batch_size_per_device, *value.shape[1:]))
+            for key, value in batch.items()
+        }
+
+    def to_host(tree):
+        return jax.device_get(flax_jax_utils.unreplicate(tree))
 
     def make_loader(
         source: DynamicsDataSource,
@@ -259,7 +345,7 @@ def main(cfg: DictConfig):
             operations=[
                 RandomDynamicsCrop(sequence_length),
                 grain.Batch(
-                    batch_size=cfg.dataset.batch_size,
+                    batch_size=batch_size_per_process,
                     drop_remainder=drop_remainder,
                 ),
             ],
@@ -299,7 +385,7 @@ def main(cfg: DictConfig):
                         eval_source,
                         sequence_length=cfg.dataset.eval.batch_length,
                         shuffle=False,
-                        drop_remainder=False,
+                        drop_remainder=distributed,
                         seed=cfg.seed,
                     )
                 )
@@ -310,7 +396,7 @@ def main(cfg: DictConfig):
             eval_source,
             sequence_length=cfg.dataset.eval.batch_length,
             shuffle=False,
-            drop_remainder=False,
+            drop_remainder=distributed,
             seed=cfg.seed,
         )
         logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
@@ -336,83 +422,89 @@ def main(cfg: DictConfig):
     )
     logger.info("TrainState creation took %.1fs", time.monotonic() - _t)
 
-    _t = time.monotonic()
     video_cfg = cfg.video_eval
-    video_output_dir = Path(to_absolute_path(video_cfg.output_dir))
-    video_output_dir.mkdir(parents=True, exist_ok=True)
+    video_output_dir = None
+    tokenizer_state = None
+    decode_images = None
+    generate_next = None
+    context_tau_used = None
+    if is_primary_process:
+        _t = time.monotonic()
+        video_output_dir = Path(to_absolute_path(video_cfg.output_dir))
+        video_output_dir.mkdir(parents=True, exist_ok=True)
 
-    tokenizer_cfg = OmegaConf.load(to_absolute_path(video_cfg.tokenizer.config_path))
-    tokenizer = instantiate(tokenizer_cfg.tokenizer)
-    tokenizer_patch_size = int(tokenizer_cfg.dataset.patch_size)
-    tokenizer_pad_width = tuple(int(value) for value in tokenizer_cfg.dataset.pad_width)
-    tokenizer_patch_dim = tokenizer_patch_size * tokenizer_patch_size * 3
-    tokenizer_patch_count = int(tokenizer_cfg.tokenizer.x_len) * int(tokenizer_cfg.tokenizer.y_len)
-    tokenizer_batch = {
-        "video": np.zeros((1, 1, tokenizer_patch_count, tokenizer_patch_dim), dtype=np.uint8)
-    }
-    tokenizer_key, tokenizer_sample_key = jax.random.split(jax.random.key(cfg.seed))
-    tokenizer_state = TokenizerTrainState.create(
-        apply_fn=tokenizer.apply,
-        params=tokenizer.init(
-            {"params": tokenizer_key, "sample": tokenizer_sample_key},
-            tokenizer_batch,
-        ),
-        tx=optax.adam(0.0),
-        mse_sq_ema=jnp.ones((), dtype=jnp.float32),
-        l1_sq_ema=jnp.ones((), dtype=jnp.float32),
-        lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
-        motion_sq_ema=jnp.ones((), dtype=jnp.float32),
-    )
-    tokenizer_checkpoint_dir = video_cfg.tokenizer.checkpoint_dir
-    if "://" not in str(tokenizer_checkpoint_dir):
-        tokenizer_checkpoint_dir = to_absolute_path(str(tokenizer_checkpoint_dir))
-    with CheckpointManager(tokenizer_checkpoint_dir, ocp.CheckpointManagerOptions()) as manager:
-        tokenizer_state = manager.restore(
-            target=tokenizer_state,
-            step=video_cfg.tokenizer.checkpoint_step,
+        tokenizer_cfg = OmegaConf.load(to_absolute_path(video_cfg.tokenizer.config_path))
+        tokenizer = instantiate(tokenizer_cfg.tokenizer)
+        tokenizer_patch_size = int(tokenizer_cfg.dataset.patch_size)
+        tokenizer_pad_width = tuple(int(value) for value in tokenizer_cfg.dataset.pad_width)
+        tokenizer_patch_dim = tokenizer_patch_size * tokenizer_patch_size * 3
+        tokenizer_patch_count = int(tokenizer_cfg.tokenizer.x_len) * int(tokenizer_cfg.tokenizer.y_len)
+        tokenizer_batch = {
+            "video": np.zeros((1, 1, tokenizer_patch_count, tokenizer_patch_dim), dtype=np.uint8)
+        }
+        tokenizer_key, tokenizer_sample_key = jax.random.split(jax.random.key(cfg.seed))
+        tokenizer_state = TokenizerTrainState.create(
+            apply_fn=tokenizer.apply,
+            params=tokenizer.init(
+                {"params": tokenizer_key, "sample": tokenizer_sample_key},
+                tokenizer_batch,
+            ),
+            tx=optax.adam(0.0),
+            mse_sq_ema=jnp.ones((), dtype=jnp.float32),
+            l1_sq_ema=jnp.ones((), dtype=jnp.float32),
+            lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
+            motion_sq_ema=jnp.ones((), dtype=jnp.float32),
+        )
+        tokenizer_checkpoint_dir = video_cfg.tokenizer.checkpoint_dir
+        if "://" not in str(tokenizer_checkpoint_dir):
+            tokenizer_checkpoint_dir = to_absolute_path(str(tokenizer_checkpoint_dir))
+        with CheckpointManager(tokenizer_checkpoint_dir, ocp.CheckpointManagerOptions()) as manager:
+            tokenizer_state = manager.restore(
+                target=tokenizer_state,
+                step=video_cfg.tokenizer.checkpoint_step,
+            )
+
+        requested_tau = float(video_cfg.context_tau)
+        context_step_count = 1 << (int(cfg.dynamics.max_step_size) - 1)
+        context_tau_used = (
+            min(max(round(requested_tau * context_step_count), 0), context_step_count - 1)
+            / context_step_count
         )
 
-    requested_tau = float(video_cfg.context_tau)
-    context_step_count = 1 << (int(cfg.dynamics.max_step_size) - 1)
-    context_tau_used = (
-        min(max(round(requested_tau * context_step_count), 0), context_step_count - 1)
-        / context_step_count
-    )
+        @jax.jit
+        def decode_images(params, latent):
+            return tokenizer.apply(
+                params,
+                latent,
+                tokenizer_patch_size,
+                tokenizer_pad_width,
+                method=Tokenizer.decode_images,
+            )
 
-    @jax.jit
-    def decode_images(params, latent):
-        return tokenizer.apply(
-            params,
-            latent,
-            tokenizer_patch_size,
-            tokenizer_pad_width,
-            method=Tokenizer.decode_images,
+        @jax.jit
+        def generate_next(params, video_prefix, actions, context_noise, sample_noise, target_index):
+            return model.apply(
+                params,
+                video_prefix,
+                actions,
+                context_noise,
+                sample_noise,
+                target_index,
+                context_tau=requested_tau,
+                sample_steps=int(video_cfg.sample_steps),
+                method=DynamicsModel.generate_next,
+            )
+
+        logger.info(
+            "Video eval ready; context=%d generated=%d sample_steps=%d requested_tau=%.4f "
+            "used_tau=%.4f",
+            int(video_cfg.context_frames),
+            int(video_cfg.generated_frames),
+            int(video_cfg.sample_steps),
+            requested_tau,
+            context_tau_used,
         )
-
-    @jax.jit
-    def generate_next(params, video_prefix, actions, context_noise, sample_noise, target_index):
-        return model.apply(
-            params,
-            video_prefix,
-            actions,
-            context_noise,
-            sample_noise,
-            target_index,
-            context_tau=requested_tau,
-            sample_steps=int(video_cfg.sample_steps),
-            method=DynamicsModel.generate_next,
-        )
-
-    logger.info(
-        "Video eval ready; context=%d generated=%d sample_steps=%d requested_tau=%.4f "
-        "used_tau=%.4f",
-        int(video_cfg.context_frames),
-        int(video_cfg.generated_frames),
-        int(video_cfg.sample_steps),
-        requested_tau,
-        context_tau_used,
-    )
-    logger.info("Video eval init took %.1fs", time.monotonic() - _t)
+        logger.info("Video eval init took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
@@ -424,7 +516,8 @@ def main(cfg: DictConfig):
         )
         logger.info("Resumed dynamics training from step %d", int(state.step))
 
-    step = int(state.step)
+    state = flax_jax_utils.replicate(state, devices=local_devices)
+    step = int(to_host(state.step))
     logger.info("Dynamics training target step: %d", total_steps)
 
     if step >= total_steps:
@@ -465,15 +558,11 @@ def main(cfg: DictConfig):
                 batch = next(train_iterators[sequence_length])
         t2 = time.monotonic()
 
-        batch = jax.device_put(batch)
+        batch = reshape_batch(batch)
         t3 = time.monotonic()
 
         sample_key = jax.random.fold_in(train_key, step)
-        bootstrap_ratio = (
-            float(cfg.loss.bootstrap_ratio)
-            if step >= int(cfg.loss.bootstrap_start_step)
-            else 0.0
-        )
+        bootstrap_ratio = target_bootstrap_ratio if step >= bootstrap_start_step else 0.0
         state, metrics = train_step(
             state,
             batch,
@@ -483,7 +572,7 @@ def main(cfg: DictConfig):
         jax.block_until_ready(metrics)
         t4 = time.monotonic()
 
-        step = int(state.step)
+        step = int(to_host(state.step))
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -496,59 +585,60 @@ def main(cfg: DictConfig):
                 eval_batches = list(
                     itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches)
                 )
+            global_eval_batch_counts = np.asarray(
+                multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
+            )
+            eval_batches = eval_batches[: int(np.min(global_eval_batch_counts))]
 
             num_batches = 0
             for batch_idx, eval_batch in enumerate(eval_batches):
                 eval_sample_key = jax.random.fold_in(eval_run_key, batch_idx)
-                eval_bootstrap_ratio = (
-                    float(cfg.loss.bootstrap_ratio)
-                    if step >= int(cfg.loss.bootstrap_start_step)
-                    else 0.0
-                )
-                batch_metrics = jax.device_get(
+                batch_metrics = to_host(
                     eval_step(
                         state,
-                        jax.device_put(eval_batch),
+                        reshape_batch(eval_batch),
                         eval_sample_key,
-                        eval_bootstrap_ratio,
+                        bootstrap_ratio,
                     )
                 )
                 for k, v in batch_metrics.items():
                     totals[k] = totals.get(k, 0.0) + float(v)
                 num_batches += 1
 
-            eval_metrics = {k: v / num_batches for k, v in totals.items()}
-            wb.log(
-                {f"eval/{k}": v for k, v in eval_metrics.items()},
-                step=step,
-            )
-            log_video_eval(
-                wb,
-                state,
-                eval_batches[0],
-                step=step,
-                rollout_key=jax.random.fold_in(eval_run_key, num_batches),
-                video_cfg=video_cfg,
-                output_dir=video_output_dir,
-                tokenizer_params=tokenizer_state.params,
-                decode_images=decode_images,
-                generate_next=generate_next,
-                context_tau_used=context_tau_used,
-            )
+            if num_batches > 0:
+                eval_metrics = {k: v / num_batches for k, v in totals.items()}
+                wb.log(
+                    {f"eval/{k}": v for k, v in eval_metrics.items()},
+                    step=step,
+                )
+            if is_primary_process and num_batches > 0:
+                log_video_eval(
+                    wb,
+                    to_host(state.params),
+                    eval_batches[0],
+                    step=step,
+                    rollout_key=jax.random.fold_in(eval_run_key, num_batches),
+                    video_cfg=video_cfg,
+                    output_dir=video_output_dir,
+                    tokenizer_params=tokenizer_state.params,
+                    decode_images=decode_images,
+                    generate_next=generate_next,
+                    context_tau_used=context_tau_used,
+                )
             t_eval = time.monotonic() - t_eval_start
             logger.info("Eval at step %d - %d batches in %.3fs", step, num_batches, t_eval)
 
         if step % cfg.log_interval == 0:
             wb.log(
                 {
-                    **{k: float(v) for k, v in metrics.items()},
+                    **{k: float(v) for k, v in to_host(metrics).items()},
                     "train/sequence_length": sequence_length,
                 },
                 step=step,
             )
 
-        if checkpoint_manager.should_save(step):
-            checkpoint_manager.save(step=step, state=state)
+        if is_primary_process and checkpoint_manager.should_save(step):
+            checkpoint_manager.save(step=step, state=to_host(state))
 
         t5 = time.monotonic()
         logger.info(
@@ -564,8 +654,9 @@ def main(cfg: DictConfig):
             logger.info("Reached total_steps=%d; stopping dynamics training.", total_steps)
             break
 
-    if step >= total_steps and not checkpoint_manager.should_save(step):
-        checkpoint_manager.save(step=step, state=state, force=True)
+    multihost_utils.sync_global_devices("dynamics_train_complete")
+    if is_primary_process and step >= total_steps and not checkpoint_manager.should_save(step):
+        checkpoint_manager.save(step=step, state=to_host(state), force=True)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()
