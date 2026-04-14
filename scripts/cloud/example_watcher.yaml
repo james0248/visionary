@@ -1,0 +1,59 @@
+project: my-gcp-project
+
+job:
+  name: breakout-dynamics
+  poll_interval_seconds: 60
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/your-org/visionary.git
+  branch: main
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/dreamer4/train_dynamics.py
+  config_name: breakout_dynamics
+  auto_resume: true
+  overrides:
+    - exp_name=breakout-dynamics
+    - dataset.train_dir=/mnt/visionary-data/train
+    - dataset.eval_dir=/mnt/visionary-data/eval
+    - checkpoint.manager.directory=gs://visionary-exp/breakout/checkpoints/breakout-dynamics
+
+markers:
+  complete_uri: gs://visionary-exp/breakout/checkpoints/breakout-dynamics/_training_complete.json
+  failure_uri: gs://visionary-exp/breakout/checkpoints/breakout-dynamics/_training_failed.json
+
+secrets:
+  wandb_secret: wandb-api-key
+
+starter_service_account:
+  email: visionary-starter@my-gcp-project.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@my-gcp-project.iam.gserviceaccount.com
+
+# Choose one machine directly.
+# Runtime version is derived automatically from `family` unless overridden:
+# - v6e -> v2-alpha-tpuv6e
+# - v5e -> v2-alpha-tpuv5-lite
+# - v4  -> tpu-ubuntu2204-base
+#
+# Family / chip constraints from the current TRC inventory:
+# - v6e spot: regions europe-west4, us-east1; chips 1, 4, 8, 16, 32, 64
+# - v5e spot: regions europe-west4, us-central1; chips 1, 4, 8, 16, 32, 64
+# - v4 spot or on-demand: region us-central2; chips 4, 8, 16, 32
+machine:
+  family: v6e
+  chips: 1
+  region: europe-west4
+  spot: true
+  data_disk:
+    source: projects/my-gcp-project/zones/europe-west4-a/disks/visionary-data-v6e-ew4a
+    mode: read-only
+    mount_path: /mnt/visionary-data
