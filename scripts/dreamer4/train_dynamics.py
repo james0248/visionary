@@ -236,14 +236,21 @@ def main(cfg: DictConfig):
         elif any(
             name in os.environ
             for name in (
+                "TPU_PROCESS_ADDRESSES",
                 "TPU_WORKER_ID",
                 "TPU_WORKER_HOSTNAMES",
                 "TPU_MESH_CONTROLLER_ADDRESS",
                 "TPU_MESH_CONTROLLER_PORT",
                 "CLOUD_TPU_TASK_ID",
+                "MEGASCALE_COORDINATOR_ADDRESS",
+                "MEGASCALE_NUM_SLICES",
+                "MEGASCALE_SLICE_ID",
             )
         ):
-            logger.info("Initializing JAX distributed using TPU auto-detection.")
+            logger.info(
+                "Initializing JAX distributed using TPU auto-detection. "
+                "On a pod slice, start this script on every worker."
+            )
             jax.distributed.initialize()
 
     process_index = jax.process_index()
