@@ -236,6 +236,8 @@ def main(cfg: DictConfig):
         elif any(
             name in os.environ
             for name in (
+                "TPU_ML_PLATFORM",
+                "TPU_ML_PLATFORM_VERSION",
                 "TPU_PROCESS_ADDRESSES",
                 "TPU_WORKER_ID",
                 "TPU_WORKER_HOSTNAMES",
