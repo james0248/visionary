@@ -342,7 +342,7 @@ class DynamicsModel(nn.Module):
         total_loss = jnp.mean(weighted_loss)
 
         def masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
-            mask = mask.astype(values.dtype)
+            mask = jnp.broadcast_to(mask, values.shape).astype(values.dtype)
             return jnp.sum(values * mask) / jnp.maximum(jnp.sum(mask), 1.0)
 
         flow_mask = (~use_bootstrap_loss).astype(jnp.float32)
