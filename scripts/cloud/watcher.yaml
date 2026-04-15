@@ -27,7 +27,17 @@ training:
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json
-  failure_uri: ${checkpoint_dir}/_training_failed.json
+  failure_prefix: ${checkpoint_dir}/failures
+
+logs:
+  uri: ${checkpoint_dir}/_starter.log
+  archive_uri_prefix: ${checkpoint_dir}/logs
+  tail_lines: 120
+
+failure_policy:
+  mode: retry
+  max_retries: 3
+  retry_backoff_seconds: 30
 
 secrets:
   wandb_secret: wandb-api-key
@@ -39,6 +49,7 @@ starter_service_account:
 
 watcher:
   impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: ${checkpoint_dir}/_watcher_state.json
 
 # Choose one machine directly.
 # Runtime version is derived automatically from `family` unless overridden:

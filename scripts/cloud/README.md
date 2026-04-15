@@ -12,7 +12,8 @@
 - Create two service accounts.
   - Starter service account:
     - `roles/secretmanager.secretAccessor`
-    - Cloud Storage write access for checkpoints, typically `roles/storage.objectAdmin` on the checkpoint bucket
+    - Cloud Storage object access for checkpoints, typically `roles/storage.objectAdmin` on the checkpoint bucket
+    - Cloud Storage bucket metadata read for Orbax-on-GCS, typically `roles/storage.legacyBucketReader` on the checkpoint bucket
   - Watcher caller or impersonated service account:
     - `roles/tpu.admin`
     - permission to use the data disk, typically `roles/compute.storageAdmin`

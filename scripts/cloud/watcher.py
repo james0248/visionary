@@ -264,6 +264,7 @@ def delete_queued_resource(cfg: dict[str, Any], *, queued_resource_name: str, zo
         queued_resource_name,
         f"--project={cfg['project']}",
         f"--zone={zone}",
+        "--force",
         "--quiet",
     )
     run_command(cmd, capture_output=True)
@@ -283,12 +284,100 @@ def queued_resource_create_time(desc: dict[str, Any]) -> datetime | None:
     return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
 
 
+def metadata_to_dict(metadata: Any) -> dict[str, str]:
+    if isinstance(metadata, dict):
+        return {str(key): str(value) for key, value in metadata.items()}
+    if isinstance(metadata, list):
+        items: dict[str, str] = {}
+        for entry in metadata:
+            if not isinstance(entry, dict):
+                continue
+            key = entry.get("key", entry.get("name"))
+            value = entry.get("value")
+            if key is None or value is None:
+                continue
+            items[str(key)] = str(value)
+        return items
+    return {}
+
+
+def queued_resource_node_specs(desc: dict[str, Any]) -> list[dict[str, Any]]:
+    tpu_desc = desc.get("tpu", {})
+    if not isinstance(tpu_desc, dict):
+        return []
+    node_specs = tpu_desc.get("nodeSpec", tpu_desc.get("node_spec", []))
+    if not isinstance(node_specs, list):
+        return []
+    return [spec for spec in node_specs if isinstance(spec, dict)]
+
+
+def queued_resource_metadata_mismatch_reason(
+    desc: dict[str, Any], *, expected_startup_script: str, expected_payload_json: str
+) -> str | None:
+    node_specs = queued_resource_node_specs(desc)
+    if not node_specs:
+        return "missing nodeSpec metadata"
+
+    for spec in node_specs:
+        node = spec.get("node", {})
+        if not isinstance(node, dict):
+            return "missing node metadata"
+
+        metadata = metadata_to_dict(node.get("metadata", {}))
+        if metadata.get("startup-script") != expected_startup_script:
+            return "startup-script metadata mismatch"
+        if metadata.get("visionary-job-json") != expected_payload_json:
+            return "visionary-job-json metadata mismatch"
+
+    return None
+
+
 def gcs_object_exists(cfg: dict[str, Any], uri: str) -> bool:
     if not uri:
         return False
     cmd = gcloud_command(cfg, "storage", "ls", uri)
     result = subprocess.run(cmd, text=True, capture_output=True, check=False)
     return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def gcs_read_text(cfg: dict[str, Any], uri: str) -> str:
+    if not uri:
+        return ""
+    cmd = gcloud_command(cfg, "storage", "cat", uri)
+    return run_command(cmd)
+
+
+def gcs_list_objects(cfg: dict[str, Any], uri_prefix: str) -> list[str]:
+    if not uri_prefix:
+        return []
+    cmd = gcloud_command(cfg, "storage", "ls", f"{uri_prefix.rstrip('/')}/**")
+    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        stderr = result.stderr or ""
+        if "matched no objects" in stderr.lower() or "does not exist" in stderr.lower():
+            return []
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return sorted(
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip().startswith("gs://")
+    )
+
+
+def gcs_write_text(cfg: dict[str, Any], uri: str, text: str) -> None:
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+        handle.write(text)
+        payload_path = Path(handle.name)
+    try:
+        cmd = gcloud_command(cfg, "storage", "cp", payload_path.as_posix(), uri)
+        run_command(cmd)
+    finally:
+        payload_path.unlink(missing_ok=True)
 
 
 def sanitize_name(value: str, *, max_len: int = 40) -> str:
@@ -314,6 +403,7 @@ def build_job_payload(
     *,
     queued_resource_name_value: str,
     candidate_index: int,
+    attempt_id: int | None = None,
 ) -> dict[str, Any]:
     markers_cfg = dict(cfg.get("markers", {}))
     training_cfg = dict(cfg["training"])
@@ -329,21 +419,216 @@ def build_job_payload(
         "setup": cfg["setup"],
         "training": training_cfg,
         "markers": markers_cfg,
+        "logs": cfg.get("logs", {}),
         "secrets": cfg.get("secrets", {}),
         "data_disk": data_disk_cfg,
         "queued_resource": {
             "name": queued_resource_name_value,
             "candidate_index": candidate_index,
             "zone": candidate["zone"],
+            **({"attempt_id": attempt_id} if attempt_id is not None else {}),
         },
     }
 
 
-def resolve_marker_uris(cfg: dict[str, Any]) -> tuple[str, str]:
+def resolve_marker_paths(cfg: dict[str, Any]) -> tuple[str, str]:
     markers_cfg = dict(cfg.get("markers", {}))
     complete_uri = markers_cfg.get("complete_uri", "")
-    failure_uri = markers_cfg.get("failure_uri", "")
-    return complete_uri, failure_uri
+    failure_prefix = str(markers_cfg.get("failure_prefix", "")).strip()
+    return complete_uri, failure_prefix
+
+
+def resolve_state_uri(cfg: dict[str, Any]) -> str:
+    watcher_cfg = dict(cfg.get("watcher", {}))
+    return str(watcher_cfg.get("state_uri", "")).strip()
+
+
+def resolve_failure_policy(cfg: dict[str, Any]) -> dict[str, Any]:
+    failure_cfg = dict(cfg.get("failure_policy", {}))
+    mode = str(failure_cfg.get("mode", "retry")).lower()
+    if mode not in {"retry", "stop"}:
+        raise ValueError("failure_policy.mode must be one of: retry, stop")
+
+    max_retries = int(failure_cfg.get("max_retries", 3))
+    retry_backoff_seconds = int(failure_cfg.get("retry_backoff_seconds", 30))
+    if retry_backoff_seconds < 0:
+        raise ValueError("failure_policy.retry_backoff_seconds must be >= 0")
+
+    return {
+        "mode": mode,
+        "max_retries": max_retries,
+        "retry_backoff_seconds": retry_backoff_seconds,
+    }
+
+
+def load_marker_payload(cfg: dict[str, Any], uri: str) -> dict[str, Any] | None:
+    if not uri:
+        return None
+    try:
+        payload = gcs_read_text(cfg, uri)
+    except subprocess.CalledProcessError:
+        return None
+    if not payload.strip():
+        return None
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def default_watcher_state() -> dict[str, Any]:
+    return {
+        "next_attempt_id": 1,
+        "current_attempt_id": None,
+        "current_candidate_index": None,
+        "last_processed_failure_uri": "",
+        "failure_retries": 0,
+    }
+
+
+def load_watcher_state(cfg: dict[str, Any]) -> dict[str, Any]:
+    state = default_watcher_state()
+    state_uri = resolve_state_uri(cfg)
+    if not state_uri:
+        return state
+
+    try:
+        payload = gcs_read_text(cfg, state_uri)
+    except subprocess.CalledProcessError:
+        return state
+    if not payload.strip():
+        return state
+
+    try:
+        raw = json.loads(payload)
+    except json.JSONDecodeError:
+        return state
+    if not isinstance(raw, dict):
+        return state
+
+    for key in ("next_attempt_id", "failure_retries", "current_attempt_id", "current_candidate_index"):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            state[key] = int(value)
+        except (TypeError, ValueError):
+            continue
+    last_processed_failure_uri = raw.get("last_processed_failure_uri")
+    if isinstance(last_processed_failure_uri, str):
+        state["last_processed_failure_uri"] = last_processed_failure_uri
+    return state
+
+
+def save_watcher_state(cfg: dict[str, Any], state: dict[str, Any]) -> None:
+    state_uri = resolve_state_uri(cfg)
+    if not state_uri:
+        return
+    payload = json.dumps(state, indent=2, sort_keys=True)
+    gcs_write_text(cfg, state_uri, payload)
+
+
+def queued_resource_job_payload(desc: dict[str, Any]) -> dict[str, Any] | None:
+    for spec in queued_resource_node_specs(desc):
+        node = spec.get("node", {})
+        if not isinstance(node, dict):
+            continue
+        metadata = metadata_to_dict(node.get("metadata", {}))
+        payload = metadata.get("visionary-job-json")
+        if not payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def queued_resource_attempt_id(desc: dict[str, Any]) -> int | None:
+    payload = queued_resource_job_payload(desc)
+    if not isinstance(payload, dict):
+        return None
+    queued_resource_cfg = payload.get("queued_resource", {})
+    if not isinstance(queued_resource_cfg, dict):
+        return None
+    raw_attempt_id = queued_resource_cfg.get("attempt_id")
+    if raw_attempt_id is None:
+        return None
+    try:
+        return int(raw_attempt_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def next_failure_event_uri(cfg: dict[str, Any], failure_prefix: str, last_processed_uri: str) -> str:
+    for uri in gcs_list_objects(cfg, failure_prefix):
+        if uri > last_processed_uri:
+            return uri
+    return ""
+
+
+def failure_candidate_index(
+    payload: dict[str, Any] | None,
+    *,
+    existing_index: int | None,
+    fallback_index: int,
+    candidate_count: int,
+) -> int:
+    if payload is not None:
+        raw_candidate_index = payload.get("candidate_index")
+        if raw_candidate_index is not None:
+            try:
+                return int(raw_candidate_index) % candidate_count
+            except (TypeError, ValueError):
+                pass
+
+        queued_name = payload.get("queued_resource_name")
+        if isinstance(queued_name, str):
+            match = re.search(r"-(\d+)$", queued_name)
+            if match is not None:
+                return int(match.group(1)) % candidate_count
+
+    if existing_index is not None:
+        return existing_index % candidate_count
+    return fallback_index % candidate_count
+
+
+def print_failure_details(cfg: dict[str, Any], failure_uri: str) -> dict[str, Any] | None:
+    payload = load_marker_payload(cfg, failure_uri)
+    if payload is None:
+        print(f"[watcher] Failure event found at {failure_uri}.")
+        return None
+
+    details = []
+    for key in ("job_name", "node_name", "queued_resource_name", "exit_code", "timestamp"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            details.append(f"{key}={value}")
+    if details:
+        print(f"[watcher] Failure details: {', '.join(details)}")
+    else:
+        print(f"[watcher] Failure event found at {failure_uri}.")
+
+    log_uri = payload.get("log_uri")
+    if isinstance(log_uri, str) and log_uri:
+        print(f"[watcher] Full startup log: {log_uri}")
+
+    archived_log_uri = payload.get("archived_log_uri")
+    if isinstance(archived_log_uri, str) and archived_log_uri:
+        print(f"[watcher] Archived failure log: {archived_log_uri}")
+
+    upload_error = payload.get("log_upload_error")
+    if isinstance(upload_error, str) and upload_error:
+        print(f"[watcher] Log upload error: {upload_error}")
+
+    log_tail = payload.get("log_tail")
+    if isinstance(log_tail, str) and log_tail.strip():
+        print("[watcher] Failure log tail:")
+        print(log_tail.rstrip())
+    return payload
 
 
 def create_queued_resource(
@@ -351,6 +636,7 @@ def create_queued_resource(
     candidate: dict[str, Any],
     *,
     candidate_index: int,
+    attempt_id: int,
     starter_script: Path,
 ) -> None:
     qr_name = queued_resource_name(cfg["job"]["name"], candidate_index)
@@ -359,6 +645,7 @@ def create_queued_resource(
         candidate,
         queued_resource_name_value=qr_name,
         candidate_index=candidate_index,
+        attempt_id=attempt_id,
     )
 
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
@@ -377,8 +664,10 @@ def create_queued_resource(
         f"--runtime-version={candidate['runtime_version']}",
         f"--service-account={cfg['starter_service_account']['email']}",
         f"--scopes={','.join(cfg['starter_service_account'].get('scopes', ['https://www.googleapis.com/auth/cloud-platform']))}",
-        f"--metadata-from-file=startup-script={starter_script}",
-        f"--metadata-from-file=visionary-job-json={payload_path}",
+        (
+            f"--metadata-from-file="
+            f"startup-script={starter_script},visionary-job-json={payload_path}"
+        ),
     )
 
     cmd.append(f"--accelerator-type={candidate['accelerator_type']}")
@@ -461,15 +750,23 @@ def main() -> None:
 
     config_path = Path(args.config).resolve()
     starter_script = Path(args.starter_script).resolve()
+    starter_script_contents = starter_script.read_text()
     cfg = load_config(config_path)
     candidates = list(cfg["candidates"])
     if not candidates:
         raise ValueError("Config must define at least one candidate TPU.")
 
-    next_candidate_index = 0
+    state = load_watcher_state(cfg)
+    current_candidate_index = state.get("current_candidate_index")
+    if current_candidate_index is None:
+        next_candidate_index = 0
+    else:
+        next_candidate_index = int(current_candidate_index) % len(candidates)
     poll_interval = int(cfg["job"].get("poll_interval_seconds", 60))
     queue_wait_timeout = int(cfg["job"].get("queue_wait_timeout_seconds", 3600))
-    complete_marker_uri, failure_marker_uri = resolve_marker_uris(cfg)
+    complete_marker_uri, failure_prefix = resolve_marker_paths(cfg)
+    failure_policy = resolve_failure_policy(cfg)
+    failure_retries = int(state["failure_retries"])
 
     print(f"[watcher] Managing job {cfg['job']['name']} from {config_path}")
     while True:
@@ -484,30 +781,84 @@ def main() -> None:
                     queued_resource_name=queued_resource_name(cfg["job"]["name"], index),
                     zone=candidate["zone"],
                 )
+            state["current_attempt_id"] = None
+            state["current_candidate_index"] = None
+            state["failure_retries"] = 0
+            save_watcher_state(cfg, state)
             print("[watcher] Training completed.")
             return
 
-        if gcs_object_exists(cfg, failure_marker_uri):
+        failure_event_uri = next_failure_event_uri(
+            cfg,
+            failure_prefix,
+            str(state.get("last_processed_failure_uri", "")),
+        )
+        if failure_event_uri:
+            existing_index = existing[0] if existing is not None else None
+            payload = print_failure_details(cfg, failure_event_uri)
             if existing is not None:
                 index, candidate, _ = existing
-                print(f"[watcher] Failure marker found; deleting queued resource {index}.")
+                print(f"[watcher] Failure event found; deleting queued resource {index}.")
                 delete_queued_resource(
                     cfg,
                     queued_resource_name=queued_resource_name(cfg["job"]["name"], index),
                     zone=candidate["zone"],
                 )
-            raise SystemExit("[watcher] Training failed; see failure marker for details.")
+            state["last_processed_failure_uri"] = failure_event_uri
+            state["current_attempt_id"] = None
+            state["current_candidate_index"] = None
+            if failure_policy["mode"] == "retry" and (
+                failure_policy["max_retries"] < 0 or failure_retries < failure_policy["max_retries"]
+            ):
+                failure_retries += 1
+                state["failure_retries"] = failure_retries
+                save_watcher_state(cfg, state)
+                retry_target_index = failure_candidate_index(
+                    payload,
+                    existing_index=existing_index,
+                    fallback_index=next_candidate_index,
+                    candidate_count=len(candidates),
+                )
+                retries_label = (
+                    "unbounded"
+                    if failure_policy["max_retries"] < 0
+                    else f"{failure_retries}/{failure_policy['max_retries']}"
+                )
+                print(
+                    "[watcher] Failure event consumed; retrying candidate "
+                    f"{retry_target_index} after {failure_policy['retry_backoff_seconds']}s "
+                    f"(attempt {retries_label})."
+                )
+                next_candidate_index = retry_target_index
+                time.sleep(failure_policy["retry_backoff_seconds"])
+                continue
+
+            if failure_policy["mode"] == "retry":
+                save_watcher_state(cfg, state)
+                max_retries = failure_policy["max_retries"]
+                raise SystemExit(
+                    "[watcher] Training failed and retry budget is exhausted "
+                    f"({failure_retries}/{max_retries})."
+                )
+            save_watcher_state(cfg, state)
+            raise SystemExit("[watcher] Training failed; see failure event details above.")
 
         if existing is None:
             candidate = candidates[next_candidate_index]
+            attempt_id = int(state["next_attempt_id"])
+            state["current_attempt_id"] = attempt_id
+            state["current_candidate_index"] = next_candidate_index
+            state["next_attempt_id"] = attempt_id + 1
+            save_watcher_state(cfg, state)
             print(
                 "[watcher] No queued resource exists; creating candidate "
-                f"{next_candidate_index} in {candidate['zone']}."
+                f"{next_candidate_index} in {candidate['zone']} for attempt {attempt_id}."
             )
             create_queued_resource(
                 cfg,
                 candidate,
                 candidate_index=next_candidate_index,
+                attempt_id=attempt_id,
                 starter_script=starter_script,
             )
             next_candidate_index = (next_candidate_index + 1) % len(candidates)
@@ -515,21 +866,59 @@ def main() -> None:
             continue
 
         index, candidate, desc = existing
-        state = queued_resource_state(desc)
-        print(f"[watcher] {queued_resource_name(cfg['job']['name'], index)} state={state}")
-
-        if state in TERMINAL_RETRY_STATES:
-            print(f"[watcher] Deleting terminal queued resource in state {state}.")
+        attempt_id = state.get("current_attempt_id")
+        if attempt_id is None:
+            attempt_id = queued_resource_attempt_id(desc)
+        expected_payload_json = json.dumps(
+            build_job_payload(
+                cfg,
+                candidate,
+                queued_resource_name_value=queued_resource_name(cfg["job"]["name"], index),
+                candidate_index=index,
+                attempt_id=attempt_id,
+            ),
+            indent=2,
+        )
+        mismatch_reason = queued_resource_metadata_mismatch_reason(
+            desc,
+            expected_startup_script=starter_script_contents,
+            expected_payload_json=expected_payload_json,
+        )
+        if mismatch_reason is not None:
+            print(
+                "[watcher] Existing queued resource metadata mismatch "
+                f"({mismatch_reason}); deleting and recreating candidate {index}."
+            )
             delete_queued_resource(
                 cfg,
                 queued_resource_name=queued_resource_name(cfg["job"]["name"], index),
                 zone=candidate["zone"],
             )
+            state["current_attempt_id"] = None
+            state["current_candidate_index"] = None
+            save_watcher_state(cfg, state)
+            next_candidate_index = index
+            time.sleep(poll_interval)
+            continue
+
+        queued_state = queued_resource_state(desc)
+        print(f"[watcher] {queued_resource_name(cfg['job']['name'], index)} state={queued_state}")
+
+        if queued_state in TERMINAL_RETRY_STATES:
+            print(f"[watcher] Deleting terminal queued resource in state {queued_state}.")
+            delete_queued_resource(
+                cfg,
+                queued_resource_name=queued_resource_name(cfg["job"]["name"], index),
+                zone=candidate["zone"],
+            )
+            state["current_attempt_id"] = None
+            state["current_candidate_index"] = None
+            save_watcher_state(cfg, state)
             next_candidate_index = (index + 1) % len(candidates)
             time.sleep(poll_interval)
             continue
 
-        if state in PENDING_STATES and wait_timed_out(desc, queue_wait_timeout):
+        if queued_state in PENDING_STATES and wait_timed_out(desc, queue_wait_timeout):
             print(
                 "[watcher] Queued resource wait timed out; deleting and rotating "
                 f"to candidate {(index + 1) % len(candidates)}."
@@ -539,12 +928,15 @@ def main() -> None:
                 queued_resource_name=queued_resource_name(cfg["job"]["name"], index),
                 zone=candidate["zone"],
             )
+            state["current_attempt_id"] = None
+            state["current_candidate_index"] = None
+            save_watcher_state(cfg, state)
             next_candidate_index = (index + 1) % len(candidates)
             time.sleep(poll_interval)
             continue
 
-        if state not in LIVE_STATES:
-            raise RuntimeError(f"Unhandled queued resource state: {state}")
+        if queued_state not in LIVE_STATES:
+            raise RuntimeError(f"Unhandled queued resource state: {queued_state}")
 
         time.sleep(poll_interval)
 
@@ -554,3 +946,10 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("[watcher] Interrupted.", file=sys.stderr)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.output or "").strip()
+        if detail:
+            raise SystemExit(
+                f"[watcher] Command failed: {' '.join(str(part) for part in exc.cmd)}\n{detail}"
+            ) from exc
+        raise
