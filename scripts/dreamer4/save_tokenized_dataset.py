@@ -238,6 +238,12 @@ def encode_record(
     for key, value in arrays.items():
         if key != "frames" and value.ndim > 0 and value.shape[0] == episode_length:
             payload[key] = value[start:stop]
+            if key == "actions":
+                payload["prev_action"] = (
+                    np.asarray(value[start - 1], dtype=value.dtype)
+                    if start > 0
+                    else np.full(value.shape[1:], -1, dtype=value.dtype)
+                )
 
     buffer = io.BytesIO()
     np.savez(buffer, **payload)
