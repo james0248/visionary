@@ -203,13 +203,113 @@ def normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     return candidate
 
 
-def run_command(cmd: list[str], *, capture_output: bool = True, check: bool = True) -> str:
-    result = subprocess.run(
-        cmd,
-        text=True,
-        capture_output=capture_output,
-        check=False,
+TRANSIENT_GCLOUD_ERROR_SUBSTRINGS = (
+    "there was a problem refreshing your current auth tokens",
+    "max retries exceeded with url",
+    "sslerror(",
+    "unexpected_eof_while_reading",
+    "eof occurred in violation of protocol",
+    "connection reset by peer",
+    "connection aborted",
+    "connection refused",
+    "temporary failure in name resolution",
+    "name or service not known",
+    "timed out",
+    "deadline exceeded",
+    "service unavailable",
+    "internal error encountered",
+)
+
+
+def resolve_gcloud_retry_policy(cfg: dict[str, Any] | None) -> tuple[int, float, float]:
+    watcher_cfg = dict(cfg.get("watcher", {})) if cfg else {}
+    attempts = max(int(watcher_cfg.get("gcloud_retry_attempts", 5)), 1)
+    backoff_seconds = max(float(watcher_cfg.get("gcloud_retry_backoff_seconds", 5)), 0.0)
+    max_backoff_seconds = max(
+        float(watcher_cfg.get("gcloud_retry_max_backoff_seconds", 60)),
+        backoff_seconds,
     )
+    return attempts, backoff_seconds, max_backoff_seconds
+
+
+def is_transient_gcloud_failure(
+    cmd: list[str], result: subprocess.CompletedProcess[str]
+) -> bool:
+    if not cmd or Path(str(cmd[0])).name != "gcloud":
+        return False
+
+    combined_output = "\n".join(
+        value for value in (result.stdout, result.stderr) if isinstance(value, str) and value
+    ).lower()
+    if not combined_output:
+        return False
+
+    if any(token in combined_output for token in TRANSIENT_GCLOUD_ERROR_SUBSTRINGS):
+        return True
+
+    if "http" in combined_output and any(
+        marker in combined_output
+        for marker in (
+            "(429)",
+            "(500)",
+            "(502)",
+            "(503)",
+            "(504)",
+            " 429 ",
+            " 500 ",
+            " 502 ",
+            " 503 ",
+            " 504 ",
+        )
+    ):
+        return True
+
+    return False
+
+
+def run_subprocess(
+    cmd: list[str],
+    *,
+    cfg: dict[str, Any] | None = None,
+    capture_output: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    attempts, backoff_seconds, max_backoff_seconds = resolve_gcloud_retry_policy(cfg)
+    if not cmd or Path(str(cmd[0])).name != "gcloud":
+        attempts = 1
+
+    next_delay = backoff_seconds
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(
+            cmd,
+            text=True,
+            capture_output=capture_output,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result
+        if attempt >= attempts or not is_transient_gcloud_failure(cmd, result):
+            return result
+
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        summary = detail[-1] if detail else f"exit code {result.returncode}"
+        print(
+            "[watcher] Transient gcloud failure; retrying in "
+            f"{next_delay:.0f}s ({attempt}/{attempts - 1}). {summary}"
+        )
+        time.sleep(next_delay)
+        next_delay = min(max_backoff_seconds, max(next_delay * 2, 1.0))
+
+    raise RuntimeError("unreachable")
+
+
+def run_command(
+    cmd: list[str],
+    *,
+    cfg: dict[str, Any] | None = None,
+    capture_output: bool = True,
+    check: bool = True,
+) -> str:
+    result = run_subprocess(cmd, cfg=cfg, capture_output=capture_output)
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(
             result.returncode,
@@ -246,7 +346,7 @@ def maybe_describe_queued_resource(
         json_output=True,
     )
     try:
-        return json.loads(run_command(cmd))
+        return json.loads(run_command(cmd, cfg=cfg))
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr or ""
         if "NOT_FOUND" in stderr or "not found" in stderr.lower():
@@ -267,7 +367,7 @@ def delete_queued_resource(cfg: dict[str, Any], *, queued_resource_name: str, zo
         "--force",
         "--quiet",
     )
-    run_command(cmd, capture_output=True)
+    run_command(cmd, cfg=cfg, capture_output=True)
 
 
 def queued_resource_state(desc: dict[str, Any]) -> str:
@@ -336,22 +436,32 @@ def gcs_object_exists(cfg: dict[str, Any], uri: str) -> bool:
     if not uri:
         return False
     cmd = gcloud_command(cfg, "storage", "ls", uri)
-    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
-    return result.returncode == 0 and bool(result.stdout.strip())
+    result = run_subprocess(cmd, cfg=cfg, capture_output=True)
+    if result.returncode != 0:
+        stderr = result.stderr or ""
+        if "matched no objects" in stderr.lower() or "does not exist" in stderr.lower():
+            return False
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return bool(result.stdout.strip())
 
 
 def gcs_read_text(cfg: dict[str, Any], uri: str) -> str:
     if not uri:
         return ""
     cmd = gcloud_command(cfg, "storage", "cat", uri)
-    return run_command(cmd)
+    return run_command(cmd, cfg=cfg)
 
 
 def gcs_list_objects(cfg: dict[str, Any], uri_prefix: str) -> list[str]:
     if not uri_prefix:
         return []
     cmd = gcloud_command(cfg, "storage", "ls", f"{uri_prefix.rstrip('/')}/**")
-    result = subprocess.run(cmd, text=True, capture_output=True, check=False)
+    result = run_subprocess(cmd, cfg=cfg, capture_output=True)
     if result.returncode != 0:
         stderr = result.stderr or ""
         if "matched no objects" in stderr.lower() or "does not exist" in stderr.lower():
@@ -375,7 +485,7 @@ def gcs_write_text(cfg: dict[str, Any], uri: str, text: str) -> None:
         payload_path = Path(handle.name)
     try:
         cmd = gcloud_command(cfg, "storage", "cp", payload_path.as_posix(), uri)
-        run_command(cmd)
+        run_command(cmd, cfg=cfg)
     finally:
         payload_path.unlink(missing_ok=True)
 
