@@ -1,4 +1,5 @@
 import flax.linen as nn
+import jax
 import jax.numpy as jnp
 from einops import rearrange
 
@@ -103,19 +104,7 @@ class Attention(nn.Module):
         k = jnp.repeat(k, repeats=num_groups, axis=2)
         v = jnp.repeat(v, repeats=num_groups, axis=2)
 
-        # out = jax.nn.dot_product_attention(q, k, v, mask=mask, scale=1.0 / jnp.sqrt(self.head_dim))
-        scores = jnp.einsum("b q h d, b k h d -> b h q k", q, k)
-        scores = scores / jnp.sqrt(jnp.asarray(self.head_dim, dtype=scores.dtype))
-        scores = scores.astype(jnp.float32)
-        if self.attention_logit_soft_cap is not None:
-            cap = jnp.asarray(self.attention_logit_soft_cap, dtype=scores.dtype)
-            scores = cap * jnp.tanh(scores / cap)
-        if mask is not None:
-            scores = jnp.where(mask, scores, jnp.finfo(scores.dtype).min)
-
-        attn_weights = nn.softmax(scores, axis=-1).astype(self.dtype)
-        out = jnp.einsum("b h q k, b k h d -> b q h d", attn_weights, v)
-
+        out = jax.nn.dot_product_attention(q, k, v, mask=mask, scale=1.0 / jnp.sqrt(self.head_dim))
         out = rearrange(out, "b t h d -> b t (h d)")
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
 
