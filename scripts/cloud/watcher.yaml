@@ -1,4 +1,6 @@
 project: visionary-491008
+exp_name: breakout-dynamics
+checkpoint_dir: gs://visionary-exp/breakout/checkpoints/${exp_name}
 
 job:
   name: breakout-dynamics
@@ -18,14 +20,14 @@ training:
   config_name: breakout_dynamics
   auto_resume: true
   overrides:
-    - exp_name=breakout-dynamics
-    - dataset.train_dir=/mnt/visionary-data/train
-    - dataset.eval_dir=/mnt/visionary-data/eval
-    - checkpoint.manager.directory=gs://visionary-exp/breakout/checkpoints/breakout-dynamics
+    - exp_name=${exp_name}
+    - dataset.train_dir=/mnt/data/train
+    - dataset.eval_dir=/mnt/data/eval
+    - checkpoint.manager.directory=${checkpoint_dir}
 
 markers:
-  complete_uri: gs://visionary-exp/breakout/checkpoints/breakout-dynamics/_training_complete.json
-  failure_uri: gs://visionary-exp/breakout/checkpoints/breakout-dynamics/_training_failed.json
+  complete_uri: ${checkpoint_dir}/_training_complete.json
+  failure_uri: ${checkpoint_dir}/_training_failed.json
 
 secrets:
   wandb_secret: wandb-api-key
@@ -55,5 +57,5 @@ machine:
   spot: true
   data_disk:
     source: projects/visionary-491008/zones/us-east1-d/disks/visionary-data-ue1d
-    mode: read-write
-    mount_path: /mnt/visionary-data
+    mode: read-only
+    mount_path: /mnt/data
