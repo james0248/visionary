@@ -19,6 +19,7 @@ from omegaconf import OmegaConf
 PENDING_STATES = {"ACCEPTED", "WAITING_FOR_RESOURCES", "PROVISIONING", "CREATING"}
 TERMINAL_RETRY_STATES = {"FAILED", "SUSPENDED"}
 LIVE_STATES = PENDING_STATES | {"ACTIVE", "SUSPENDING", "DELETING"}
+DELETE_IN_PROGRESS_STATES = {"SUSPENDING", "DELETING"}
 
 TRC_ACCELERATOR_LIMITS = {
     ("v5e", "europe-west4-b", True): 64,
@@ -212,6 +213,7 @@ TRANSIENT_GCLOUD_ERROR_SUBSTRINGS = (
     "connection reset by peer",
     "connection aborted",
     "connection refused",
+    "no route to host",
     "temporary failure in name resolution",
     "name or service not known",
     "timed out",
@@ -364,6 +366,7 @@ def delete_queued_resource(cfg: dict[str, Any], *, queued_resource_name: str, zo
         queued_resource_name,
         f"--project={cfg['project']}",
         f"--zone={zone}",
+        "--async",
         "--force",
         "--quiet",
     )
@@ -989,12 +992,21 @@ def main() -> None:
             ),
             indent=2,
         )
+        queued_state = queued_resource_state(desc)
         mismatch_reason = queued_resource_metadata_mismatch_reason(
             desc,
             expected_startup_script=starter_script_contents,
             expected_payload_json=expected_payload_json,
         )
         if mismatch_reason is not None:
+            if queued_state in DELETE_IN_PROGRESS_STATES:
+                print(
+                    "[watcher] Existing queued resource metadata mismatch "
+                    f"({mismatch_reason}), but deletion is already in progress "
+                    f"(state={queued_state})."
+                )
+                time.sleep(poll_interval)
+                continue
             print(
                 "[watcher] Existing queued resource metadata mismatch "
                 f"({mismatch_reason}); deleting and recreating candidate {index}."
@@ -1011,7 +1023,6 @@ def main() -> None:
             time.sleep(poll_interval)
             continue
 
-        queued_state = queued_resource_state(desc)
         print(f"[watcher] {queued_resource_name(cfg['job']['name'], index)} state={queued_state}")
 
         if queued_state in TERMINAL_RETRY_STATES:
