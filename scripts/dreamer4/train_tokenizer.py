@@ -486,7 +486,7 @@ def main(cfg: DictConfig):
         t4 = time.monotonic()
         if should_log_train:
             logger.info(
-                "Step %d - data: %.3fs, reshape: %.3fs, eval: %.3fs, loop: %.3fs",
+                "Step %d - data: %.3fs, transfer: %.3fs, eval: %.3fs, loop: %.3fs",
                 step,
                 t1 - t0,
                 t2 - t1,
