@@ -557,12 +557,24 @@ def main(cfg: DictConfig):
     _t = time.monotonic()
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
-    if cfg.checkpoint.resume_step is not None:
-        state = checkpoint_manager.restore(
-            target=state,
-            step=int(cfg.checkpoint.resume_step),
-        )
-        logger.info(f"Resumed tokenizer training from step {state.step}")
+    train_iterator = None if bool(cfg.overfit_single_batch) else iter(train_dataloader)
+
+    def iterator_items():
+        return None if train_iterator is None else {"train_iterator": train_iterator}
+
+    resume_spec = cfg.checkpoint.resume_step
+    resume_step = None
+    if resume_spec is not None:
+        if isinstance(resume_spec, str) and resume_spec.strip().lower() == "latest":
+            resume_step = checkpoint_manager.latest_step()
+            if resume_step is None:
+                logger.info("No tokenizer checkpoint found in %s; starting fresh.", checkpoint_manager.directory)
+        else:
+            resume_step = int(resume_spec)
+
+    if resume_step is not None:
+        state = checkpoint_manager.restore(target=state, step=resume_step, extra_items=iterator_items())
+        logger.info("Resumed tokenizer training from step %d", int(state.step))
 
     step = int(state.step)
     logger.info("Tokenizer training target step: %d", total_steps)
@@ -579,10 +591,15 @@ def main(cfg: DictConfig):
         return
 
     t0 = time.monotonic()
-    train_batches = (
-        itertools.repeat(sample_batch) if bool(cfg.overfit_single_batch) else train_dataloader
-    )
-    for batch in train_batches:
+    while True:
+        if bool(cfg.overfit_single_batch):
+            batch = sample_batch
+        else:
+            try:
+                batch = next(train_iterator)
+            except StopIteration:
+                train_iterator = iter(train_dataloader)
+                batch = next(train_iterator)
         t1 = time.monotonic()
 
         batch = jax.device_put(batch)
@@ -684,7 +701,7 @@ def main(cfg: DictConfig):
             )
 
         if checkpoint_manager.should_save(step):
-            checkpoint_manager.save(step=step, state=state)
+            checkpoint_manager.save(step=step, state=state, extra_items=iterator_items())
 
         t4 = time.monotonic()
         logger.info(
@@ -701,7 +718,7 @@ def main(cfg: DictConfig):
         t0 = time.monotonic()
 
     if step >= total_steps and not checkpoint_manager.should_save(step):
-        checkpoint_manager.save(step=step, state=state, force=True)
+        checkpoint_manager.save(step=step, state=state, extra_items=iterator_items(), force=True)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()

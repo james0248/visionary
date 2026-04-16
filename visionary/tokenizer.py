@@ -1,6 +1,7 @@
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+from einops import rearrange
 
 from visionary.dataset import VideoDataset
 from visionary.transformer import (
@@ -54,6 +55,36 @@ def build_rope_embeddings(
     )
     temporal_rope = create_temporal_rope(base, head_dim, seq_len)
     return spatial_rope, temporal_rope
+
+
+def unpatchify_patches(
+    patches: jnp.ndarray,
+    patch_size: int,
+    x_len: int,
+    y_len: int,
+) -> jnp.ndarray:
+    return rearrange(
+        patches,
+        "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
+        h=y_len,
+        w=x_len,
+        p1=patch_size,
+        p2=patch_size,
+    )
+
+
+def trim_image_padding(
+    images: jnp.ndarray,
+    pad_width: tuple[int, int],
+) -> jnp.ndarray:
+    h_pad, w_pad = (int(v) for v in pad_width)
+    return images[
+        :,
+        :,
+        slice(h_pad, -h_pad if h_pad else None),
+        slice(w_pad, -w_pad if w_pad else None),
+        :,
+    ]
 
 
 class TokenizerEncoder(nn.Module):
@@ -344,3 +375,13 @@ class Tokenizer(nn.Module):
         batch_size, seq_len, _, _ = latent.shape
         temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
         return self.decoder(latent, temporal_mask, patch_dim)
+
+    def decode_images(
+        self,
+        latent: jnp.ndarray,
+        patch_size: int,
+        pad_width: tuple[int, int],
+    ) -> jnp.ndarray:
+        decoded = self.decode(latent, patch_size * patch_size * 3)
+        images = unpatchify_patches(decoded, patch_size, self.x_len, self.y_len)
+        return trim_image_padding(images, pad_width)

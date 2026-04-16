@@ -1,7 +1,7 @@
 seed: 42
 learning_rate: 2e-4
 reconstruction_loss: mse
-motion_weighted_mse: true
+motion_weighted_mse: false
 motion_reference: 0.05
 motion_max_boost: 10.0
 lpips_weight: 0.4
@@ -31,14 +31,14 @@ dataset:
 
 tokenizer:
   _target_: visionary.tokenizer.Tokenizer
-  num_layers: 4
+  num_layers: 8
   num_latents: 96
   num_heads: 8
   num_kv_heads: 2
   model_dim: 256
-  head_dim: 64
   mlp_hidden_dim: 768
-  channel_dim: 96
+  head_dim: 64
+  channel_dim: 16
   x_len: 15
   y_len: 21
   base: 10000.0

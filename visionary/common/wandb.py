@@ -1,11 +1,10 @@
-from omegaconf import DictConfig, OmegaConf
-
 import wandb
+from omegaconf import DictConfig, OmegaConf
 
 
 class WandbLogger:
-    def __init__(self, cfg: DictConfig):
-        self.enabled = cfg.wandb.enabled
+    def __init__(self, cfg: DictConfig, *, enabled: bool | None = None):
+        self.enabled = cfg.wandb.enabled if enabled is None else bool(enabled)
         if self.enabled:
             wandb.init(
                 project=cfg.wandb.project,
