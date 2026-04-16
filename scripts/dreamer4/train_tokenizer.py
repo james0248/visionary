@@ -110,6 +110,7 @@ def compute_loss_metrics(
 
 @partial(
     jax.jit,
+    static_argnames=("lpips_weight",),
 )
 def train_step(
     state: TokenizerTrainState,
@@ -147,6 +148,7 @@ def train_step(
 
 @partial(
     jax.jit,
+    static_argnames=("lpips_weight",),
 )
 def eval_step(
     state: TokenizerTrainState,
