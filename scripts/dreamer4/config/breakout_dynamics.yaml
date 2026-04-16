@@ -18,7 +18,6 @@ video_eval:
   fps: 20
   output_dir: artifacts/dreamer4_dynamics_eval
   tokenizer:
-    config_path: scripts/dreamer4/config/breakout.yaml
     checkpoint_dir: gs://visionary-exp/breakout/checkpoints/tokenizer_l8p8
     checkpoint_step: null
 

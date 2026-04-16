@@ -195,7 +195,6 @@ class DynamicsModel(nn.Module):
         context_noise: jnp.ndarray,
         sample_noise: jnp.ndarray,
         target_index: jnp.ndarray,
-        *,
         context_tau: float,
         sample_steps: int,
     ) -> jnp.ndarray:
@@ -268,6 +267,34 @@ class DynamicsModel(nn.Module):
             current_z = current_z + velocity * sample_step_size
 
         return rearrange(current_z[:, None], "b t n (k d) -> b t (n k) d", d=latent_dim)[:, 0]
+
+    def generate_rollout(
+        self,
+        video_prefix: jnp.ndarray,
+        actions: jnp.ndarray | None,
+        context_noise: jnp.ndarray,
+        sample_noise: jnp.ndarray,
+        start_index: jnp.ndarray,
+        context_tau: float,
+        sample_steps: int,
+    ) -> jnp.ndarray:
+        start_index = jnp.asarray(start_index, dtype=jnp.int32)
+        rollout_steps = sample_noise.shape[1]
+
+        def body_fn(offset: int, current_video: jnp.ndarray) -> jnp.ndarray:
+            target_index = start_index + offset
+            next_frame = self.generate_next(
+                current_video,
+                actions,
+                context_noise,
+                sample_noise[:, offset],
+                target_index,
+                context_tau=context_tau,
+                sample_steps=sample_steps,
+            )
+            return current_video.at[:, target_index].set(next_frame)
+
+        return jax.lax.fori_loop(0, rollout_steps, body_fn, video_prefix)
 
     def loss(
         self,
