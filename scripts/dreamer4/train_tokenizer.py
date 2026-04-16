@@ -4,27 +4,23 @@ import time
 from functools import lru_cache, partial
 
 import grain.python as grain
-import flax.jax_utils as flax_jax_utils
 import hydra
 import jax
-import jax.lax as lax
 import jax.numpy as jnp
 import numpy as np
 import optax
 from hydra.utils import instantiate
-from jax.experimental import multihost_utils
 from jaxlpips import LPIPS
 from omegaconf import DictConfig, OmegaConf
 
 from visionary.common.checkpoint import CheckpointManager, save_model_export
-from visionary.common.jax import fold_in_many, maybe_initialize_distributed
+from visionary.common.jax import fold_in_many
 from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import RandomVideoCrop, VideoDataset, VideoDataSource
 from visionary.tokenizer import Tokenizer
 
 logger = logging.getLogger(__name__)
-PMAP_AXIS_NAME = "data"
 
 
 LPIPS_PRETRAINED_NETWORK = "alexnet"
@@ -113,11 +109,7 @@ def compute_loss_metrics(
 
 
 @partial(
-    jax.pmap,
-    axis_name=PMAP_AXIS_NAME,
-    in_axes=(0, 0, None, None, None),
-    donate_argnums=(0,),
-    static_broadcasted_argnums=(4,),
+    jax.jit,
 )
 def train_step(
     state: TokenizerTrainState,
@@ -126,7 +118,7 @@ def train_step(
     global_step: int,
     lpips_weight: float,
 ):
-    sample_key = fold_in_many(base_sample_key, global_step, lax.axis_index(PMAP_AXIS_NAME))
+    sample_key = fold_in_many(base_sample_key, global_step)
 
     def loss_fn(params):
         original_images, reconstructed, mask = state.apply_fn(
@@ -144,8 +136,6 @@ def train_step(
         )
 
     (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-    grads = lax.pmean(grads, axis_name=PMAP_AXIS_NAME)
-    metrics = lax.pmean(metrics, axis_name=PMAP_AXIS_NAME)
     state = state.apply_gradients(grads=grads)
     state = update_loss_ema(
         state,
@@ -156,10 +146,7 @@ def train_step(
 
 
 @partial(
-    jax.pmap,
-    axis_name=PMAP_AXIS_NAME,
-    in_axes=(0, 0, None, None, None, None),
-    static_broadcasted_argnums=(5,),
+    jax.jit,
 )
 def eval_step(
     state: TokenizerTrainState,
@@ -169,12 +156,7 @@ def eval_step(
     batch_index: int,
     lpips_weight: float,
 ):
-    sample_key = fold_in_many(
-        base_sample_key,
-        global_step,
-        batch_index,
-        lax.axis_index(PMAP_AXIS_NAME),
-    )
+    sample_key = fold_in_many(base_sample_key, global_step, batch_index)
     model_key, frame_key = jax.random.split(sample_key)
     original_images, reconstructed, mask = state.apply_fn(
         state.params,
@@ -191,7 +173,6 @@ def eval_step(
         mask,
         lpips_weight,
     )
-    metrics = lax.pmean(metrics, axis_name=PMAP_AXIS_NAME)
     sampled_frames = sample_sequence_frames(
         original_images,
         reconstructed,
@@ -267,23 +248,13 @@ def build_reconstruction_grid(
 
 @hydra.main(config_path="config", version_base=None)
 def main(cfg: DictConfig):
-    maybe_initialize_distributed(logger=logger)
-    process_index = jax.process_index()
-    process_count = jax.process_count()
-    local_device_count = jax.local_device_count()
-    local_devices = jax.local_devices()
-    distributed = process_count > 1 or local_device_count > 1
-    is_primary_process = process_index == 0
     logger.info(
-        "JAX backend: %s process=%d/%d local_devices=%d global_devices=%d devices=%s",
+        "JAX backend: %s device_count=%d devices=%s",
         jax.default_backend(),
-        process_index,
-        process_count,
-        local_device_count,
         jax.device_count(),
-        local_devices,
+        jax.devices(),
     )
-    wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled) and is_primary_process)
+    wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled))
     total_steps = int(cfg.total_steps)
 
     train_source = VideoDataSource(cfg.dataset.train_dir)
@@ -293,18 +264,9 @@ def main(cfg: DictConfig):
         len(train_source),
         len(eval_source),
     )
-    batch_size_per_process = int(cfg.dataset.batch_size)
-    if batch_size_per_process % local_device_count != 0:
-        raise ValueError(
-            "cfg.dataset.batch_size is interpreted per process and must be divisible by "
-            f"jax.local_device_count(); got {cfg.dataset.batch_size=} {local_device_count=}"
-        )
-    batch_size_per_device = batch_size_per_process // local_device_count
     logger.info(
-        "Batch layout: per_process=%d per_device=%d global=%d",
-        batch_size_per_process,
-        batch_size_per_device,
-        batch_size_per_process * process_count,
+        "Batch layout: batch_size=%d",
+        int(cfg.dataset.batch_size),
     )
     effective_read_threads = max(int(cfg.dataset.worker_count), 1) * int(cfg.dataset.num_threads)
     logger.info(
@@ -317,32 +279,10 @@ def main(cfg: DictConfig):
     )
     transforms = [RandomVideoCrop(cfg.dataset.frame_length)]
 
-    def reshape_batch(batch: VideoDataset) -> VideoDataset:
-        current_batch_size = next(iter(batch.values())).shape[0]
-        if current_batch_size % local_device_count != 0:
-            raise ValueError(
-                "Batch size must be divisible by jax.local_device_count(); got "
-                f"{current_batch_size=} {local_device_count=}"
-            )
-        current_batch_size_per_device = current_batch_size // local_device_count
-        return {
-            key: np.reshape(
-                value,
-                (local_device_count, current_batch_size_per_device, *value.shape[1:]),
-            )
-            for key, value in batch.items()
-        }
-
-    def unreplicate(tree):
-        return flax_jax_utils.unreplicate(tree)
-
-    def to_host(tree):
-        return jax.device_get(unreplicate(tree))
-
     def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int):
         sampler = grain.IndexSampler(
             num_records=len(source),
-            shard_options=grain.ShardByJaxProcess(),
+            shard_options=grain.NoSharding(),
             shuffle=shuffle,
             seed=seed,
         )
@@ -356,7 +296,7 @@ def main(cfg: DictConfig):
             operations=[
                 *transforms,
                 grain.Batch(
-                    batch_size=batch_size_per_process,
+                    batch_size=int(cfg.dataset.batch_size),
                     drop_remainder=drop_remainder,
                 ),
             ],
@@ -409,15 +349,13 @@ def main(cfg: DictConfig):
     train_iterator = iter(train_dataloader)
 
     def save_checkpoint(step: int, force: bool = False) -> None:
-        host_state = to_host(state)
         checkpoint_manager.save(
             step=step,
-            state=host_state,
+            state=state,
             extra_items=iterator_items(),
             force=force,
         )
-        if is_primary_process:
-            save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, host_state.params)
+        save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
 
     def iterator_items():
         return {"train_iterator": train_iterator}
@@ -441,8 +379,7 @@ def main(cfg: DictConfig):
         )
         logger.info("Resumed tokenizer training from step %d", int(state.step))
 
-    state = flax_jax_utils.replicate(state, devices=local_devices)
-    step = int(jax.device_get(unreplicate(state.step)))
+    step = int(jax.device_get(state.step))
     logger.info("Tokenizer training target step: %d", total_steps)
 
     if step >= total_steps:
@@ -466,7 +403,7 @@ def main(cfg: DictConfig):
             batch = next(train_iterator)
         t1 = time.monotonic()
 
-        batch = reshape_batch(batch)
+        batch = jax.device_put(batch)
         t2 = time.monotonic()
 
         state, metrics = train_step(
@@ -481,7 +418,7 @@ def main(cfg: DictConfig):
 
         should_log_train = step % cfg.log_interval == 0
         if should_log_train:
-            train_metrics = to_host(metrics)
+            train_metrics = jax.device_get(metrics)
             wb.log(
                 {k: float(v) for k, v in train_metrics.items()},
                 step=step,
@@ -495,38 +432,30 @@ def main(cfg: DictConfig):
             eval_dataloader = make_loader(
                 eval_source,
                 shuffle=True,
-                drop_remainder=distributed,
+                drop_remainder=False,
                 seed=int(cfg.seed) + step,
             )
             eval_batches = list(itertools.islice(iter(eval_dataloader), cfg.dataset.eval.max_batches))
-            global_eval_batch_counts = np.asarray(
-                multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
-            )
-            eval_batches = eval_batches[: int(np.min(global_eval_batch_counts))]
             vis_original_batches = []
             vis_reconstruction_batches = []
             vis_masked_batches = []
             for batch_idx, eval_batch in enumerate(eval_batches):
                 batch_metrics, sampled_frames = eval_step(
                     state,
-                    reshape_batch(eval_batch),
+                    jax.device_put(eval_batch),
                     eval_key,
                     step,
                     batch_idx,
                     cfg.lpips_weight,
                 )
-                batch_metrics = to_host(batch_metrics)
                 sampled_frames = jax.device_get(sampled_frames)
+                batch_metrics = jax.device_get(batch_metrics)
                 for k, v in batch_metrics.items():
                     totals[k] = totals.get(k, 0.0) + float(v)
-                sampled_originals, sampled_reconstructions, sampled_masked_inputs = (
-                    np.reshape(np.asarray(frames), (-1, *frames.shape[2:]))
-                    for frames in sampled_frames
-                )
-                if is_primary_process:
-                    vis_original_batches.append(sampled_originals)
-                    vis_reconstruction_batches.append(sampled_reconstructions)
-                    vis_masked_batches.append(sampled_masked_inputs)
+                sampled_originals, sampled_reconstructions, sampled_masked_inputs = sampled_frames
+                vis_original_batches.append(np.asarray(sampled_originals))
+                vis_reconstruction_batches.append(np.asarray(sampled_reconstructions))
+                vis_masked_batches.append(np.asarray(sampled_masked_inputs))
                 num_batches += 1
             if num_batches > 0:
                 eval_metrics = {k: v / num_batches for k, v in totals.items()}
@@ -534,7 +463,7 @@ def main(cfg: DictConfig):
                     {f"eval/{k}": v for k, v in eval_metrics.items()},
                     step=step,
                 )
-                if is_primary_process and vis_original_batches:
+                if vis_original_batches:
                     grid = build_reconstruction_grid(
                         np.concatenate(vis_original_batches, axis=0),
                         np.concatenate(vis_reconstruction_batches, axis=0),
@@ -569,7 +498,6 @@ def main(cfg: DictConfig):
             break
         t0 = time.monotonic()
 
-    multihost_utils.sync_global_devices("tokenizer_train_complete")
     if step >= total_steps and not checkpoint_manager.should_save(step):
         save_checkpoint(step, force=True)
     checkpoint_manager.wait_until_finished()

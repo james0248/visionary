@@ -1,5 +1,5 @@
 seed: 42
-learning_rate: 4e-4
+learning_rate: 3e-4
 lpips_weight: 0.4
 log_interval: 100
 eval_steps: 1000
@@ -10,7 +10,7 @@ dataset:
   train_dir: mnt/data/train/
   eval_dir: mnt/data/eval/
   frame_length: 64
-  batch_size: 16
+  batch_size: 4
   worker_count: 0
   num_threads: 2
   prefetch_buffer_size: 2

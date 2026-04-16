@@ -1,9 +1,6 @@
 import io
-import threading
-from collections import OrderedDict
 from typing import TypedDict
 
-from array_record.python import array_record_data_source as array_record_data_source_lib
 import grain.python as grain
 import jax
 import numpy as np
@@ -38,67 +35,6 @@ def align_actions_to_frames(
     return aligned
 
 
-class _BoundedArrayRecordDataSource(grain.ArrayRecordDataSource):
-    """ArrayRecord source that bounds the number of simultaneously open shard readers."""
-
-    def __init__(self, paths: list[str], *, max_open_readers: int = 128):
-        super().__init__(paths)
-        self._max_open_readers = max(1, int(max_open_readers))
-        self._reader_lock = threading.Lock()
-        self._reader_lru: OrderedDict[int, None] = OrderedDict()
-        self._reader_refcounts = [0] * len(self._readers)
-
-    def _ensure_reader_exists(self, reader_idx: int) -> None:
-        with self._reader_lock:
-            reader = self._readers[reader_idx]
-            if reader is None:
-                self._evict_readers_if_needed()
-                filename = self._read_instructions[reader_idx].filename
-                reader = array_record_data_source_lib._create_reader(  # pylint: disable=protected-access
-                    filename,
-                    self._reader_options_string,
-                )
-                array_record_data_source_lib._check_group_size(  # pylint: disable=protected-access
-                    filename,
-                    reader,
-                )
-                self._readers[reader_idx] = reader
-            self._reader_lru.pop(reader_idx, None)
-            self._reader_lru[reader_idx] = None
-
-    def _evict_readers_if_needed(self) -> None:
-        while len(self._reader_lru) >= self._max_open_readers:
-            evict_idx = next(
-                (
-                    index
-                    for index in self._reader_lru
-                    if self._reader_refcounts[index] == 0
-                ),
-                None,
-            )
-            if evict_idx is None:
-                return
-            reader = self._readers[evict_idx]
-            if reader is not None:
-                reader.close()
-                self._readers[evict_idx] = None
-            self._reader_lru.pop(evict_idx, None)
-
-    def __getitem__(self, record_key) -> bytes:
-        reader_idx, position = self._reader_idx_and_position(record_key)
-        self._ensure_reader_exists(reader_idx)
-        with self._reader_lock:
-            self._reader_refcounts[reader_idx] += 1
-            reader = self._readers[reader_idx]
-        try:
-            if hasattr(reader, "read"):
-                return reader.read([position])[0]
-            return reader[position]
-        finally:
-            with self._reader_lock:
-                self._reader_refcounts[reader_idx] -= 1
-
-
 def _array_record_source(data_dir: str) -> grain.ArrayRecordDataSource:
     shard_dir = epath.Path(data_dir)
     paths = sorted(
@@ -107,7 +43,7 @@ def _array_record_source(data_dir: str) -> grain.ArrayRecordDataSource:
     )
     if not paths:
         raise FileNotFoundError(f"No .arecord files found in {data_dir}")
-    return _BoundedArrayRecordDataSource([p.as_posix() for p in paths])
+    return grain.ArrayRecordDataSource([p.as_posix() for p in paths])
 
 
 class DynamicsDataSource(grain.RandomAccessDataSource):
