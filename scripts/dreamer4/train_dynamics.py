@@ -19,9 +19,11 @@ from jax.experimental import multihost_utils
 from omegaconf import DictConfig, OmegaConf
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
-from visionary.common.checkpoint import CheckpointManager
+from visionary.common.checkpoint import (
+    CheckpointManager,
+    restore_model_export,
+)
 from visionary.common.jax import fold_in_many, maybe_initialize_distributed
-from visionary.common.tokenizer_checkpoint import restore_tokenizer_checkpoint_bundle
 from visionary.common.train_state import DynamicsTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import DynamicsBatch, DynamicsDataSource, RandomDynamicsCrop
@@ -106,7 +108,7 @@ def log_video_eval(
     rollout_seed: int,
     video_cfg: DictConfig,
     output_dir: Path,
-    tokenizer_params,
+    tokenizer_variables,
     run_video_eval,
     context_tau_used: float,
 ) -> None:
@@ -115,7 +117,7 @@ def log_video_eval(
     ground_truth_images, rollout_images = jax.device_get(
         run_video_eval(
             params,
-            tokenizer_params,
+            tokenizer_variables,
             batch["video"],
             batch["actions"],
             rollout_seed,
@@ -399,7 +401,6 @@ def main(cfg: DictConfig):
 
     video_cfg = cfg.video_eval
     video_output_dir = None
-    tokenizer_bundle = None
     run_video_eval = None
     context_tau_used = None
     if is_primary_process:
@@ -410,11 +411,11 @@ def main(cfg: DictConfig):
         tokenizer_checkpoint_dir = video_cfg.tokenizer.checkpoint_dir
         if "://" not in str(tokenizer_checkpoint_dir):
             tokenizer_checkpoint_dir = to_absolute_path(str(tokenizer_checkpoint_dir))
-        tokenizer_bundle = restore_tokenizer_checkpoint_bundle(
+        tokenizer_cfg, tokenizer_variables = restore_model_export(
             tokenizer_checkpoint_dir,
-            checkpoint_step=video_cfg.tokenizer.checkpoint_step,
-            seed=cfg.seed,
+            step=video_cfg.tokenizer.checkpoint_step,
         )
+        tokenizer = instantiate(tokenizer_cfg)
 
         requested_tau = float(video_cfg.context_tau)
         video_context_frames = int(video_cfg.context_frames)
@@ -429,7 +430,7 @@ def main(cfg: DictConfig):
         @jax.jit
         def run_video_eval(
             dynamics_params,
-            tokenizer_params,
+            tokenizer_variables,
             video_batch,
             action_batch,
             rollout_seed,
@@ -460,15 +461,11 @@ def main(cfg: DictConfig):
                 sample_steps=int(video_cfg.sample_steps),
                 method=DynamicsModel.generate_rollout,
             )
-            ground_truth_images = tokenizer_bundle.model.apply(
-                tokenizer_params,
-                video,
-                method=type(tokenizer_bundle.model).decode,
+            ground_truth_images = tokenizer.apply(
+                tokenizer_variables, video, method=type(tokenizer).decode
             )
-            rollout_images = tokenizer_bundle.model.apply(
-                tokenizer_params,
-                rollout_video,
-                method=type(tokenizer_bundle.model).decode,
+            rollout_images = tokenizer.apply(
+                tokenizer_variables, rollout_video, method=type(tokenizer).decode
             )
             return ground_truth_images, rollout_images
 
@@ -624,7 +621,7 @@ def main(cfg: DictConfig):
                     rollout_seed=make_host_seed(cfg.seed, step, num_batches),
                     video_cfg=video_cfg,
                     output_dir=video_output_dir,
-                    tokenizer_params=tokenizer_bundle.state.params,
+                    tokenizer_variables=tokenizer_variables,
                     run_video_eval=run_video_eval,
                     context_tau_used=context_tau_used,
                 )

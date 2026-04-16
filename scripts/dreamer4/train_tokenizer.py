@@ -11,14 +11,10 @@ import numpy as np
 import optax
 from hydra.utils import instantiate
 from jaxlpips import LPIPS
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
-from visionary.common.checkpoint import CheckpointManager
+from visionary.common.checkpoint import CheckpointManager, save_model_export
 from visionary.common.jax import fold_in_many, maybe_initialize_distributed
-from visionary.common.tokenizer_checkpoint import (
-    normalize_tokenizer_config,
-    tokenizer_checkpoint_metadata,
-)
 from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import RandomVideoCrop, VideoDataset, VideoDataSource
@@ -248,7 +244,6 @@ def build_reconstruction_grid(
 
 @hydra.main(config_path="config", version_base=None)
 def main(cfg: DictConfig):
-    cfg = normalize_tokenizer_config(cfg)
     maybe_initialize_distributed(logger=logger)
     logger.info("JAX backend: %s, devices: %s", jax.default_backend(), jax.devices())
     wb = WandbLogger(cfg)
@@ -337,9 +332,18 @@ def main(cfg: DictConfig):
 
     _t = time.monotonic()
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
-    checkpoint_manager.save_metadata(tokenizer_checkpoint_metadata(cfg))
+    checkpoint_manager.save_metadata({"config": OmegaConf.to_container(cfg, resolve=False)})
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
     train_iterator = iter(train_dataloader)
+
+    def save_checkpoint(step: int, force: bool = False) -> None:
+        checkpoint_manager.save(
+            step=step,
+            state=state,
+            extra_items=iterator_items(),
+            force=force,
+        )
+        save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
 
     def iterator_items():
         return {"train_iterator": train_iterator}
@@ -463,7 +467,7 @@ def main(cfg: DictConfig):
             logger.info("Eval at step %d - %d batches in %.3fs", step, num_batches, t_eval)
 
         if checkpoint_manager.should_save(step):
-            checkpoint_manager.save(step=step, state=state, extra_items=iterator_items())
+            save_checkpoint(step)
 
         t4 = time.monotonic()
         if should_log_train:
@@ -481,7 +485,7 @@ def main(cfg: DictConfig):
         t0 = time.monotonic()
 
     if step >= total_steps and not checkpoint_manager.should_save(step):
-        checkpoint_manager.save(step=step, state=state, extra_items=iterator_items(), force=True)
+        save_checkpoint(step, force=True)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()

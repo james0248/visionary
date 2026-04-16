@@ -10,9 +10,90 @@ import jax
 import orbax.checkpoint as ocp
 from etils import epath
 from flax.training.train_state import TrainState
+from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 METADATA_FILENAME = "metadata.json"
+MODEL_EXPORT_DIRNAME = "model"
+
+
+def model_export_dir(directory: str | PathLike[str]) -> epath.Path:
+    return epath.Path(directory) / MODEL_EXPORT_DIRNAME
+
+
+def resolve_model_export_step(directory: str | PathLike[str], step: int | None) -> int:
+    if step is not None:
+        return int(step)
+
+    latest_step = latest_model_export_step(directory)
+    if latest_step is None:
+        raise FileNotFoundError(f"No model exports found in {model_export_dir(directory)}")
+    return latest_step
+
+
+def latest_model_export_step(directory: str | PathLike[str]) -> int | None:
+    export_dir = model_export_dir(directory)
+    if not export_dir.exists():
+        return None
+
+    steps = sorted(
+        int(path.name)
+        for path in export_dir.iterdir()
+        if path.is_dir() and path.name.isdigit()
+    )
+    return steps[-1] if steps else None
+
+
+def model_export_path(directory: str | PathLike[str], step: int) -> epath.Path:
+    return model_export_dir(directory) / str(int(step))
+
+
+def _model_export_checkpointer() -> ocp.Checkpointer:
+    return ocp.Checkpointer(
+        ocp.CompositeCheckpointHandler(
+            config=ocp.JsonCheckpointHandler(),
+            variables=ocp.StandardCheckpointHandler(),
+        )
+    )
+
+
+def save_model_export(
+    directory: str | PathLike[str],
+    step: int,
+    model_config: DictConfig,
+    variables: Any,
+) -> None:
+    export_dir = model_export_dir(directory)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    config = OmegaConf.create(OmegaConf.to_container(model_config, resolve=False))
+    checkpointer = _model_export_checkpointer()
+    checkpointer.save(
+        model_export_path(directory, step).as_posix(),
+        args=ocp.args.Composite(
+            config=ocp.args.JsonSave(OmegaConf.to_container(config, resolve=True)),
+            variables=ocp.args.StandardSave(variables),
+        ),
+        force=True,
+    )
+    checkpointer.close()
+
+
+def restore_model_export(
+    directory: str | PathLike[str],
+    step: int | None = None,
+) -> tuple[DictConfig, Any]:
+    step = resolve_model_export_step(directory, step)
+    checkpointer = _model_export_checkpointer()
+    restored = checkpointer.restore(
+        model_export_path(directory, step).as_posix(),
+        args=ocp.args.Composite(
+            config=ocp.args.JsonRestore(),
+            variables=None,
+        ),
+    )
+    checkpointer.close()
+    return OmegaConf.create(restored.config), restored.variables
 
 
 class CheckpointManager:

@@ -5,12 +5,10 @@ import imageio
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.tokenizer_checkpoint import (
-    normalize_tokenizer_config,
-    restore_tokenizer_checkpoint_bundle,
-)
+from visionary.common.checkpoint import restore_model_export
 from visionary.dataset import RandomVideoCrop, VideoDataSource
 from visionary.tokenizer import Tokenizer
 
@@ -81,7 +79,7 @@ def main():
     )
     args = parser.parse_args()
 
-    cfg = normalize_tokenizer_config(OmegaConf.load(args.config))
+    run_cfg = OmegaConf.load(args.config)
     rng = np.random.default_rng(args.seed)
     source = VideoDataSource(args.dataset_dir)
     sample_indices = rng.choice(
@@ -93,37 +91,34 @@ def main():
     samples = []
     for sample_idx in np.atleast_1d(sample_indices):
         sample = source[int(sample_idx)]
-        sample = RandomVideoCrop(cfg.dataset.frame_length).random_map(sample, rng)
+        sample = RandomVideoCrop(run_cfg.dataset.frame_length).random_map(sample, rng)
         samples.append(sample)
     batch = {"video": np.stack([sample["video"] for sample in samples])}
 
-    bundle = restore_tokenizer_checkpoint_bundle(
-        args.checkpoint_dir,
-        seed=args.seed,
-        checkpoint_step=args.step,
-        config=cfg,
-    )
-    state = bundle.state
-    original = state.apply_fn(state.params, jnp.asarray(batch["video"]), method=Tokenizer.preprocess_video)[
-        0
-    ].astype(jnp.float32)
+    model_cfg, variables = restore_model_export(args.checkpoint_dir, step=args.step)
+    tokenizer = instantiate(model_cfg)
+    original = tokenizer.apply(
+        variables,
+        jnp.asarray(batch["video"]),
+        method=Tokenizer.preprocess_video,
+    )[0].astype(jnp.float32)
 
-    latent = state.apply_fn(state.params, batch, method=Tokenizer.encode).astype(jnp.float32)
-    reconstructed = state.apply_fn(
-        state.params,
+    latent = tokenizer.apply(variables, batch, method=Tokenizer.encode).astype(jnp.float32)
+    reconstructed = tokenizer.apply(
+        variables,
         latent,
         method=Tokenizer.decode,
     ).astype(jnp.float32)
 
-    zero_latent = state.apply_fn(
-        state.params,
+    zero_latent = tokenizer.apply(
+        variables,
         jnp.zeros_like(latent),
         method=Tokenizer.decode,
     ).astype(jnp.float32)
 
     shuffle_perm = jnp.asarray(rng.permutation(latent.shape[0]))
-    shuffled_latent = state.apply_fn(
-        state.params,
+    shuffled_latent = tokenizer.apply(
+        variables,
         latent[shuffle_perm],
         method=Tokenizer.decode,
     ).astype(jnp.float32)

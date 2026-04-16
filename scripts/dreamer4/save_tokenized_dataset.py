@@ -15,12 +15,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from array_record.python.array_record_module import ArrayRecordWriter
+from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.tokenizer_checkpoint import (
-    normalize_tokenizer_config,
-    restore_tokenizer_checkpoint_bundle,
-)
+from visionary.common.checkpoint import restore_model_export
 from visionary.tokenizer import Tokenizer
 
 logger = logging.getLogger(__name__)
@@ -292,26 +290,22 @@ def iter_loaded_episodes(
 
 
 class TokenizerEncoder:
-    def __init__(self, cfg: Any, build_cfg: BuildConfig) -> None:
-        bundle = restore_tokenizer_checkpoint_bundle(
-            build_cfg.checkpoint_dir,
-            seed=build_cfg.seed,
-            checkpoint_step=build_cfg.checkpoint_step,
-            config=cfg,
-        )
-        self.cfg = bundle.config
+    def __init__(self, build_cfg: BuildConfig) -> None:
         self.build_cfg = build_cfg
-        self.model = bundle.model
-        self.state = bundle.state
+        tokenizer_cfg, self.variables = restore_model_export(
+            build_cfg.checkpoint_dir,
+            step=build_cfg.checkpoint_step,
+        )
+        self.model = instantiate(tokenizer_cfg)
         self.latents_per_frame = (
-            int(self.cfg.tokenizer.num_latents),
-            int(self.cfg.tokenizer.channel_dim),
+            int(self.model.num_latents),
+            int(self.model.channel_dim),
         )
 
         @jax.jit
-        def encode_step(params, video_batch):
+        def encode_step(variables, video_batch):
             return self.model.apply(
-                params,
+                variables,
                 {"video": jnp.asarray(video_batch)},
                 method=Tokenizer.encode,
             )
@@ -371,7 +365,7 @@ class TokenizerEncoder:
                 batch_lengths[window_idx] = length
 
             batch_latents = np.asarray(
-                jax.device_get(self.encode_fn(self.state.params, batch_frames)),
+                jax.device_get(self.encode_fn(self.variables, batch_frames)),
                 dtype=np.float32,
             )
             for window_idx, (episode_idx, start, stop, overlap) in enumerate(batch_window_refs):
@@ -577,11 +571,11 @@ def create_parser() -> argparse.ArgumentParser:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     args = create_parser().parse_args()
-    cfg = normalize_tokenizer_config(OmegaConf.load(args.config))
+    cfg = OmegaConf.load(args.config)
     build_cfg = BuildConfig.from_args(args, cfg)
 
     logger.info("Initializing tokenizer from %s", build_cfg.config_path)
-    encoder = TokenizerEncoder(cfg, build_cfg)
+    encoder = TokenizerEncoder(build_cfg)
 
     file_splits = FileSplits.from_build_config(build_cfg)
     logger.info(

@@ -6,12 +6,10 @@ import grain.python as grain
 import imageio
 import jax
 import numpy as np
+from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.tokenizer_checkpoint import (
-    normalize_tokenizer_config,
-    restore_tokenizer_checkpoint_bundle,
-)
+from visionary.common.checkpoint import restore_model_export
 from visionary.dataset import RandomVideoCrop
 
 
@@ -26,9 +24,7 @@ def main():
     parser.add_argument("--mask_prob", type=float, default=0.1)
     args = parser.parse_args()
 
-    cfg = normalize_tokenizer_config(
-        OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout.yaml")
-    )
+    run_cfg = OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout.yaml")
     rng = np.random.default_rng(args.seed)
     shard_paths = sorted(Path(args.dataset_dir).glob("*.arecord"))
     shard_indices = rng.choice(
@@ -41,21 +37,16 @@ def main():
         source = grain.ArrayRecordDataSource([shard_paths[int(shard_idx)].as_posix()])
         with np.load(io.BytesIO(source[int(rng.integers(len(source)))])) as data:
             sample = {"video": np.asarray(data["frames"])}
-        sample = RandomVideoCrop(cfg.dataset.frame_length).random_map(sample, rng)
+        sample = RandomVideoCrop(run_cfg.dataset.frame_length).random_map(sample, rng)
         samples.append(sample)
     batch = {
         "video": np.stack([sample["video"] for sample in samples]),
     }
 
-    bundle = restore_tokenizer_checkpoint_bundle(
-        args.checkpoint_dir,
-        seed=args.seed,
-        checkpoint_step=args.step,
-        config=cfg,
-    )
-    state = bundle.state
-    original, reconstructed, mask = state.apply_fn(
-        state.params,
+    model_cfg, variables = restore_model_export(args.checkpoint_dir, step=args.step)
+    tokenizer = instantiate(model_cfg)
+    original, reconstructed, mask = tokenizer.apply(
+        variables,
         batch,
         mask_prob=float(args.mask_prob),
         rngs={"sample": jax.random.key(args.seed + 1)},
