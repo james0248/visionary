@@ -57,36 +57,6 @@ def build_rope_embeddings(
     return spatial_rope, temporal_rope
 
 
-def unpatchify_patches(
-    patches: jnp.ndarray,
-    patch_size: int,
-    x_len: int,
-    y_len: int,
-) -> jnp.ndarray:
-    return rearrange(
-        patches,
-        "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
-        h=y_len,
-        w=x_len,
-        p1=patch_size,
-        p2=patch_size,
-    )
-
-
-def trim_image_padding(
-    images: jnp.ndarray,
-    pad_width: tuple[int, int],
-) -> jnp.ndarray:
-    h_pad, w_pad = (int(v) for v in pad_width)
-    return images[
-        :,
-        :,
-        slice(h_pad, -h_pad if h_pad else None),
-        slice(w_pad, -w_pad if w_pad else None),
-        :,
-    ]
-
-
 class TokenizerEncoder(nn.Module):
     num_layers: int
     num_latents: int
@@ -262,8 +232,10 @@ class Tokenizer(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     channel_dim: int
-    x_len: int
-    y_len: int
+
+    patch_size: int
+    resize_shape: tuple[int, int]
+    pad_width: tuple[int, int]
 
     base: float
     decoder_single_image_token: bool = False
@@ -274,7 +246,42 @@ class Tokenizer(nn.Module):
     attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
+    @property
+    def image_height(self) -> int:
+        return int(self.resize_shape[0])
+
+    @property
+    def image_width(self) -> int:
+        return int(self.resize_shape[1])
+
+    @property
+    def height_pad(self) -> int:
+        return int(self.pad_width[0])
+
+    @property
+    def width_pad(self) -> int:
+        return int(self.pad_width[1])
+
+    @property
+    def y_len(self) -> int:
+        return (self.image_height + 2 * self.height_pad) // int(self.patch_size)
+
+    @property
+    def x_len(self) -> int:
+        return (self.image_width + 2 * self.width_pad) // int(self.patch_size)
+
+    @property
+    def patch_dim(self) -> int:
+        return int(self.patch_size) * int(self.patch_size) * 3
+
     def setup(self):
+        padded_height = self.image_height + 2 * self.height_pad
+        padded_width = self.image_width + 2 * self.width_pad
+        if padded_height % int(self.patch_size) != 0 or padded_width % int(self.patch_size) != 0:
+            raise ValueError(
+                "Tokenizer patch geometry must evenly divide the padded image size; got "
+                f"resize_shape={self.resize_shape} pad_width={self.pad_width} patch_size={self.patch_size}"
+            )
         encoder_kwargs = dict(
             num_layers=self.num_layers,
             num_latents=self.num_latents,
@@ -312,6 +319,61 @@ class Tokenizer(nn.Module):
             single_image_token=self.decoder_single_image_token,
         )
 
+    def preprocess_video(self, video: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        images = jax.image.resize(
+            jnp.asarray(video, dtype=jnp.float32),
+            (
+                video.shape[0],
+                video.shape[1],
+                self.image_height,
+                self.image_width,
+                video.shape[-1],
+            ),
+            method="linear",
+            antialias=True,
+        )
+        images = jnp.clip(jnp.rint(images), 0, 255).astype(jnp.uint8).astype(jnp.float32) / 255.0
+        patches = rearrange(
+            jnp.pad(
+                images,
+                (
+                    (0, 0),
+                    (0, 0),
+                    (self.height_pad, self.height_pad),
+                    (self.width_pad, self.width_pad),
+                    (0, 0),
+                ),
+                mode="constant",
+                constant_values=0,
+            ),
+            "b t (h p1) (w p2) c -> b t (h w) (p1 p2 c)",
+            p1=int(self.patch_size),
+            p2=int(self.patch_size),
+        )
+        return images, patches
+
+    def patches_to_images(self, patches: jnp.ndarray) -> jnp.ndarray:
+        images = rearrange(
+            patches,
+            "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
+            h=self.y_len,
+            w=self.x_len,
+            p1=int(self.patch_size),
+            p2=int(self.patch_size),
+        )
+        return images[
+            :,
+            :,
+            self.height_pad : self.height_pad + self.image_height,
+            self.width_pad : self.width_pad + self.image_width,
+            :,
+        ]
+
+    def decode(self, latent: jnp.ndarray) -> jnp.ndarray:
+        batch_size, seq_len, _, _ = latent.shape
+        temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
+        return self.patches_to_images(self.decoder(latent, temporal_mask, self.patch_dim))
+
     def sample_independent(self, batch_size: int) -> jnp.ndarray:
         rng = self.make_rng("sample")
         return jax.random.bernoulli(rng, p=self.independent_prob, shape=(batch_size,))
@@ -340,48 +402,30 @@ class Tokenizer(nn.Module):
     def __call__(
         self,
         batch: VideoDataset,
+    ) -> jnp.ndarray:
+        return self.encode(batch)
+
+    def reconstruct(
+        self,
+        batch: VideoDataset,
         mask_prob: float | None = None,
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
-
-        independent = self.sample_independent(batch_size)
-        mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=mask_prob)
-        temporal_mask = create_temporal_mask(independent, seq_len)
-
-        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-        latent = self.encoder(video, temporal_mask, mask=mask)
-        reconstructed = self.decoder(latent, temporal_mask, patch_dim)
-        return reconstructed, mask
-
-    def reconstruct_eval(self, batch: VideoDataset) -> tuple[jnp.ndarray, jnp.ndarray]:
-        batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
-
-        independent = jnp.zeros((batch_size,), dtype=bool)
-        mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=0.1)
-        temporal_mask = create_temporal_mask(independent, seq_len)
-
-        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-        latent = self.encoder(video, temporal_mask, mask=mask)
-        reconstructed = self.decoder(latent, temporal_mask, patch_dim)
-        return reconstructed, mask
+        independent: jnp.ndarray | None = None,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        batch_size, seq_len, _, _, _ = batch["video"].shape
+        original_images, patches = self.preprocess_video(batch["video"])
+        if independent is None:
+            independent = self.sample_independent(batch_size)
+        mask = self.sample_mask((batch_size, seq_len, patches.shape[2]), mask_prob=mask_prob)
+        latent = self.encoder(patches, create_temporal_mask(independent, seq_len), mask=mask)
+        image_mask = self.patches_to_images(
+            jnp.broadcast_to(mask[..., None], (*mask.shape, int(self.patch_size) ** 2)).astype(
+                jnp.float32
+            )
+        )
+        return original_images, self.decode(latent), image_mask
 
     def encode(self, batch: VideoDataset) -> jnp.ndarray:
-        batch_size, seq_len, _, _ = batch["video"].shape
+        batch_size, seq_len, _, _, _ = batch["video"].shape
         temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
-        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-        return self.encoder(video, temporal_mask)
-
-    def decode(self, latent: jnp.ndarray, patch_dim: int) -> jnp.ndarray:
-        batch_size, seq_len, _, _ = latent.shape
-        temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
-        return self.decoder(latent, temporal_mask, patch_dim)
-
-    def decode_images(
-        self,
-        latent: jnp.ndarray,
-        patch_size: int,
-        pad_width: tuple[int, int],
-    ) -> jnp.ndarray:
-        decoded = self.decode(latent, patch_size * patch_size * 3)
-        images = unpatchify_patches(decoded, patch_size, self.x_len, self.y_len)
-        return trim_image_padding(images, pad_width)
+        _, patches = self.preprocess_video(batch["video"])
+        return self.encoder(patches, temporal_mask)

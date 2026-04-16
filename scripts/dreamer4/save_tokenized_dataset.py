@@ -14,15 +14,13 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
-import orbax.checkpoint as ocp
 from array_record.python.array_record_module import ArrayRecordWriter
-from einops import rearrange
-from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.checkpoint import CheckpointManager
-from visionary.common.train_state import TokenizerTrainState
+from visionary.common.tokenizer_checkpoint import (
+    normalize_tokenizer_config,
+    restore_tokenizer_checkpoint_bundle,
+)
 from visionary.tokenizer import Tokenizer
 
 logger = logging.getLogger(__name__)
@@ -295,79 +293,30 @@ def iter_loaded_episodes(
 
 class TokenizerEncoder:
     def __init__(self, cfg: Any, build_cfg: BuildConfig) -> None:
-        self.cfg = cfg
-        self.build_cfg = build_cfg
-        self.model = instantiate(self.cfg.tokenizer)
-        self.patch_size = int(cfg.dataset.patch_size)
-        self.pad_width = (int(cfg.dataset.pad_width[0]), int(cfg.dataset.pad_width[1]))
-        resize_shape = cfg.dataset.resize_shape
-        self.resize_shape = (
-            None if resize_shape is None else tuple(int(value) for value in resize_shape)
+        bundle = restore_tokenizer_checkpoint_bundle(
+            build_cfg.checkpoint_dir,
+            seed=build_cfg.seed,
+            checkpoint_step=build_cfg.checkpoint_step,
+            config=cfg,
         )
-        self.latents_per_frame = (int(cfg.tokenizer.num_latents), int(cfg.tokenizer.channel_dim))
+        self.cfg = bundle.config
+        self.build_cfg = build_cfg
+        self.model = bundle.model
+        self.state = bundle.state
+        self.latents_per_frame = (
+            int(self.cfg.tokenizer.num_latents),
+            int(self.cfg.tokenizer.channel_dim),
+        )
 
         @jax.jit
         def encode_step(params, video_batch):
-            video = jnp.asarray(video_batch)
-            if self.resize_shape is not None:
-                video = jax.image.resize(
-                    video.astype(jnp.float32),
-                    (
-                        video.shape[0],
-                        video.shape[1],
-                        self.resize_shape[0],
-                        self.resize_shape[1],
-                        video.shape[-1],
-                    ),
-                    method="linear",
-                    antialias=True,
-                )
-                video = jnp.clip(jnp.rint(video), 0, 255).astype(jnp.uint8)
-
-            video = jnp.pad(
-                video,
-                (
-                    (0, 0),
-                    (0, 0),
-                    (self.pad_width[0], self.pad_width[0]),
-                    (self.pad_width[1], self.pad_width[1]),
-                    (0, 0),
-                ),
-                mode="constant",
-                constant_values=0,
+            return self.model.apply(
+                params,
+                {"video": jnp.asarray(video_batch)},
+                method=Tokenizer.encode,
             )
-            video = rearrange(
-                video,
-                "b t (h p1) (w p2) c -> b t (h w) (p1 p2 c)",
-                p1=self.patch_size,
-                p2=self.patch_size,
-            )
-            return self.model.apply(params, {"video": video}, method=Tokenizer.encode)
 
         self.encode_fn = encode_step
-        self.state = self._restore_state()
-
-    def _restore_state(self) -> TokenizerTrainState:
-        init_key, sample_key = jax.random.split(jax.random.key(self.build_cfg.seed))
-        patch_count = int(self.cfg.tokenizer.x_len) * int(self.cfg.tokenizer.y_len)
-        patch_dim = int(self.cfg.dataset.patch_size) * int(self.cfg.dataset.patch_size) * 3
-        dummy_batch = {"video": np.zeros((1, 1, patch_count, patch_dim), dtype=np.uint8)}
-        state = TokenizerTrainState.create(
-            apply_fn=self.model.apply,
-            params=self.model.init(
-                {"params": init_key, "sample": sample_key},
-                dummy_batch,
-            ),
-            tx=optax.adam(0.0),
-            mse_sq_ema=jnp.ones((), dtype=jnp.float32),
-            l1_sq_ema=jnp.ones((), dtype=jnp.float32),
-            lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
-            motion_sq_ema=jnp.ones((), dtype=jnp.float32),
-        )
-        with CheckpointManager(
-            self.build_cfg.checkpoint_dir, ocp.CheckpointManagerOptions()
-        ) as manager:
-            return manager.restore(target=state, step=self.build_cfg.checkpoint_step)
 
     def encode_episode(self, frames: np.ndarray) -> np.ndarray:
         return self.encode_episodes([frames])[0]
@@ -561,7 +510,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         default=str(Path(__file__).resolve().parent / "config" / "breakout.yaml"),
-        help="Hydra config used to instantiate the tokenizer and preprocessing.",
+        help="Tokenizer config used for dataset build settings and tokenizer restore.",
     )
     parser.add_argument("--step", type=int, help="Checkpoint step to restore. Defaults to latest.")
     parser.add_argument("--eval_ratio", type=float, default=0.1, help="Eval ratio for hash split.")
@@ -628,7 +577,7 @@ def create_parser() -> argparse.ArgumentParser:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     args = create_parser().parse_args()
-    cfg = OmegaConf.load(args.config)
+    cfg = normalize_tokenizer_config(OmegaConf.load(args.config))
     build_cfg = BuildConfig.from_args(args, cfg)
 
     logger.info("Initializing tokenizer from %s", build_cfg.config_path)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from os import PathLike
 from typing import Any
@@ -11,6 +12,7 @@ from etils import epath
 from flax.training.train_state import TrainState
 
 logger = logging.getLogger(__name__)
+METADATA_FILENAME = "metadata.json"
 
 
 class CheckpointManager:
@@ -46,9 +48,27 @@ class CheckpointManager:
     def should_save(self, step: int) -> bool:
         return self._manager.should_save(step)
 
+    def save_metadata(
+        self,
+        metadata: dict[str, Any],
+        filename: str = METADATA_FILENAME,
+    ) -> None:
+        path = self.directory / filename
+        with path.open("w") as f:
+            json.dump(metadata, f, indent=2, sort_keys=True)
+
+    def load_metadata(self, filename: str = METADATA_FILENAME) -> dict[str, Any]:
+        path = self.directory / filename
+        if not path.exists():
+            raise FileNotFoundError(f"No metadata file found at {path}")
+        with path.open() as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Expected checkpoint metadata at {path} to be a JSON object.")
+        return loaded
+
     def save(
         self,
-        *,
         step: int,
         state: TrainState,
         extra_items: dict[str, Any] | None = None,
@@ -56,16 +76,13 @@ class CheckpointManager:
         force: bool = False,
         wait: bool = False,
     ) -> bool:
-        if extra_items:
-            args = ocp.args.Composite(
-                state=ocp.args.StandardSave(state),
-                **{
-                    name: grain_checkpoint.CheckpointSave(item)
-                    for name, item in extra_items.items()
-                },
-            )
-        else:
-            args = ocp.args.StandardSave(state)
+        args = ocp.args.Composite(
+            state=ocp.args.StandardSave(state),
+            **{
+                name: grain_checkpoint.CheckpointSave(item)
+                for name, item in (extra_items or {}).items()
+            },
+        )
 
         saved = self._manager.save(step, args=args, metrics=metrics, force=force)
         if saved and wait:
@@ -76,7 +93,6 @@ class CheckpointManager:
 
     def restore(
         self,
-        *,
         target: TrainState,
         step: int | None = None,
         extra_items: dict[str, Any] | None = None,
@@ -90,49 +106,16 @@ class CheckpointManager:
                 raise FileNotFoundError(f"No checkpoints found in {self.directory}")
 
         abstract_target = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, target)
-        try:
-            if extra_items:
-                restored = self._manager.restore(
-                    step,
-                    args=ocp.args.Composite(
-                        state=ocp.args.StandardRestore(abstract_target),
-                        **{
-                            name: grain_checkpoint.CheckpointRestore(item)
-                            for name, item in extra_items.items()
-                        },
-                    ),
-                )["state"]
-            else:
-                restored = self._manager.restore(
-                    step,
-                    args=ocp.args.StandardRestore(abstract_target),
-                )
-        except (KeyError, ValueError) as exc:
-            if extra_items:
-                logger.warning(
-                    "Checkpoint step %d in %s does not contain requested extra items; "
-                    "restoring model state only. Original error: %s",
-                    step,
-                    self.directory,
-                    exc,
-                )
-                try:
-                    restored = self._manager.restore(
-                        step,
-                        args=ocp.args.Composite(state=ocp.args.StandardRestore(abstract_target)),
-                    )["state"]
-                except (KeyError, ValueError):
-                    restored = self._manager.restore(
-                        step,
-                        args=ocp.args.StandardRestore(abstract_target),
-                    )
-            else:
-                if "Composite" not in str(exc):
-                    raise
-                restored = self._manager.restore(
-                    step,
-                    args=ocp.args.Composite(default=ocp.args.StandardRestore(abstract_target)),
-                )["default"]
+        restored = self._manager.restore(
+            step,
+            args=ocp.args.Composite(
+                state=ocp.args.StandardRestore(abstract_target),
+                **{
+                    name: grain_checkpoint.CheckpointRestore(item)
+                    for name, item in (extra_items or {}).items()
+                },
+            ),
+        )["state"]
         logger.info("Checkpoint restored from step %d in %s", step, self.directory)
 
         if params_only:
