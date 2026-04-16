@@ -36,7 +36,13 @@ def normalize_tokenizer_config(cfg: DictConfig) -> DictConfig:
         if key not in tokenizer_cfg and dataset_cfg is not None and key in dataset_cfg:
             tokenizer_cfg[key] = dataset_cfg[key]
 
-    for key in ("x_len", "y_len"):
+    for key in (
+        "x_len",
+        "y_len",
+        "decoder_single_image_token",
+        "bottleneck_norm",
+        "attention_logit_soft_cap",
+    ):
         if key in tokenizer_cfg:
             del tokenizer_cfg[key]
 

@@ -1,16 +1,9 @@
 seed: 42
 learning_rate: 2e-4
-reconstruction_loss: mse
-motion_weighted_mse: false
-motion_reference: 0.05
-motion_max_boost: 10.0
 lpips_weight: 0.4
-motion_loss_weight: 0.0
-masked_mse: false
 log_interval: 100
 eval_steps: 1000
 total_steps: 500000
-overfit_single_batch: false
 exp_name: ???
 
 dataset:
@@ -40,10 +33,7 @@ tokenizer:
   patch_size: 8
   pad_width: [0, 0]
   base: 10000.0
-  decoder_single_image_token: false
-  bottleneck_norm: rmsnorm
   independent_prob: 0.3
-  attention_logit_soft_cap: 50.0
 
 checkpoint:
   manager:
