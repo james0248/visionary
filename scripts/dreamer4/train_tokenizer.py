@@ -316,6 +316,15 @@ def main(cfg: DictConfig):
     logger.info("Train DataLoader creation took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
+    eval_loader = make_loader(
+        eval_source,
+        shuffle=False,
+        drop_remainder=False,
+        seed=int(cfg.seed),
+    )
+    logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
+
+    _t = time.monotonic()
     sample_batch = next(iter(train_dataloader))
     logger.info("First batch fetch took %.1fs", time.monotonic() - _t)
 
@@ -444,13 +453,7 @@ def main(cfg: DictConfig):
             t_eval_start = time.monotonic()
             totals: dict[str, float] = {}
             num_batches = 0
-            eval_dataloader = make_loader(
-                eval_source,
-                shuffle=True,
-                drop_remainder=False,
-                seed=int(cfg.seed) + step,
-            )
-            eval_batches = list(itertools.islice(iter(eval_dataloader), cfg.dataset.eval.max_batches))
+            eval_batches = list(itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches))
             vis_original_batches = []
             vis_reconstruction_batches = []
             vis_masked_batches = []
