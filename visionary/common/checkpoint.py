@@ -187,16 +187,36 @@ class CheckpointManager:
                 raise FileNotFoundError(f"No checkpoints found in {self.directory}")
 
         abstract_target = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, target)
-        restored = self._manager.restore(
-            step,
-            args=ocp.args.Composite(
-                state=ocp.args.StandardRestore(abstract_target),
-                **{
-                    name: grain_checkpoint.CheckpointRestore(item)
-                    for name, item in (extra_items or {}).items()
-                },
-            ),
-        )["state"]
+        restore_args = ocp.args.Composite(
+            state=ocp.args.StandardRestore(abstract_target),
+            **{
+                name: grain_checkpoint.CheckpointRestore(item)
+                for name, item in (extra_items or {}).items()
+            },
+        )
+        try:
+            restored = self._manager.restore(step, args=restore_args)["state"]
+        except ValueError as err:
+            should_retry_without_iterators = (
+                extra_items
+                and "DataSource in checkpoint does not match datasource in dataloader"
+                in str(err)
+            )
+            if not should_retry_without_iterators:
+                raise
+            logger.warning(
+                "Checkpoint iterator state could not be restored at step %d in %s; "
+                "falling back to restoring model state only. This usually means the "
+                "checkpoint was created before datasource reprs were made stable.",
+                step,
+                self.directory,
+            )
+            restored = self._manager.restore(
+                step,
+                args=ocp.args.Composite(
+                    state=ocp.args.StandardRestore(abstract_target),
+                ),
+            )["state"]
         logger.info("Checkpoint restored from step %d in %s", step, self.directory)
 
         if params_only:
