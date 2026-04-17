@@ -395,6 +395,8 @@ def main(cfg: DictConfig):
         wb.finish()
         return
 
+    train_window_start_time = time.monotonic()
+    train_window_start_step = step
     t0 = time.monotonic()
     while True:
         current_step = step
@@ -418,13 +420,24 @@ def main(cfg: DictConfig):
 
         step = current_step + 1
 
+        train_sps = None
         should_log_train = step % cfg.log_interval == 0
         if should_log_train:
             train_metrics = jax.device_get(metrics)
+            now = time.monotonic()
+            train_sps = (step - train_window_start_step) / max(
+                now - train_window_start_time,
+                1e-8,
+            )
             wb.log(
-                {k: float(v) for k, v in train_metrics.items()},
+                {
+                    **{k: float(v) for k, v in train_metrics.items()},
+                    "train/sps": float(train_sps),
+                },
                 step=step,
             )
+            train_window_start_time = now
+            train_window_start_step = step
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -485,15 +498,14 @@ def main(cfg: DictConfig):
         if checkpoint_manager.should_save(step):
             save_checkpoint(step)
 
-        t4 = time.monotonic()
         if should_log_train:
             logger.info(
-                "Step %d - data: %.3fs, transfer: %.3fs, eval: %.3fs, loop: %.3fs",
+                "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, eval: %.3fs",
                 step,
+                train_sps,
                 t1 - t0,
                 t2 - t1,
                 t_eval,
-                t4 - t0,
             )
         if step >= total_steps:
             logger.info("Reached total_steps=%d; stopping tokenizer training.", total_steps)
