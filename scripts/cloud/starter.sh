@@ -135,11 +135,7 @@ run_setup() {
     uv pip install --python .venv/bin/python .
 
     info "Installing ${jax_label} JAX package (${jax_spec})"
-    if [[ "$accelerator" == "tpu" ]]; then
-        .venv/bin/python -m pip install --upgrade "$jax_spec"
-    else
-        uv pip install --python .venv/bin/python --upgrade "$jax_spec"
-    fi
+    uv pip install --python .venv/bin/python --upgrade "$jax_spec"
 }
 
 if [[ "$MODE" == "setup-only" ]]; then
