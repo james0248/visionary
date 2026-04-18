@@ -8,9 +8,10 @@ import numpy as np
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.checkpoint import restore_model_export
+from visionary.common.checkpoint import restore_model_export, restore_preprocessor_export
 from visionary.dataset import RandomVideoCrop, VideoDataSource
 from visionary.tokenizer import Tokenizer
+from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 
 def compute_mse(prediction: jax.Array, target: jax.Array) -> float:
@@ -23,7 +24,6 @@ def build_grid(
     zero_latent: np.ndarray,
     shuffled_latent: np.ndarray,
     mean_baseline: np.ndarray,
-    *,
     seed: int,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -96,32 +96,29 @@ def main():
     batch = {"video": np.stack([sample["video"] for sample in samples])}
 
     model_cfg, variables = restore_model_export(args.checkpoint_dir, step=args.step)
+    preprocessor_cfg = restore_preprocessor_export(args.checkpoint_dir, step=args.step)
     tokenizer = instantiate(model_cfg)
-    original = tokenizer.apply(
-        variables,
-        jnp.asarray(batch["video"]),
-        method=Tokenizer.preprocess_video,
-    )[0].astype(jnp.float32)
+    preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
+    patch_batch = {"video": np.asarray(preprocessor.preprocess_video(batch["video"]))}
+    patch_video = jnp.asarray(patch_batch["video"], dtype=jnp.float32) / 255.0
 
-    latent = tokenizer.apply(variables, batch, method=Tokenizer.encode).astype(jnp.float32)
-    reconstructed = tokenizer.apply(
-        variables,
-        latent,
-        method=Tokenizer.decode,
-    ).astype(jnp.float32)
+    def decode_images(latent: jax.Array) -> jax.Array:
+        return preprocessor.patches_to_images(
+            tokenizer.apply(
+                variables,
+                latent,
+                method=Tokenizer.decode,
+            ).astype(jnp.float32)
+        )
 
-    zero_latent = tokenizer.apply(
-        variables,
-        jnp.zeros_like(latent),
-        method=Tokenizer.decode,
-    ).astype(jnp.float32)
+    original = preprocessor.patches_to_images(patch_video).astype(jnp.float32)
+
+    latent = tokenizer.apply(variables, patch_batch, method=Tokenizer.encode).astype(jnp.float32)
+    reconstructed = decode_images(latent)
+    zero_latent = decode_images(jnp.zeros_like(latent))
 
     shuffle_perm = jnp.asarray(rng.permutation(latent.shape[0]))
-    shuffled_latent = tokenizer.apply(
-        variables,
-        latent[shuffle_perm],
-        method=Tokenizer.decode,
-    ).astype(jnp.float32)
+    shuffled_latent = decode_images(latent[shuffle_perm])
 
     mean_image = jnp.mean(original, axis=(0, 1), keepdims=True)
     mean_baseline = jnp.broadcast_to(mean_image, original.shape)

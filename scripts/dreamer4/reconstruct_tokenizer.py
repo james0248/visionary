@@ -9,8 +9,10 @@ import numpy as np
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.checkpoint import restore_model_export
+from visionary.common.checkpoint import restore_model_export, restore_preprocessor_export
 from visionary.dataset import RandomVideoCrop
+from visionary.tokenizer import Tokenizer
+from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 
 def main():
@@ -44,16 +46,22 @@ def main():
     }
 
     model_cfg, variables = restore_model_export(args.checkpoint_dir, step=args.step)
+    preprocessor_cfg = restore_preprocessor_export(args.checkpoint_dir, step=args.step)
     tokenizer = instantiate(model_cfg)
-    original, reconstructed, mask = tokenizer.apply(
+    preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
+    patch_batch = {"video": np.asarray(preprocessor.preprocess_video(batch["video"]))}
+    patch_video = jax.numpy.asarray(patch_batch["video"], dtype=jax.numpy.float32) / 255.0
+    reconstructed_patches, mask = tokenizer.apply(
         variables,
-        batch,
+        patch_batch,
         mask_prob=float(args.mask_prob),
+        method=Tokenizer.reconstruct,
         rngs={"sample": jax.random.key(args.seed + 1)},
     )
-
-    mask_f32 = mask.astype(original.dtype)
-    masked = original * (1.0 - mask_f32)
+    original = preprocessor.patches_to_images(patch_video)
+    reconstructed = preprocessor.patches_to_images(reconstructed_patches.astype(jax.numpy.float32))
+    mask_images = preprocessor.mask_to_images(mask).astype(original.dtype)
+    masked = original * (1.0 - mask_images)
     original, masked, reconstructed = jax.device_get(
         (
             jax.numpy.clip(original, 0.0, 1.0),

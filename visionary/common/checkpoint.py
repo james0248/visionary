@@ -15,10 +15,28 @@ from omegaconf import DictConfig, OmegaConf
 logger = logging.getLogger(__name__)
 METADATA_FILENAME = "metadata.json"
 MODEL_EXPORT_DIRNAME = "model"
+PREPROCESSOR_EXPORT_DIRNAME = "preprocessor"
+PREPROCESSOR_CONFIG_FIELDS = ("resize_shape", "pad_width", "patch_size")
 
 
 def model_export_dir(directory: str | PathLike[str]) -> epath.Path:
     return epath.Path(directory) / MODEL_EXPORT_DIRNAME
+
+
+def preprocessor_export_dir(directory: str | PathLike[str]) -> epath.Path:
+    return epath.Path(directory) / PREPROCESSOR_EXPORT_DIRNAME
+
+
+def _latest_export_step(export_dir: epath.Path) -> int | None:
+    if not export_dir.exists():
+        return None
+
+    steps = sorted(
+        int(path.name)
+        for path in export_dir.iterdir()
+        if path.is_dir() and path.name.isdigit()
+    )
+    return steps[-1] if steps else None
 
 
 def resolve_model_export_step(directory: str | PathLike[str], step: int | None) -> int:
@@ -32,20 +50,19 @@ def resolve_model_export_step(directory: str | PathLike[str], step: int | None) 
 
 
 def latest_model_export_step(directory: str | PathLike[str]) -> int | None:
-    export_dir = model_export_dir(directory)
-    if not export_dir.exists():
-        return None
+    return _latest_export_step(model_export_dir(directory))
 
-    steps = sorted(
-        int(path.name)
-        for path in export_dir.iterdir()
-        if path.is_dir() and path.name.isdigit()
-    )
-    return steps[-1] if steps else None
+
+def latest_preprocessor_export_step(directory: str | PathLike[str]) -> int | None:
+    return _latest_export_step(preprocessor_export_dir(directory))
 
 
 def model_export_path(directory: str | PathLike[str], step: int) -> epath.Path:
     return model_export_dir(directory) / str(int(step))
+
+
+def preprocessor_export_path(directory: str | PathLike[str], step: int) -> epath.Path:
+    return preprocessor_export_dir(directory) / str(int(step))
 
 
 def _model_export_checkpointer() -> ocp.Checkpointer:
@@ -55,6 +72,44 @@ def _model_export_checkpointer() -> ocp.Checkpointer:
             variables=ocp.StandardCheckpointHandler(),
         )
     )
+
+
+def _json_checkpointer() -> ocp.Checkpointer:
+    return ocp.Checkpointer(ocp.JsonCheckpointHandler())
+
+
+def _save_json_export(path: epath.Path, payload: dict[str, Any]) -> None:
+    checkpointer = _json_checkpointer()
+    checkpointer.save(
+        path.as_posix(),
+        args=ocp.args.JsonSave(payload),
+        force=True,
+    )
+    checkpointer.close()
+
+
+def _restore_json_export(path: epath.Path) -> dict[str, Any]:
+    checkpointer = _json_checkpointer()
+    restored = checkpointer.restore(
+        path.as_posix(),
+        args=ocp.args.JsonRestore(),
+    )
+    checkpointer.close()
+    return dict(restored)
+
+
+def _preprocessor_config_from_model_config(model_config: DictConfig) -> dict[str, Any]:
+    missing = [field for field in PREPROCESSOR_CONFIG_FIELDS if field not in model_config]
+    if missing:
+        raise FileNotFoundError(
+            "No preprocessor export found and model config does not contain the "
+            f"required preprocessor fields: {missing}"
+        )
+    return {
+        "resize_shape": list(model_config["resize_shape"]),
+        "pad_width": list(model_config["pad_width"]),
+        "patch_size": int(model_config["patch_size"]),
+    }
 
 
 def save_model_export(
@@ -79,6 +134,22 @@ def save_model_export(
     checkpointer.close()
 
 
+def save_preprocessor_export(
+    directory: str | PathLike[str],
+    step: int,
+    preprocessor_config: DictConfig | dict[str, Any],
+) -> None:
+    export_dir = preprocessor_export_dir(directory)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    if OmegaConf.is_config(preprocessor_config):
+        config = OmegaConf.to_container(preprocessor_config, resolve=True)
+    else:
+        config = dict(preprocessor_config)
+
+    _save_json_export(preprocessor_export_path(directory, step), config)
+
+
 def restore_model_export(
     directory: str | PathLike[str],
     step: int | None = None,
@@ -94,6 +165,27 @@ def restore_model_export(
     )
     checkpointer.close()
     return OmegaConf.create(restored.config), restored.variables
+
+
+def restore_preprocessor_export(
+    directory: str | PathLike[str],
+    step: int | None = None,
+) -> dict[str, Any]:
+    if step is None:
+        step = latest_preprocessor_export_step(directory)
+        if step is None:
+            step = latest_model_export_step(directory)
+    if step is None:
+        raise FileNotFoundError(
+            f"No preprocessor or model exports found in {preprocessor_export_dir(directory)}"
+        )
+
+    export_path = preprocessor_export_path(directory, step)
+    if export_path.exists():
+        return _restore_json_export(export_path)
+
+    model_config, _ = restore_model_export(directory, step=step)
+    return _preprocessor_config_from_model_config(model_config)
 
 
 class CheckpointManager:

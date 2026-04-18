@@ -12,14 +12,14 @@ from pathlib import Path
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 from array_record.python.array_record_module import ArrayRecordWriter
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.checkpoint import restore_model_export
+from visionary.common.checkpoint import restore_model_export, restore_preprocessor_export
 from visionary.tokenizer import Tokenizer
+from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,6 @@ def encode_record(
 
 def record_bounds(
     length: int,
-    *,
     chunk_length: int,
     overlap: int,
     min_length: int,
@@ -263,7 +262,6 @@ def record_bounds(
 
 def iter_loaded_episodes(
     files: list[Path],
-    *,
     read_workers: int,
     prefetch_episodes: int,
 ):
@@ -296,7 +294,12 @@ class TokenizerEncoder:
             build_cfg.checkpoint_dir,
             step=build_cfg.checkpoint_step,
         )
+        preprocessor_cfg = restore_preprocessor_export(
+            build_cfg.checkpoint_dir,
+            step=build_cfg.checkpoint_step,
+        )
         self.model = instantiate(tokenizer_cfg)
+        self.preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
         self.latents_per_frame = (
             int(self.model.num_latents),
             int(self.model.channel_dim),
@@ -304,9 +307,10 @@ class TokenizerEncoder:
 
         @jax.jit
         def encode_step(variables, video_batch):
+            patches = self.preprocessor.preprocess_video(video_batch)
             return self.model.apply(
                 variables,
-                {"video": jnp.asarray(video_batch)},
+                {"video": patches},
                 method=Tokenizer.encode,
             )
 
@@ -380,7 +384,6 @@ class TokenizerEncoder:
 def iter_record_bytes(
     arrays: dict[str, np.ndarray],
     latents: np.ndarray,
-    *,
     episode_id: int,
     chunk_length: int,
     overlap: int,

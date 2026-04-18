@@ -13,12 +13,17 @@ from hydra.utils import instantiate
 from jaxlpips import LPIPS
 from omegaconf import DictConfig, OmegaConf
 
-from visionary.common.checkpoint import CheckpointManager, save_model_export
+from visionary.common.checkpoint import (
+    CheckpointManager,
+    save_model_export,
+    save_preprocessor_export,
+)
 from visionary.common.jax import fold_in_many
 from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import RandomVideoCrop, VideoDataset, VideoDataSource
 from visionary.tokenizer import Tokenizer
+from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +46,12 @@ def get_lpips_loss_fn():
 def compute_lpips_loss(
     original: jax.Array,
     reconstructed: jax.Array,
+    preprocessor: TokenizerPreprocessor,
 ) -> jax.Array:
-    original_images = original * 2.0 - 1.0
-    reconstructed_images = reconstructed * 2.0 - 1.0
+    original_images = preprocessor.patches_to_images(original)
+    reconstructed_images = preprocessor.patches_to_images(reconstructed)
+    original_images = original_images * 2.0 - 1.0
+    reconstructed_images = reconstructed_images * 2.0 - 1.0
     original_images = original_images.reshape((-1, *original_images.shape[2:]))
     reconstructed_images = reconstructed_images.reshape((-1, *reconstructed_images.shape[2:]))
     return jnp.mean(get_lpips_loss_fn()(original_images, reconstructed_images))
@@ -71,15 +79,16 @@ def update_loss_ema(
 
 def compute_loss_metrics(
     state: TokenizerTrainState,
-    original_images: jax.Array,
+    batch: VideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
     lpips_weight: float,
+    preprocessor: TokenizerPreprocessor,
 ):
-    original = original_images.astype(jnp.float32)
-    reconstructed_f32 = reconstructed.astype(jnp.float32)
-    mask_f32 = mask.astype(reconstructed_f32.dtype)
-    reconstruction_error = reconstructed_f32 - original
+    original = batch["video"].astype(jnp.float32) / 255.0
+    reconstructed = reconstructed.astype(jnp.float32)
+    mask = jnp.expand_dims(mask, axis=-1).astype(reconstructed.dtype)
+    reconstruction_error = reconstructed - original
 
     mse_loss = jnp.mean(jnp.square(reconstruction_error))
     mse_rms = jnp.sqrt(state.mse_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
@@ -87,7 +96,7 @@ def compute_loss_metrics(
 
     lpips_rms = jnp.sqrt(state.lpips_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if lpips_weight > 0:
-        lpips_loss = compute_lpips_loss(original, reconstructed_f32)
+        lpips_loss = compute_lpips_loss(original, reconstructed, preprocessor)
     else:
         lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
     normalized_lpips_loss = lpips_loss / jax.lax.stop_gradient(lpips_rms)
@@ -103,14 +112,14 @@ def compute_loss_metrics(
         "normalized_lpips_loss": normalized_lpips_loss,
         "mse_rms": mse_rms,
         "lpips_rms": lpips_rms,
-        "mask_ratio": jnp.mean(mask_f32),
+        "mask_ratio": jnp.mean(mask),
     }
     return loss, metrics
 
 
 @partial(
     jax.jit,
-    static_argnames=("lpips_weight",),
+    static_argnames=("lpips_weight", "preprocessor"),
 )
 def train_step(
     state: TokenizerTrainState,
@@ -118,11 +127,12 @@ def train_step(
     base_sample_key: jax.Array,
     global_step: int,
     lpips_weight: float,
+    preprocessor: TokenizerPreprocessor,
 ):
     sample_key = fold_in_many(base_sample_key, global_step)
 
     def loss_fn(params):
-        original_images, reconstructed, mask = state.apply_fn(
+        reconstructed, mask = state.apply_fn(
             params,
             batch,
             method=Tokenizer.reconstruct,
@@ -130,10 +140,11 @@ def train_step(
         )
         return compute_loss_metrics(
             state,
-            original_images,
+            batch,
             reconstructed,
             mask,
             lpips_weight,
+            preprocessor,
         )
 
     (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
@@ -148,7 +159,7 @@ def train_step(
 
 @partial(
     jax.jit,
-    static_argnames=("lpips_weight",),
+    static_argnames=("lpips_weight", "preprocessor"),
 )
 def eval_step(
     state: TokenizerTrainState,
@@ -157,10 +168,11 @@ def eval_step(
     global_step: int,
     batch_index: int,
     lpips_weight: float,
+    preprocessor: TokenizerPreprocessor,
 ):
     sample_key = fold_in_many(base_sample_key, global_step, batch_index)
     model_key, frame_key = jax.random.split(sample_key)
-    original_images, reconstructed, mask = state.apply_fn(
+    reconstructed, mask = state.apply_fn(
         state.params,
         batch,
         mask_prob=0.1,
@@ -170,44 +182,45 @@ def eval_step(
     )
     _, metrics = compute_loss_metrics(
         state,
-        original_images,
+        batch,
         reconstructed,
         mask,
         lpips_weight,
+        preprocessor,
     )
     sampled_frames = sample_sequence_frames(
-        original_images,
+        batch,
         reconstructed,
         mask,
-        frame_key=frame_key,
+        preprocessor,
+        frame_key,
     )
     return metrics, sampled_frames
 
 
 def sample_sequence_frames(
-    original: jax.Array,
+    batch: VideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
+    preprocessor: TokenizerPreprocessor,
     frame_key: jax.Array,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    original = original.astype(jnp.float32)
+    original = batch["video"].astype(jnp.float32) / 255.0
     reconstructed = reconstructed.astype(jnp.float32)
-    mask_f32 = mask.astype(original.dtype)
-    masked_input = original * (1.0 - mask_f32)
+    masked_input = original * (1.0 - jnp.expand_dims(mask, axis=-1).astype(original.dtype))
 
-    batch_size, seq_len, _, _, _ = original.shape
+    batch_size, seq_len, _, _ = original.shape
     batch_indices = jnp.arange(batch_size)
     frame_indices = jax.random.randint(frame_key, (batch_size,), 0, seq_len)
 
     original = original[batch_indices, frame_indices]
     reconstructed = reconstructed[batch_indices, frame_indices]
     masked_input = masked_input[batch_indices, frame_indices]
-
-    return (
-        jnp.clip(jnp.rint(original * 255.0), 0, 255).astype(jnp.uint8),
-        jnp.clip(jnp.rint(reconstructed * 255.0), 0, 255).astype(jnp.uint8),
-        jnp.clip(jnp.rint(masked_input * 255.0), 0, 255).astype(jnp.uint8),
-    )
+    sampled_frames = []
+    for patches in (original, reconstructed, masked_input):
+        images = preprocessor.patches_to_images(patches)
+        sampled_frames.append(jnp.clip(jnp.rint(images * 255.0), 0, 255).astype(jnp.uint8))
+    return tuple(sampled_frames)
 
 
 def build_reconstruction_grid(
@@ -279,7 +292,15 @@ def main(cfg: DictConfig):
         int(cfg.dataset.prefetch_buffer_size),
         effective_read_threads,
     )
-    transforms = [RandomVideoCrop(cfg.dataset.frame_length)]
+    preprocessor = TokenizerPreprocessor(
+        resize_shape=cfg.tokenizer.resize_shape,
+        pad_width=cfg.tokenizer.pad_width,
+        patch_size=cfg.tokenizer.patch_size,
+    )
+    transforms = [
+        RandomVideoCrop(cfg.dataset.frame_length),
+        preprocessor.as_grain_transform(),
+    ]
 
     def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int):
         sampler = grain.IndexSampler(
@@ -367,6 +388,11 @@ def main(cfg: DictConfig):
             force=force,
         )
         save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
+        save_preprocessor_export(
+            checkpoint_manager.directory,
+            step,
+            preprocessor.export_config(),
+        )
 
     def iterator_items():
         return {"train_iterator": train_iterator}
@@ -425,6 +451,7 @@ def main(cfg: DictConfig):
             train_key,
             current_step,
             cfg.lpips_weight,
+            preprocessor,
         )
 
         step = current_step + 1
@@ -465,6 +492,7 @@ def main(cfg: DictConfig):
                     step,
                     batch_idx,
                     cfg.lpips_weight,
+                    preprocessor,
                 )
                 sampled_frames = jax.device_get(sampled_frames)
                 batch_metrics = jax.device_get(batch_metrics)
