@@ -293,9 +293,9 @@ def main(cfg: DictConfig):
         effective_read_threads,
     )
     preprocessor = TokenizerPreprocessor(
-        resize_shape=cfg.tokenizer.resize_shape,
-        pad_width=cfg.tokenizer.pad_width,
-        patch_size=cfg.tokenizer.patch_size,
+        resize_shape=tuple(cfg.tokenizer.resize_shape),
+        pad_width=tuple(cfg.tokenizer.pad_width),
+        patch_size=int(cfg.tokenizer.patch_size),
     )
     transforms = [
         RandomVideoCrop(cfg.dataset.frame_length),

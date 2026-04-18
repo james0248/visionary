@@ -10,7 +10,7 @@ from einops import rearrange
 from visionary.dataset import VideoDataset
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class TokenizerPreprocessor:
     resize_shape: tuple[int, int]
     pad_width: tuple[int, int]
@@ -20,9 +20,9 @@ class TokenizerPreprocessor:
     @classmethod
     def from_config(cls, cfg: Mapping[str, Any]) -> "TokenizerPreprocessor":
         return cls(
-            resize_shape=cfg["resize_shape"],
-            pad_width=cfg["pad_width"],
-            patch_size=cfg["patch_size"],
+            resize_shape=tuple(cfg["resize_shape"]),
+            pad_width=tuple(cfg["pad_width"]),
+            patch_size=int(cfg["patch_size"]),
         )
 
     @property
