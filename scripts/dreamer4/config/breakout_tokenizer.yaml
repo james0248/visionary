@@ -7,8 +7,8 @@ total_steps: 1000000
 exp_name: ???
 
 dataset:
-  train_dir: mnt/data/train/
-  eval_dir: mnt/data/eval/
+  train_dir: /mnt/data/train/
+  eval_dir: /mnt/data/eval/
   frame_length: 64
   batch_size: 4
   worker_count: 0
