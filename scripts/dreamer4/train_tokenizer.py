@@ -456,24 +456,22 @@ def main(cfg: DictConfig):
 
         step = current_step + 1
 
-        train_sps = None
-        should_log_train = step % cfg.log_interval == 0
-        if should_log_train:
-            train_metrics = jax.device_get(metrics)
-            now = time.monotonic()
-            train_sps = (step - train_window_start_step) / max(
-                now - train_window_start_time,
-                1e-8,
-            )
-            wb.log(
-                {
-                    **{k: float(v) for k, v in train_metrics.items()},
-                    "train/sps": float(train_sps),
-                },
-                step=step,
-            )
-            train_window_start_time = now
-            train_window_start_step = step
+        train_metrics = jax.device_get(metrics)
+        now = time.monotonic()
+        train_sps = (step - train_window_start_step) / max(
+            now - train_window_start_time,
+            1e-8,
+        )
+        wb.log(
+            {
+                **{k: float(v) for k, v in train_metrics.items()},
+                "train/sps": float(train_sps),
+            },
+            step=step,
+        )
+        train_window_start_time = now
+        train_window_start_step = step
+        should_log_console = step % cfg.log_interval == 0
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -529,7 +527,7 @@ def main(cfg: DictConfig):
         if checkpoint_manager.should_save(step):
             save_checkpoint(step)
 
-        if should_log_train:
+        if should_log_console:
             logger.info(
                 "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, eval: %.3fs",
                 step,
