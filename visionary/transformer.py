@@ -84,8 +84,6 @@ class Attention(nn.Module):
         rope_emb: tuple[jnp.ndarray, jnp.ndarray] | None = None,
         mask: jnp.ndarray | None = None,
     ) -> jnp.ndarray:
-        num_groups = self.num_heads // self.num_kv_heads
-
         q = nn.Dense(self.num_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
         k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
         v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
@@ -100,9 +98,6 @@ class Attention(nn.Module):
         if rope_emb is not None:
             q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
             k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
-
-        k = jnp.repeat(k, repeats=num_groups, axis=2)
-        v = jnp.repeat(v, repeats=num_groups, axis=2)
 
         out = jax.nn.dot_product_attention(q, k, v, mask=mask, scale=1.0 / jnp.sqrt(self.head_dim))
         out = rearrange(out, "b t h d -> b t (h d)")
@@ -152,6 +147,7 @@ class SpatioTemporalTransformer(nn.Module):
     num_kv_heads: int
     head_dim: int
     mlp_hidden_dim: int
+    temporal_layer_period: int = 4
     attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
@@ -166,19 +162,26 @@ class SpatioTemporalTransformer(nn.Module):
         temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
         temporal_mask: jnp.ndarray,
     ) -> jnp.ndarray:
+        if self.num_layers % self.temporal_layer_period != 0:
+            raise ValueError(
+                "num_layers must be divisible by temporal_layer_period, "
+                f"got num_layers={self.num_layers} and "
+                f"temporal_layer_period={self.temporal_layer_period}"
+            )
+
+        batch_size = x.shape[0]
+
         # (b, t, t) -> (b*n, 1, t, t) for head broadcast
         temporal_mask = jnp.repeat(temporal_mask, total_tokens, axis=0)
         temporal_mask = temporal_mask[:, None, :, :]
 
-        for i in range(1, self.num_layers + 1):
-            if i % 4 == 0:
-                x = rearrange(x, "b t n d -> (b n) t d")
-                rope_emb, mask = temporal_rope_emb, temporal_mask
-            else:
-                x = rearrange(x, "b t n d -> (b t) n d")
-                rope_emb, mask = spatial_rope_emb, spatial_mask
-
-            x = TransformerBlock(
+        def apply_block(
+            block_idx: int,
+            x: jnp.ndarray,
+            rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+            mask: jnp.ndarray,
+        ) -> jnp.ndarray:
+            return TransformerBlock(
                 model_dim=self.model_dim,
                 num_heads=self.num_heads,
                 num_kv_heads=self.num_kv_heads,
@@ -186,11 +189,21 @@ class SpatioTemporalTransformer(nn.Module):
                 mlp_hidden_dim=self.mlp_hidden_dim,
                 attention_logit_soft_cap=self.attention_logit_soft_cap,
                 dtype=self.dtype,
+                name=f"TransformerBlock_{block_idx}",
             )(x, rope_emb, mask)
 
-            if i % 4 == 0:
-                x = rearrange(x, "(b n) t d -> b t n d", n=total_tokens)
-            else:
-                x = rearrange(x, "(b t) n d -> b t n d", t=t)
+        block_idx = 0
+        num_groups = self.num_layers // self.temporal_layer_period
+        for _ in range(num_groups):
+            x = rearrange(x, "b t n d -> (b t) n d")
+            for _ in range(self.temporal_layer_period - 1):
+                x = apply_block(block_idx, x, spatial_rope_emb, spatial_mask)
+                block_idx += 1
+            x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=t)
+
+            x = rearrange(x, "b t n d -> (b n) t d")
+            x = apply_block(block_idx, x, temporal_rope_emb, temporal_mask)
+            block_idx += 1
+            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
 
         return x

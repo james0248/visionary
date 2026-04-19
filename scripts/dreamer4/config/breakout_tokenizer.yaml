@@ -24,6 +24,7 @@ tokenizer:
   num_latents: 96
   num_heads: 8
   num_kv_heads: 2
+  temporal_layer_period: 4
   model_dim: 256
   mlp_hidden_dim: 768
   head_dim: 64

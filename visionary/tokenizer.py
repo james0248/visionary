@@ -70,6 +70,7 @@ class TokenizerEncoder(nn.Module):
     y_len: int
 
     base: float
+    temporal_layer_period: int = 4
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -118,6 +119,7 @@ class TokenizerEncoder(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
+            temporal_layer_period=self.temporal_layer_period,
             dtype=self.dtype,
         )(
             x=x,
@@ -147,6 +149,7 @@ class TokenizerDecoder(nn.Module):
     y_len: int
 
     base: float
+    temporal_layer_period: int = 4
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -187,6 +190,7 @@ class TokenizerDecoder(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
+            temporal_layer_period=self.temporal_layer_period,
             dtype=self.dtype,
         )(
             x=x,
@@ -219,6 +223,7 @@ class Tokenizer(nn.Module):
     pad_width: tuple[int, int]
 
     base: float
+    temporal_layer_period: int = 4
     independent_prob: float = 0.3
     mask_prob_min: float = 0.0
     mask_prob_max: float = 0.9
@@ -258,6 +263,7 @@ class Tokenizer(nn.Module):
             num_latents=self.num_latents,
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
+            temporal_layer_period=self.temporal_layer_period,
             model_dim=self.model_dim,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
@@ -272,6 +278,7 @@ class Tokenizer(nn.Module):
             num_latents=self.num_latents,
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
+            temporal_layer_period=self.temporal_layer_period,
             model_dim=self.model_dim,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
