@@ -433,10 +433,16 @@ def main(cfg: DictConfig):
         wb.finish()
         return
 
-    train_window_start_time = time.monotonic()
     train_window_start_step = step
-    t0 = time.monotonic()
+    train_window_data_time = 0.0
+    train_window_transfer_time = 0.0
+    train_window_compute_time = 0.0
+    train_window_wall_time = 0.0
+    logger.info(
+        "Accurate timing mode enabled for tokenizer training; synchronizing every step."
+    )
     while True:
+        step_start = time.monotonic()
         current_step = step
         try:
             batch = next(train_iterator)
@@ -456,27 +462,45 @@ def main(cfg: DictConfig):
             cfg.lpips_weight,
             preprocessor,
         )
+        jax.block_until_ready(metrics["loss"])
+        t3 = time.monotonic()
 
         step = current_step + 1
+        data_time = t1 - step_start
+        transfer_time = t2 - t1
+        compute_time = t3 - t2
+        wall_time = t3 - step_start
+        train_window_data_time += data_time
+        train_window_transfer_time += transfer_time
+        train_window_compute_time += compute_time
+        train_window_wall_time += wall_time
 
         should_log_console = step % cfg.log_interval == 0
         train_sps = 0.0
         if should_log_console:
+            window_steps = step - train_window_start_step
             train_metrics = jax.device_get(metrics)
-            now = time.monotonic()
-            train_sps = (step - train_window_start_step) / max(
-                now - train_window_start_time,
-                1e-8,
-            )
+            train_sps = window_steps / max(train_window_wall_time, 1e-8)
+            avg_data_time = train_window_data_time / max(window_steps, 1)
+            avg_transfer_time = train_window_transfer_time / max(window_steps, 1)
+            avg_compute_time = train_window_compute_time / max(window_steps, 1)
+            avg_wall_time = train_window_wall_time / max(window_steps, 1)
             wb.log(
                 {
                     **{k: float(v) for k, v in train_metrics.items()},
                     "train/sps": float(train_sps),
+                    "train/data_time": float(avg_data_time),
+                    "train/transfer_time": float(avg_transfer_time),
+                    "train/compute_time": float(avg_compute_time),
+                    "train/wall_time": float(avg_wall_time),
                 },
                 step=step,
             )
-            train_window_start_time = now
             train_window_start_step = step
+            train_window_data_time = 0.0
+            train_window_transfer_time = 0.0
+            train_window_compute_time = 0.0
+            train_window_wall_time = 0.0
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -534,17 +558,19 @@ def main(cfg: DictConfig):
 
         if should_log_console:
             logger.info(
-                "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, eval: %.3fs",
+                "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, compute: %.3fs, "
+                "wall: %.3fs, eval: %.3fs",
                 step,
                 train_sps,
-                t1 - t0,
-                t2 - t1,
+                avg_data_time,
+                avg_transfer_time,
+                avg_compute_time,
+                avg_wall_time,
                 t_eval,
             )
         if step >= total_steps:
             logger.info("Reached total_steps=%d; stopping tokenizer training.", total_steps)
             break
-        t0 = time.monotonic()
 
     if step >= total_steps and not checkpoint_manager.should_save(step):
         save_checkpoint(step, force=True)
