@@ -302,7 +302,7 @@ def main(cfg: DictConfig):
         float(cfg.lpips_weight),
     )
     crop_transform = RandomVideoCrop(cfg.dataset.frame_length)
-    batch_preprocess_transform = preprocessor.as_grain_batch_transform()
+    preprocess_transform = preprocessor.as_grain_transform()
 
     def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int):
         sampler = grain.IndexSampler(
@@ -320,11 +320,11 @@ def main(cfg: DictConfig):
             sampler=sampler,
             operations=[
                 crop_transform,
+                preprocess_transform,
                 grain.Batch(
                     batch_size=int(cfg.dataset.batch_size),
                     drop_remainder=drop_remainder,
                 ),
-                batch_preprocess_transform,
             ],
             worker_count=cfg.dataset.worker_count,
             read_options=read_options,
