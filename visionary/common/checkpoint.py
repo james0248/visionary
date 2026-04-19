@@ -28,15 +28,19 @@ def preprocessor_export_dir(directory: str | PathLike[str]) -> epath.Path:
 
 
 def _latest_export_step(export_dir: epath.Path) -> int | None:
-    if not export_dir.exists():
-        return None
+    steps = _export_steps(export_dir)
+    return steps[-1] if steps else None
 
-    steps = sorted(
+
+def _export_steps(export_dir: epath.Path) -> list[int]:
+    if not export_dir.exists():
+        return []
+
+    return sorted(
         int(path.name)
         for path in export_dir.iterdir()
         if path.is_dir() and path.name.isdigit()
     )
-    return steps[-1] if steps else None
 
 
 def resolve_model_export_step(directory: str | PathLike[str], step: int | None) -> int:
@@ -55,6 +59,24 @@ def latest_model_export_step(directory: str | PathLike[str]) -> int | None:
 
 def latest_preprocessor_export_step(directory: str | PathLike[str]) -> int | None:
     return _latest_export_step(preprocessor_export_dir(directory))
+
+
+def _find_preprocessor_export_step(
+    directory: str | PathLike[str],
+    step: int | None,
+) -> int | None:
+    export_steps = _export_steps(preprocessor_export_dir(directory))
+    if not export_steps:
+        return None
+
+    if step is None:
+        return export_steps[-1]
+
+    requested_step = int(step)
+    for export_step in reversed(export_steps):
+        if export_step <= requested_step:
+            return export_step
+    return export_steps[0]
 
 
 def model_export_path(directory: str | PathLike[str], step: int) -> epath.Path:
@@ -140,6 +162,15 @@ def save_preprocessor_export(
     preprocessor_config: DictConfig | dict[str, Any],
 ) -> None:
     export_dir = preprocessor_export_dir(directory)
+    existing_step = _latest_export_step(export_dir)
+    if existing_step is not None:
+        logger.debug(
+            "Skipping preprocessor export for step %s; already saved at step %s.",
+            step,
+            existing_step,
+        )
+        return
+
     export_dir.mkdir(parents=True, exist_ok=True)
 
     if OmegaConf.is_config(preprocessor_config):
@@ -171,20 +202,17 @@ def restore_preprocessor_export(
     directory: str | PathLike[str],
     step: int | None = None,
 ) -> dict[str, Any]:
-    if step is None:
-        step = latest_preprocessor_export_step(directory)
-        if step is None:
-            step = latest_model_export_step(directory)
-    if step is None:
+    preprocessor_step = _find_preprocessor_export_step(directory, step)
+    if preprocessor_step is not None:
+        return _restore_json_export(preprocessor_export_path(directory, preprocessor_step))
+
+    model_step = latest_model_export_step(directory) if step is None else int(step)
+    if model_step is None:
         raise FileNotFoundError(
             f"No preprocessor or model exports found in {preprocessor_export_dir(directory)}"
         )
 
-    export_path = preprocessor_export_path(directory, step)
-    if export_path.exists():
-        return _restore_json_export(export_path)
-
-    model_config, _ = restore_model_export(directory, step=step)
+    model_config, _ = restore_model_export(directory, step=model_step)
     return _preprocessor_config_from_model_config(model_config)
 
 
