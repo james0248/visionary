@@ -269,14 +269,6 @@ def main(cfg: DictConfig):
         jax.device_count(),
         jax.devices(),
     )
-    profiler_enabled = bool(OmegaConf.select(cfg, "profiler.enabled", default=False))
-    profiler_server_port = int(OmegaConf.select(cfg, "profiler.server_port", default=9999))
-    profiler_trace_logdir = OmegaConf.select(cfg, "profiler.trace_logdir", default=None)
-    profiler_trace_start_step = int(OmegaConf.select(cfg, "profiler.trace_start_step", default=0))
-    profiler_trace_num_steps = int(OmegaConf.select(cfg, "profiler.trace_num_steps", default=0))
-    if profiler_enabled:
-        jax.profiler.start_server(profiler_server_port)
-        logger.info("JAX profiler server listening on localhost:%d", profiler_server_port)
     wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled))
     total_steps = int(cfg.total_steps)
 
@@ -444,90 +436,60 @@ def main(cfg: DictConfig):
     train_window_start_step = step
     train_window_data_time = 0.0
     train_window_transfer_time = 0.0
-    train_window_compute_time = 0.0
-    train_window_wall_time = 0.0
-    trace_active = False
-    trace_end_step = None
+    train_window_dispatch_time = 0.0
     logger.info(
-        "Accurate timing mode enabled for tokenizer training; synchronizing every step."
+        "Asynchronous timing mode enabled for tokenizer training; timing logs are averaged "
+        "over each logging window."
     )
     while True:
         step_start = time.monotonic()
         current_step = step
-        if (
-            profiler_trace_logdir
-            and profiler_trace_num_steps > 0
-            and not trace_active
-            and current_step == profiler_trace_start_step
-        ):
-            profile_options = jax.profiler.ProfileOptions()
-            if jax.default_backend() == "tpu":
-                profile_options.advanced_configuration = {
-                    "tpu_trace_mode": "TRACE_COMPUTE_AND_SYNC"
-                }
-            jax.profiler.start_trace(
-                profiler_trace_logdir,
-                create_perfetto_trace=True,
-                profiler_options=profile_options,
-            )
-            trace_active = True
-            trace_end_step = current_step + profiler_trace_num_steps
-            logger.info(
-                "Started JAX trace at step %d for %d steps; logdir=%s",
-                current_step,
-                profiler_trace_num_steps,
-                profiler_trace_logdir,
-            )
-        with jax.profiler.StepTraceAnnotation("train", step_num=current_step):
-            try:
-                batch = next(train_iterator)
-            except StopIteration:
-                train_iterator = iter(train_dataloader)
-                batch = next(train_iterator)
-            t1 = time.monotonic()
+        try:
+            batch = next(train_iterator)
+        except StopIteration:
+            train_iterator = iter(train_dataloader)
+            batch = next(train_iterator)
+        t1 = time.monotonic()
 
-            batch = jax.device_put(batch)
-            t2 = time.monotonic()
+        batch = jax.device_put(batch)
+        t2 = time.monotonic()
 
-            state, metrics = train_step(
-                state,
-                batch,
-                train_key,
-                current_step,
-                cfg.lpips_weight,
-                preprocessor,
-            )
-            jax.block_until_ready(metrics["loss"])
-            t3 = time.monotonic()
+        state, metrics = train_step(
+            state,
+            batch,
+            train_key,
+            current_step,
+            cfg.lpips_weight,
+            preprocessor,
+        )
+        t3 = time.monotonic()
 
         step = current_step + 1
-        if trace_active and trace_end_step is not None and step >= trace_end_step:
-            jax.profiler.stop_trace()
-            trace_active = False
-            logger.info(
-                "Stopped JAX trace at step %d; inspect %s for perfetto_trace.json.gz",
-                step,
-                profiler_trace_logdir,
-            )
         data_time = t1 - step_start
         transfer_time = t2 - t1
-        compute_time = t3 - t2
-        wall_time = t3 - step_start
+        dispatch_time = t3 - t2
         train_window_data_time += data_time
         train_window_transfer_time += transfer_time
-        train_window_compute_time += compute_time
-        train_window_wall_time += wall_time
+        train_window_dispatch_time += dispatch_time
 
         should_log_console = step % cfg.log_interval == 0
         train_sps = 0.0
         if should_log_console:
             window_steps = step - train_window_start_step
+            sync_start = time.monotonic()
             train_metrics = jax.device_get(metrics)
-            train_sps = window_steps / max(train_window_wall_time, 1e-8)
+            sync_time = time.monotonic() - sync_start
+            total_window_time = (
+                train_window_data_time
+                + train_window_transfer_time
+                + train_window_dispatch_time
+                + sync_time
+            )
+            train_sps = window_steps / max(total_window_time, 1e-8)
             avg_data_time = train_window_data_time / max(window_steps, 1)
             avg_transfer_time = train_window_transfer_time / max(window_steps, 1)
-            avg_compute_time = train_window_compute_time / max(window_steps, 1)
-            avg_wall_time = train_window_wall_time / max(window_steps, 1)
+            avg_compute_time = (train_window_dispatch_time + sync_time) / max(window_steps, 1)
+            avg_wall_time = total_window_time / max(window_steps, 1)
             wb.log(
                 {
                     **{k: float(v) for k, v in train_metrics.items()},
@@ -542,8 +504,7 @@ def main(cfg: DictConfig):
             train_window_start_step = step
             train_window_data_time = 0.0
             train_window_transfer_time = 0.0
-            train_window_compute_time = 0.0
-            train_window_wall_time = 0.0
+            train_window_dispatch_time = 0.0
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -617,8 +578,6 @@ def main(cfg: DictConfig):
 
     if step >= total_steps and not checkpoint_manager.should_save(step):
         save_checkpoint(step, force=True)
-    if trace_active:
-        jax.profiler.stop_trace()
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()
