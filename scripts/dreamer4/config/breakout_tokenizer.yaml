@@ -21,7 +21,7 @@ dataset:
 tokenizer:
   _target_: visionary.tokenizer.Tokenizer
   num_layers: 8
-  num_latents: 96
+  num_latents: 64
   num_heads: 8
   num_kv_heads: 2
   temporal_layer_period: 4
@@ -29,7 +29,7 @@ tokenizer:
   mlp_hidden_dim: 768
   head_dim: 64
   channel_dim: 16
-  resize_shape: [168, 120]
+  resize_shape: [128, 96]
   pad_width: [0, 0]
   patch_size: 8
   base: 10000.0
