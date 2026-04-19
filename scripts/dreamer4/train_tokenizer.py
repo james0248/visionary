@@ -10,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from hydra.utils import instantiate
-from jaxlpips import LPIPS
 from omegaconf import DictConfig, OmegaConf
 
 from visionary.common.checkpoint import (
@@ -22,6 +21,7 @@ from visionary.common.jax import fold_in_many
 from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import RandomVideoCrop, VideoDataset, VideoDataSource
+from visionary.lpips import LPIPS
 from visionary.tokenizer import Tokenizer
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
@@ -297,10 +297,12 @@ def main(cfg: DictConfig):
         pad_width=tuple(cfg.tokenizer.pad_width),
         patch_size=int(cfg.tokenizer.patch_size),
     )
-    transforms = [
-        RandomVideoCrop(cfg.dataset.frame_length),
-        preprocessor.as_grain_transform(),
-    ]
+    logger.info(
+        "LPIPS settings: weight=%.3f",
+        float(cfg.lpips_weight),
+    )
+    crop_transform = RandomVideoCrop(cfg.dataset.frame_length)
+    batch_preprocess_transform = preprocessor.as_grain_batch_transform()
 
     def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int):
         sampler = grain.IndexSampler(
@@ -317,11 +319,12 @@ def main(cfg: DictConfig):
             data_source=source,
             sampler=sampler,
             operations=[
-                *transforms,
+                crop_transform,
                 grain.Batch(
                     batch_size=int(cfg.dataset.batch_size),
                     drop_remainder=drop_remainder,
                 ),
+                batch_preprocess_transform,
             ],
             worker_count=cfg.dataset.worker_count,
             read_options=read_options,

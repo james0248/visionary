@@ -134,6 +134,9 @@ class TokenizerPreprocessor:
     def as_grain_transform(self) -> "TokenizerPreprocessTransform":
         return TokenizerPreprocessTransform(self)
 
+    def as_grain_batch_transform(self) -> "BatchedTokenizerPreprocessTransform":
+        return BatchedTokenizerPreprocessTransform(self)
+
 
 class TokenizerPreprocessTransform(grain.RandomMapTransform):
     def __init__(self, preprocessor: TokenizerPreprocessor):
@@ -143,4 +146,15 @@ class TokenizerPreprocessTransform(grain.RandomMapTransform):
         return f"{type(self).__name__}(preprocessor={self.preprocessor!r})"
 
     def random_map(self, element: VideoDataset, rng: np.random.Generator) -> VideoDataset:
+        return {"video": np.asarray(self.preprocessor.preprocess_video(element["video"]))}
+
+
+class BatchedTokenizerPreprocessTransform(grain.MapTransform):
+    def __init__(self, preprocessor: TokenizerPreprocessor):
+        self.preprocessor = preprocessor
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(preprocessor={self.preprocessor!r})"
+
+    def map(self, element: VideoDataset) -> VideoDataset:
         return {"video": np.asarray(self.preprocessor.preprocess_video(element["video"]))}
