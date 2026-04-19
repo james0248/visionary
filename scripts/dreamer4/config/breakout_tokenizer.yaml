@@ -48,3 +48,10 @@ checkpoint:
 wandb:
   enabled: true
   project: visionary
+
+profiler:
+  enabled: false
+  server_port: 9999
+  trace_logdir: null
+  trace_start_step: 0
+  trace_num_steps: 0
