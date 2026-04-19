@@ -306,11 +306,10 @@ class TokenizerEncoder:
         )
 
         @jax.jit
-        def encode_step(variables, video_batch):
-            patches = self.preprocessor.preprocess_video(video_batch)
+        def encode_step(variables, patch_batch):
             return self.model.apply(
                 variables,
-                {"video": patches},
+                {"video": patch_batch},
                 method=Tokenizer.encode,
             )
 
@@ -368,8 +367,9 @@ class TokenizerEncoder:
                 batch_frames[window_idx, :length] = episodes[episode_idx][start:stop]
                 batch_lengths[window_idx] = length
 
+            batch_patches = self.preprocessor.preprocess_video(batch_frames)
             batch_latents = np.asarray(
-                jax.device_get(self.encode_fn(self.variables, batch_frames)),
+                jax.device_get(self.encode_fn(self.variables, batch_patches)),
                 dtype=np.float32,
             )
             for window_idx, (episode_idx, start, stop, overlap) in enumerate(batch_window_refs):

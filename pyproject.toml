@@ -17,6 +17,7 @@ dependencies = [
     "jax>=0.9.1",
     "jaxlpips>=1.2.0",
     "moviepy>=2.2.1",
+    "opencv-python-headless>=4.10.0.84",
     "orbax-checkpoint>=0.11.33",
     "scikit-image>=0.26.0",
     "wandb>=0.19.11",

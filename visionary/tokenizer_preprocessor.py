@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+import cv2
 import grain.python as grain
 import jax
 import jax.numpy as jnp
@@ -60,26 +61,34 @@ class TokenizerPreprocessor:
             "patch_size": self.patch_size,
         }
 
-    def preprocess_video(self, video: jax.Array | np.ndarray) -> jax.Array:
-        video = jnp.asarray(video)
+    def preprocess_video(self, video: np.ndarray) -> np.ndarray:
+        video = np.asarray(video)
         squeeze_batch = video.ndim == 4
         if squeeze_batch:
             video = video[None]
-        images = jax.image.resize(
-            video.astype(jnp.float32),
-            (
-                video.shape[0],
-                video.shape[1],
-                self.image_height,
-                self.image_width,
-                video.shape[-1],
-            ),
-            method="linear",
-            antialias=True,
+
+        batch_size, seq_len, _, _, num_channels = video.shape
+        frames = video.reshape(batch_size * seq_len, *video.shape[2:])
+        resized_frames = np.empty(
+            (frames.shape[0], self.image_height, self.image_width, num_channels),
+            dtype=np.uint8,
         )
-        images = jnp.clip(jnp.rint(images), 0, 255).astype(jnp.uint8)
+        for index, frame in enumerate(frames):
+            resized_frames[index] = cv2.resize(
+                frame,
+                (self.image_width, self.image_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+        images = resized_frames.reshape(
+            batch_size,
+            seq_len,
+            self.image_height,
+            self.image_width,
+            num_channels,
+        )
         patches = rearrange(
-            jnp.pad(
+            np.pad(
                 images,
                 (
                     (0, 0),
@@ -146,7 +155,7 @@ class TokenizerPreprocessTransform(grain.RandomMapTransform):
         return f"{type(self).__name__}(preprocessor={self.preprocessor!r})"
 
     def random_map(self, element: VideoDataset, rng: np.random.Generator) -> VideoDataset:
-        return {"video": np.asarray(self.preprocessor.preprocess_video(element["video"]))}
+        return {"video": self.preprocessor.preprocess_video(element["video"])}
 
 
 class BatchedTokenizerPreprocessTransform(grain.MapTransform):
@@ -157,4 +166,4 @@ class BatchedTokenizerPreprocessTransform(grain.MapTransform):
         return f"{type(self).__name__}(preprocessor={self.preprocessor!r})"
 
     def map(self, element: VideoDataset) -> VideoDataset:
-        return {"video": np.asarray(self.preprocessor.preprocess_video(element["video"]))}
+        return {"video": self.preprocessor.preprocess_video(element["video"])}

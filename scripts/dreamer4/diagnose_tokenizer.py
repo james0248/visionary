@@ -99,7 +99,7 @@ def main():
     preprocessor_cfg = restore_preprocessor_export(args.checkpoint_dir, step=args.step)
     tokenizer = instantiate(model_cfg)
     preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
-    patch_batch = {"video": np.asarray(preprocessor.preprocess_video(batch["video"]))}
+    patch_batch = {"video": preprocessor.preprocess_video(batch["video"])}
     patch_video = jnp.asarray(patch_batch["video"], dtype=jnp.float32) / 255.0
 
     def decode_images(latent: jax.Array) -> jax.Array:
