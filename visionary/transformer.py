@@ -18,31 +18,33 @@ class SwiGLU(nn.Module):
 
 
 def apply_rotary_embedding(x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray) -> jnp.ndarray:
-    x_rot = jnp.stack([-x[..., 1::2], x[..., 0::2]], axis=-1)
-    x_rot = x_rot.reshape(*x_rot.shape[:-2], -1)
+    x_left, x_right = jnp.split(x, 2, axis=-1)
 
     cos = cos.astype(x.dtype)[None, :, None, :]
     sin = sin.astype(x.dtype)[None, :, None, :]
 
-    emb = x * cos + x_rot * sin
-    return emb
+    rotated_left = x_left * cos - x_right * sin
+    rotated_right = x_right * cos + x_left * sin
+    return jnp.concatenate([rotated_left, rotated_right], axis=-1)
 
 
 def create_temporal_rope(
     base: float, head_dim: int, seq_len: int
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    theta = 1 / (base ** (jnp.arange(0, head_dim, 2) / head_dim))
+    half_head_dim = head_dim // 2
+    theta = 1 / (base ** (jnp.arange(half_head_dim) / half_head_dim))
     indicies = jnp.arange(seq_len)
     angles = jnp.outer(indicies, theta)
-    cos_emb = jnp.cos(angles).repeat(2, axis=-1)
-    sin_emb = jnp.sin(angles).repeat(2, axis=-1)
+    cos_emb = jnp.cos(angles)
+    sin_emb = jnp.sin(angles)
     return cos_emb, sin_emb
 
 
 def create_spatial_rope(
     base: float, head_dim: int, x_len: int, y_len: int
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    theta = 1 / (base ** (jnp.arange(0, head_dim, 4) / head_dim))
+    quarter_head_dim = head_dim // 4
+    theta = 1 / (base ** (jnp.arange(quarter_head_dim) / quarter_head_dim))
     indicies = jnp.arange(x_len * y_len)
     x_indicies = indicies % x_len
     y_indicies = indicies // x_len
@@ -50,10 +52,10 @@ def create_spatial_rope(
     x_angles = jnp.outer(x_indicies, theta)
     y_angles = jnp.outer(y_indicies, theta)
 
-    x_cos_emb = jnp.cos(x_angles).repeat(2, axis=-1)
-    x_sin_emb = jnp.sin(x_angles).repeat(2, axis=-1)
-    y_cos_emb = jnp.cos(y_angles).repeat(2, axis=-1)
-    y_sin_emb = jnp.sin(y_angles).repeat(2, axis=-1)
+    x_cos_emb = jnp.cos(x_angles)
+    x_sin_emb = jnp.sin(x_angles)
+    y_cos_emb = jnp.cos(y_angles)
+    y_sin_emb = jnp.sin(y_angles)
 
     cos_emb = jnp.concatenate([x_cos_emb, y_cos_emb], axis=-1)
     sin_emb = jnp.concatenate([x_sin_emb, y_sin_emb], axis=-1)
@@ -63,9 +65,11 @@ def create_spatial_rope(
 def pad_rope_for_latents(
     rope_cos: jnp.ndarray, rope_sin: jnp.ndarray, num_latents: int
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
+    latent_cos = jnp.ones((num_latents, rope_cos.shape[-1]), dtype=rope_cos.dtype)
+    latent_sin = jnp.zeros((num_latents, rope_sin.shape[-1]), dtype=rope_sin.dtype)
     return (
-        jnp.pad(rope_cos, ((num_latents, 0), (0, 0)), constant_values=1),
-        jnp.pad(rope_sin, ((num_latents, 0), (0, 0)), constant_values=0),
+        jnp.concatenate([latent_cos, rope_cos], axis=0),
+        jnp.concatenate([latent_sin, rope_sin], axis=0),
     )
 
 
