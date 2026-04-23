@@ -73,7 +73,7 @@ class BuildConfig:
     checkpoint_step: int | None
     input_dir: str
     output_dir: Path
-    config_path: str
+    frame_length: int
     seed: int
     eval_ratio: float
     chunk_length: int
@@ -97,18 +97,25 @@ class BuildConfig:
         }[self.latent_dtype_name]
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace, cfg: Any) -> "BuildConfig":
+    def from_args(cls, args: argparse.Namespace) -> "BuildConfig":
+        frame_length = int(args.frame_length)
         encode_window_length = args.encode_window_length
         if encode_window_length is None:
-            encode_window_length = int(cfg.dataset.frame_length)
+            encode_window_length = frame_length
 
-        min_length = int(cfg.dataset.frame_length)
+        min_length = frame_length
         encode_window_overlap = 0
 
+        if frame_length <= 0:
+            raise ValueError(f"Expected frame_length > 0, got {args.frame_length}")
         if not 0 <= args.chunk_overlap < args.chunk_length:
             raise ValueError(
                 f"Expected 0 <= chunk_overlap < chunk_length, got "
                 f"{args.chunk_overlap=} {args.chunk_length=}"
+            )
+        if encode_window_length <= 0:
+            raise ValueError(
+                f"Expected encode_window_length > 0, got {encode_window_length}"
             )
         if args.encode_batch_size <= 0:
             raise ValueError(f"Expected encode_batch_size > 0, got {args.encode_batch_size}")
@@ -128,7 +135,7 @@ class BuildConfig:
             checkpoint_step=args.step,
             input_dir=args.input_dir,
             output_dir=Path(args.output_dir),
-            config_path=args.config,
+            frame_length=frame_length,
             seed=args.seed,
             eval_ratio=args.eval_ratio,
             chunk_length=args.chunk_length,
@@ -290,16 +297,16 @@ def iter_loaded_episodes(
 class TokenizerEncoder:
     def __init__(self, build_cfg: BuildConfig) -> None:
         self.build_cfg = build_cfg
-        tokenizer_cfg, self.variables = restore_model_export(
+        self.tokenizer_cfg, self.variables = restore_model_export(
             build_cfg.checkpoint_dir,
             step=build_cfg.checkpoint_step,
         )
-        preprocessor_cfg = restore_preprocessor_export(
+        self.preprocessor_cfg = restore_preprocessor_export(
             build_cfg.checkpoint_dir,
             step=build_cfg.checkpoint_step,
         )
-        self.model = instantiate(tokenizer_cfg)
-        self.preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
+        self.model = instantiate(self.tokenizer_cfg)
+        self.preprocessor = TokenizerPreprocessor.from_config(self.preprocessor_cfg)
         self.latents_per_frame = (
             int(self.model.num_latents),
             int(self.model.channel_dim),
@@ -505,9 +512,10 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input_dir", required=True, help="Directory of raw episode .npz files.")
     parser.add_argument("--output_dir", required=True, help="Output directory for token shards.")
     parser.add_argument(
-        "--config",
-        default=str(Path(__file__).resolve().parent / "config" / "breakout.yaml"),
-        help="Tokenizer config used for dataset build settings and tokenizer restore.",
+        "--frame_length",
+        type=int,
+        required=True,
+        help="Minimum token sequence length kept for each record, in frames.",
     )
     parser.add_argument("--step", type=int, help="Checkpoint step to restore. Defaults to latest.")
     parser.add_argument("--eval_ratio", type=float, default=0.1, help="Eval ratio for hash split.")
@@ -527,7 +535,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--encode_window_length",
         type=int,
-        help="Frames per tokenizer forward pass. Defaults to tokenizer frame_length.",
+        help="Frames per tokenizer forward pass. Defaults to --frame_length.",
     )
     parser.add_argument(
         "--encode_batch_size",
@@ -574,10 +582,13 @@ def create_parser() -> argparse.ArgumentParser:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     args = create_parser().parse_args()
-    cfg = OmegaConf.load(args.config)
-    build_cfg = BuildConfig.from_args(args, cfg)
+    build_cfg = BuildConfig.from_args(args)
 
-    logger.info("Initializing tokenizer from %s", build_cfg.config_path)
+    logger.info(
+        "Initializing tokenizer from checkpoint %s (step=%s)",
+        build_cfg.checkpoint_dir,
+        build_cfg.checkpoint_step if build_cfg.checkpoint_step is not None else "latest",
+    )
     encoder = TokenizerEncoder(build_cfg)
 
     file_splits = FileSplits.from_build_config(build_cfg)
@@ -608,12 +619,16 @@ def main() -> None:
         "checkpoint_dir": build_cfg.checkpoint_dir,
         "checkpoint_step": build_cfg.checkpoint_step,
         "config": {
-            "dataset": OmegaConf.to_container(cfg.dataset, resolve=True),
-            "tokenizer": OmegaConf.to_container(cfg.tokenizer, resolve=True),
+            "dataset": {
+                "frame_length": build_cfg.frame_length,
+            },
+            "tokenizer": OmegaConf.to_container(encoder.tokenizer_cfg, resolve=True),
+            "preprocessor": dict(encoder.preprocessor_cfg),
         },
         "token_dataset": {
             "latent_shape_per_frame": encoder.latents_per_frame,
             "latent_dtype": build_cfg.latent_dtype_name,
+            "frame_length": build_cfg.frame_length,
             "chunk_length": build_cfg.chunk_length,
             "chunk_overlap": build_cfg.chunk_overlap,
             "min_length": build_cfg.min_length,
