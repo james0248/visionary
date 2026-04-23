@@ -24,7 +24,6 @@ training:
     - dataset.train_dir=/mnt/data/train
     - dataset.eval_dir=/mnt/data/eval
     - checkpoint.manager.directory=${checkpoint_dir}
-    - total_steps=1000000
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json

@@ -1,6 +1,7 @@
 import itertools
 import logging
 import time
+from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 
@@ -38,6 +39,15 @@ PMAP_AXIS_NAME = "data"
 def make_host_seed(*values: int) -> int:
     seed_sequence = np.random.SeedSequence([int(value) for value in values])
     return int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
+
+
+def block_until_ready(tree):
+    return jax.tree_util.tree_map(
+        lambda value: value.block_until_ready()
+        if hasattr(value, "block_until_ready")
+        else value,
+        tree,
+    )
 
 
 @partial(
@@ -237,7 +247,7 @@ def main(cfg: DictConfig):
         jax.local_devices(),
     )
     wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled) and is_primary_process)
-    total_steps = cfg.total_steps
+    total_steps = int(cfg.total_steps)
 
     train_source = DynamicsDataSource(cfg.dataset.train_dir)
     eval_source = DynamicsDataSource(cfg.dataset.eval_dir)
@@ -524,6 +534,56 @@ def main(cfg: DictConfig):
     step = int(jax.device_get(unreplicate(state.step)))
     logger.info("Dynamics training target step: %d", total_steps)
 
+    profiling_cfg = cfg.get("profiling") or {}
+    profiler_enabled = bool(profiling_cfg.get("enabled", False))
+    profiler_active = False
+    profiler_start_step = 0
+    profiler_stop_step = 0
+    profiler_log_dir = None
+    profiler_create_perfetto_trace = False
+    if profiler_enabled:
+        configured_profiler_start_step = int(profiling_cfg.get("start_step", step))
+        profiler_start_step = max(configured_profiler_start_step, step)
+        profiler_num_steps = max(int(profiling_cfg.get("num_steps", cfg.log_interval)), 1)
+        profiler_stop_step = min(profiler_start_step + profiler_num_steps, total_steps)
+        if profiler_stop_step <= profiler_start_step:
+            profiler_enabled = False
+            logger.info(
+                "Profiling window [%d, %d) is empty at current step %d; skipping profiler.",
+                profiler_start_step,
+                profiler_stop_step,
+                step,
+            )
+        else:
+            profiler_root_dir = Path(
+                to_absolute_path(
+                    str(
+                        profiling_cfg.get(
+                            "log_dir", "artifacts/dreamer4_dynamics_profile"
+                        )
+                    )
+                )
+            )
+            profiler_log_dir = profiler_root_dir / f"process_{process_index}"
+            profiler_log_dir.mkdir(parents=True, exist_ok=True)
+            profiler_create_perfetto_trace = bool(
+                profiling_cfg.get("create_perfetto_trace", True)
+            )
+            if profiler_start_step != configured_profiler_start_step:
+                logger.info(
+                    "Adjusted profiler start step from %d to %d because current step is %d.",
+                    configured_profiler_start_step,
+                    profiler_start_step,
+                    step,
+                )
+            logger.info(
+                "Profiler armed for steps [%d, %d) -> %s (create_perfetto_trace=%s)",
+                profiler_start_step,
+                profiler_stop_step,
+                profiler_log_dir,
+                profiler_create_perfetto_trace,
+            )
+
     if step >= total_steps:
         logger.info(
             "Current step %d is already at or above total_steps=%d; exiting.",
@@ -534,45 +594,124 @@ def main(cfg: DictConfig):
         checkpoint_manager.close()
         wb.finish()
         return
+
+    train_window_start_step = step
+    train_window_data_time = 0.0
+    train_window_reshape_time = 0.0
+    train_window_dispatch_time = 0.0
+    logger.info(
+        "Asynchronous timing mode enabled for dynamics training; timing logs are averaged "
+        "over each logging window."
+    )
     while True:
-        t1 = time.monotonic()
         current_step = step
+        step_start = time.monotonic()
 
-        sequence_length = sequence_length_for_step(current_step)
+        if profiler_enabled and not profiler_active and current_step == profiler_start_step:
+            jax.profiler.start_trace(
+                profiler_log_dir.as_posix(),
+                create_perfetto_trace=profiler_create_perfetto_trace,
+            )
+            profiler_active = True
+            logger.info(
+                "Started JAX profiler trace at step %d -> %s",
+                current_step,
+                profiler_log_dir,
+            )
 
-        if cfg.overfit_single_batch:
-            batch = overfit_batches[sequence_length]
-        else:
-            try:
-                batch = next(train_iterators[sequence_length])
-            except StopIteration:
-                train_iterators[sequence_length] = iter(train_loaders[sequence_length])
-                batch = next(train_iterators[sequence_length])
-        t2 = time.monotonic()
-
-        batch = reshape_batch(batch)
-        t3 = time.monotonic()
-
-        bootstrap_ratio = target_bootstrap_ratio if current_step >= bootstrap_start_step else 0.0
-        state, metrics = train_step(
-            state,
-            batch,
-            train_key,
-            current_step,
-            bootstrap_ratio,
+        step_annotation = (
+            jax.profiler.StepTraceAnnotation("train", step_num=current_step)
+            if profiler_active
+            else nullcontext()
         )
+        with step_annotation:
+            sequence_length = sequence_length_for_step(current_step)
+
+            if cfg.overfit_single_batch:
+                batch = overfit_batches[sequence_length]
+            else:
+                try:
+                    batch = next(train_iterators[sequence_length])
+                except StopIteration:
+                    train_iterators[sequence_length] = iter(train_loaders[sequence_length])
+                    batch = next(train_iterators[sequence_length])
+            t1 = time.monotonic()
+
+            batch = reshape_batch(batch)
+            t2 = time.monotonic()
+
+            bootstrap_ratio = (
+                target_bootstrap_ratio if current_step >= bootstrap_start_step else 0.0
+            )
+            state, metrics = train_step(
+                state,
+                batch,
+                train_key,
+                current_step,
+                bootstrap_ratio,
+            )
+            t3 = time.monotonic()
 
         step = current_step + 1
+        data_time = t1 - step_start
+        reshape_time = t2 - t1
+        dispatch_time = t3 - t2
+        train_window_data_time += data_time
+        train_window_reshape_time += reshape_time
+        train_window_dispatch_time += dispatch_time
 
         should_log_train = step % cfg.log_interval == 0
+        train_sps = 0.0
+        avg_data_time = 0.0
+        avg_reshape_time = 0.0
+        avg_compute_time = 0.0
+        avg_wall_time = 0.0
         if should_log_train:
+            window_steps = step - train_window_start_step
+            sync_start = time.monotonic()
             train_metrics = to_host(metrics)
+            sync_time = time.monotonic() - sync_start
+            total_window_time = (
+                train_window_data_time
+                + train_window_reshape_time
+                + train_window_dispatch_time
+                + sync_time
+            )
+            train_sps = window_steps / max(total_window_time, 1e-8)
+            avg_data_time = train_window_data_time / max(window_steps, 1)
+            avg_reshape_time = train_window_reshape_time / max(window_steps, 1)
+            avg_compute_time = (train_window_dispatch_time + sync_time) / max(window_steps, 1)
+            avg_wall_time = total_window_time / max(window_steps, 1)
             wb.log(
                 {
                     **{k: float(v) for k, v in train_metrics.items()},
                     "train/sequence_length": sequence_length,
+                    "train/sps": float(train_sps),
+                    "train/data_time": float(avg_data_time),
+                    "train/reshape_time": float(avg_reshape_time),
+                    "train/compute_time": float(avg_compute_time),
+                    "train/wall_time": float(avg_wall_time),
                 },
                 step=step,
+            )
+            train_window_start_step = step
+            train_window_data_time = 0.0
+            train_window_reshape_time = 0.0
+            train_window_dispatch_time = 0.0
+
+        if profiler_active and step >= profiler_stop_step:
+            profiler_sync_time = 0.0
+            if not should_log_train:
+                profiler_sync_start = time.monotonic()
+                block_until_ready(metrics)
+                profiler_sync_time = time.monotonic() - profiler_sync_start
+            jax.profiler.stop_trace()
+            profiler_active = False
+            logger.info(
+                "Stopped JAX profiler trace at step %d (final sync %.3fs) -> %s",
+                step,
+                profiler_sync_time,
+                profiler_log_dir,
             )
 
         t_eval = 0.0
@@ -631,21 +770,27 @@ def main(cfg: DictConfig):
         if checkpoint_manager.should_save(step):
             checkpoint_manager.save(step=step, state=to_host(state), extra_items=iterator_items())
 
-        t5 = time.monotonic()
         if should_log_train:
             logger.info(
-                "Step %d - seq: %d, data: %.3fs, reshape: %.3fs, eval: %.3fs, loop: %.3fs",
+                "Step %d - seq: %d, sps: %.2f, data: %.3fs, reshape: %.3fs, "
+                "compute: %.3fs, wall: %.3fs, eval: %.3fs",
                 step,
                 sequence_length,
-                t2 - t1,
-                t3 - t2,
+                train_sps,
+                avg_data_time,
+                avg_reshape_time,
+                avg_compute_time,
+                avg_wall_time,
                 t_eval,
-                t5 - t1,
             )
         if step >= total_steps:
             logger.info("Reached total_steps=%d; stopping dynamics training.", total_steps)
             break
 
+    if profiler_active:
+        block_until_ready(state)
+        jax.profiler.stop_trace()
+        logger.info("Stopped JAX profiler trace during shutdown -> %s", profiler_log_dir)
     multihost_utils.sync_global_devices("dynamics_train_complete")
     if step >= total_steps and not checkpoint_manager.should_save(step):
         checkpoint_manager.save(
