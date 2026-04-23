@@ -17,7 +17,10 @@ from array_record.python.array_record_module import ArrayRecordWriter
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.checkpoint import restore_model_export, restore_preprocessor_export
+from visionary.common.checkpoint import (
+    restore_model_export_single_device,
+    restore_preprocessor_export,
+)
 from visionary.tokenizer import Tokenizer
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
@@ -297,7 +300,7 @@ def iter_loaded_episodes(
 class TokenizerEncoder:
     def __init__(self, build_cfg: BuildConfig) -> None:
         self.build_cfg = build_cfg
-        self.tokenizer_cfg, self.variables = restore_model_export(
+        self.tokenizer_cfg, self.variables = restore_model_export_single_device(
             build_cfg.checkpoint_dir,
             step=build_cfg.checkpoint_step,
         )

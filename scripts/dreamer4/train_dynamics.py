@@ -22,7 +22,7 @@ from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 from visionary.common.checkpoint import (
     CheckpointManager,
-    restore_model_export,
+    restore_model_export_single_device,
 )
 from visionary.common.jax import fold_in_many, maybe_initialize_distributed
 from visionary.common.train_state import DynamicsTrainState
@@ -421,7 +421,7 @@ def main(cfg: DictConfig):
         tokenizer_checkpoint_dir = video_cfg.tokenizer.checkpoint_dir
         if "://" not in str(tokenizer_checkpoint_dir):
             tokenizer_checkpoint_dir = to_absolute_path(str(tokenizer_checkpoint_dir))
-        tokenizer_cfg, tokenizer_variables = restore_model_export(
+        tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(
             tokenizer_checkpoint_dir,
             step=video_cfg.tokenizer.checkpoint_step,
         )

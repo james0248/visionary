@@ -9,7 +9,10 @@ import numpy as np
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.checkpoint import restore_model_export, restore_preprocessor_export
+from visionary.common.checkpoint import (
+    restore_model_export_single_device,
+    restore_preprocessor_export,
+)
 from visionary.dataset import RandomVideoCrop
 from visionary.tokenizer import Tokenizer
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
@@ -45,7 +48,10 @@ def main():
         "video": np.stack([sample["video"] for sample in samples]),
     }
 
-    model_cfg, variables = restore_model_export(args.checkpoint_dir, step=args.step)
+    model_cfg, variables = restore_model_export_single_device(
+        args.checkpoint_dir,
+        step=args.step,
+    )
     preprocessor_cfg = restore_preprocessor_export(args.checkpoint_dir, step=args.step)
     tokenizer = instantiate(model_cfg)
     preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)

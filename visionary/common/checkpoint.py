@@ -83,6 +83,10 @@ def model_export_path(directory: str | PathLike[str], step: int) -> epath.Path:
     return model_export_dir(directory) / str(int(step))
 
 
+def model_export_config_path(directory: str | PathLike[str], step: int) -> epath.Path:
+    return model_export_path(directory, step) / "config"
+
+
 def preprocessor_export_path(directory: str | PathLike[str], step: int) -> epath.Path:
     return preprocessor_export_dir(directory) / str(int(step))
 
@@ -181,21 +185,61 @@ def save_preprocessor_export(
     _save_json_export(preprocessor_export_path(directory, step), config)
 
 
-def restore_model_export(
+def load_model_export_config(
     directory: str | PathLike[str],
     step: int | None = None,
-) -> tuple[DictConfig, Any]:
+) -> DictConfig:
     step = resolve_model_export_step(directory, step)
+    return OmegaConf.create(_restore_json_export(model_export_config_path(directory, step)))
+
+
+def _restore_model_variables(
+    directory: str | PathLike[str],
+    step: int,
+    *,
+    target_variables: Any | None = None,
+    fallback_sharding: jax.sharding.Sharding | None = None,
+) -> Any:
     checkpointer = _model_export_checkpointer()
     restored = checkpointer.restore(
         model_export_path(directory, step).as_posix(),
         args=ocp.args.Composite(
-            config=ocp.args.JsonRestore(),
-            variables=None,
+            variables=ocp.args.StandardRestore(
+                item=target_variables,
+                fallback_sharding=fallback_sharding,
+            ),
         ),
     )
     checkpointer.close()
-    return OmegaConf.create(restored.config), restored.variables
+    return restored.variables
+
+
+def restore_model_export(
+    directory: str | PathLike[str],
+    step: int | None = None,
+    *,
+    target_variables: Any,
+) -> Any:
+    step = resolve_model_export_step(directory, step)
+    return _restore_model_variables(
+        directory,
+        step,
+        target_variables=target_variables,
+    )
+
+
+def restore_model_export_single_device(
+    directory: str | PathLike[str],
+    step: int | None = None,
+) -> tuple[DictConfig, Any]:
+    step = resolve_model_export_step(directory, step)
+    config = load_model_export_config(directory, step=step)
+    variables = _restore_model_variables(
+        directory,
+        step,
+        fallback_sharding=jax.sharding.SingleDeviceSharding(jax.local_devices()[0]),
+    )
+    return config, variables
 
 
 def restore_preprocessor_export(
@@ -212,7 +256,7 @@ def restore_preprocessor_export(
             f"No preprocessor or model exports found in {preprocessor_export_dir(directory)}"
         )
 
-    model_config, _ = restore_model_export(directory, step=model_step)
+    model_config = load_model_export_config(directory, step=model_step)
     return _preprocessor_config_from_model_config(model_config)
 
 
