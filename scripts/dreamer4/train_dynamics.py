@@ -23,12 +23,14 @@ from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 from visionary.common.checkpoint import (
     CheckpointManager,
     restore_model_export_single_device,
+    restore_preprocessor_export,
 )
 from visionary.common.jax import fold_in_many, maybe_initialize_distributed
 from visionary.common.train_state import DynamicsTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import DynamicsBatch, DynamicsDataSource, RandomDynamicsCrop
 from visionary.dynamics import DynamicsModel
+from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +439,12 @@ def main(cfg: DictConfig):
             tokenizer_checkpoint_dir,
             step=video_cfg.tokenizer.checkpoint_step,
         )
+        preprocessor_cfg = restore_preprocessor_export(
+            tokenizer_checkpoint_dir,
+            step=video_cfg.tokenizer.checkpoint_step,
+        )
         tokenizer = instantiate(tokenizer_cfg)
+        preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
 
         requested_tau = float(video_cfg.context_tau)
         video_context_frames = int(video_cfg.context_frames)
@@ -483,12 +490,16 @@ def main(cfg: DictConfig):
                 sample_steps=int(video_cfg.sample_steps),
                 method=DynamicsModel.generate_rollout,
             )
-            ground_truth_images = tokenizer.apply(
+            ground_truth_patches = tokenizer.apply(
                 tokenizer_variables, video, method=type(tokenizer).decode
             )
-            rollout_images = tokenizer.apply(
+            rollout_patches = tokenizer.apply(
                 tokenizer_variables, rollout_video, method=type(tokenizer).decode
             )
+            ground_truth_images = preprocessor.patches_to_images(ground_truth_patches).astype(
+                jnp.float32
+            )
+            rollout_images = preprocessor.patches_to_images(rollout_patches).astype(jnp.float32)
             return ground_truth_images, rollout_images
 
         logger.info(
