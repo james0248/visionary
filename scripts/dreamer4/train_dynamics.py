@@ -134,7 +134,7 @@ def log_video_eval(
             tokenizer_variables,
             batch["video"],
             batch["actions"],
-            rollout_seed,
+            np.uint32(rollout_seed),
         )
     )
     ground_truth_images = np.asarray(ground_truth_images)
