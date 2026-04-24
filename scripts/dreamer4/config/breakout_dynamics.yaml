@@ -53,7 +53,6 @@ dynamics:
   mlp_hidden_dim: 768
   context_length: 64
   base: 10000.0
-  attention_logit_soft_cap: 50.0
 
 checkpoint:
   manager:
