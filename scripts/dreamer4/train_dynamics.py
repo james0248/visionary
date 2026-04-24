@@ -54,6 +54,7 @@ def block_until_ready(tree):
     jax.pmap,
     axis_name=PMAP_AXIS_NAME,
     in_axes=(0, 0, None, None, None),
+    static_broadcasted_argnums=(4,),
     donate_argnums=(0,),
 )
 def train_step(
@@ -61,7 +62,7 @@ def train_step(
     batch: DynamicsBatch,
     base_sample_key: jax.Array,
     global_step: int,
-    bootstrap_ratio: float,
+    bootstrap_rows: int,
 ):
     sample_key = fold_in_many(base_sample_key, global_step, lax.axis_index(PMAP_AXIS_NAME))
 
@@ -69,7 +70,7 @@ def train_step(
         return state.apply_fn(
             params,
             batch,
-            bootstrap_ratio=bootstrap_ratio,
+            bootstrap_rows=bootstrap_rows,
             method=DynamicsModel.loss,
             rngs={"sample": sample_key},
         )
@@ -85,6 +86,7 @@ def train_step(
     jax.pmap,
     axis_name=PMAP_AXIS_NAME,
     in_axes=(0, 0, None, None, None, None),
+    static_broadcasted_argnums=(5,),
 )
 def eval_step(
     state: DynamicsTrainState,
@@ -92,7 +94,7 @@ def eval_step(
     base_sample_key: jax.Array,
     global_step: int,
     batch_index: int,
-    bootstrap_ratio: float,
+    bootstrap_rows: int,
 ):
     sample_key = fold_in_many(
         base_sample_key,
@@ -103,7 +105,7 @@ def eval_step(
     _, metrics = state.apply_fn(
         state.params,
         batch,
-        bootstrap_ratio=bootstrap_ratio,
+        bootstrap_rows=bootstrap_rows,
         method=DynamicsModel.loss,
         rngs={"sample": sample_key},
     )
@@ -285,6 +287,10 @@ def main(cfg: DictConfig):
     batch_size_per_device = batch_size_per_process // local_device_count
     bootstrap_start_step = int(cfg.loss.bootstrap_start_step)
     target_bootstrap_ratio = float(cfg.loss.bootstrap_ratio)
+    target_bootstrap_rows = min(
+        max(int(round(target_bootstrap_ratio * batch_size_per_device)), 0),
+        batch_size_per_device,
+    )
     logger.info(
         "Batch layout: per_process=%d per_device=%d global=%d",
         batch_size_per_process,
@@ -292,8 +298,9 @@ def main(cfg: DictConfig):
         batch_size_per_process * process_count,
     )
     logger.info(
-        "Loss schedule: bootstrap_ratio=%.2f bootstrap_start_step=%d",
+        "Loss schedule: bootstrap_ratio=%.2f bootstrap_rows=%d bootstrap_start_step=%d",
         target_bootstrap_ratio,
+        target_bootstrap_rows,
         bootstrap_start_step,
     )
 
@@ -302,6 +309,11 @@ def main(cfg: DictConfig):
             key: np.reshape(value, (local_device_count, batch_size_per_device, *value.shape[1:]))
             for key, value in batch.items()
         }
+
+    def bootstrap_rows_for_step(current_step: int) -> int:
+        if current_step < bootstrap_start_step:
+            return 0
+        return target_bootstrap_rows
 
     def unreplicate(tree):
         return flax_jax_utils.unreplicate(tree)
@@ -395,7 +407,7 @@ def main(cfg: DictConfig):
     params = model.init(
         {"params": init_key, "sample": init_sample_key},
         sample_batch,
-        bootstrap_ratio=0.0,
+        bootstrap_rows=0,
         method=DynamicsModel.loss,
     )
     logger.info("Model init took %.1fs", time.monotonic() - _t)
@@ -640,15 +652,13 @@ def main(cfg: DictConfig):
             batch = reshape_batch(batch)
             t2 = time.monotonic()
 
-            bootstrap_ratio = (
-                target_bootstrap_ratio if current_step >= bootstrap_start_step else 0.0
-            )
+            bootstrap_rows = bootstrap_rows_for_step(current_step)
             state, metrics = train_step(
                 state,
                 batch,
                 train_key,
                 current_step,
-                bootstrap_ratio,
+                bootstrap_rows,
             )
             t3 = time.monotonic()
 
@@ -738,7 +748,7 @@ def main(cfg: DictConfig):
                         eval_key,
                         step,
                         batch_idx,
-                        bootstrap_ratio,
+                        bootstrap_rows,
                     )
                 )
                 for k, v in batch_metrics.items():

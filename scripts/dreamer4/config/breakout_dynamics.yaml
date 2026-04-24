@@ -52,6 +52,7 @@ dynamics:
   head_dim: 64
   mlp_hidden_dim: 768
   context_length: 64
+  temporal_layer_period: 4
   base: 10000.0
 
 checkpoint:
