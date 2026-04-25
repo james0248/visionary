@@ -12,18 +12,17 @@ from pathlib import Path
 from typing import Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
-import optax
-import orbax.checkpoint as ocp
 from array_record.python.array_record_module import ArrayRecordWriter
-from einops import rearrange
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.checkpoint import CheckpointManager
-from visionary.common.train_state import TokenizerTrainState
+from visionary.common.checkpoint import (
+    restore_model_export_single_device,
+    restore_preprocessor_export,
+)
 from visionary.tokenizer import Tokenizer
+from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +76,7 @@ class BuildConfig:
     checkpoint_step: int | None
     input_dir: str
     output_dir: Path
-    config_path: str
+    frame_length: int
     seed: int
     eval_ratio: float
     chunk_length: int
@@ -101,18 +100,25 @@ class BuildConfig:
         }[self.latent_dtype_name]
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace, cfg: Any) -> "BuildConfig":
+    def from_args(cls, args: argparse.Namespace) -> "BuildConfig":
+        frame_length = int(args.frame_length)
         encode_window_length = args.encode_window_length
         if encode_window_length is None:
-            encode_window_length = int(cfg.dataset.frame_length)
+            encode_window_length = frame_length
 
-        min_length = int(cfg.dataset.frame_length)
+        min_length = frame_length
         encode_window_overlap = 0
 
+        if frame_length <= 0:
+            raise ValueError(f"Expected frame_length > 0, got {args.frame_length}")
         if not 0 <= args.chunk_overlap < args.chunk_length:
             raise ValueError(
                 f"Expected 0 <= chunk_overlap < chunk_length, got "
                 f"{args.chunk_overlap=} {args.chunk_length=}"
+            )
+        if encode_window_length <= 0:
+            raise ValueError(
+                f"Expected encode_window_length > 0, got {encode_window_length}"
             )
         if args.encode_batch_size <= 0:
             raise ValueError(f"Expected encode_batch_size > 0, got {args.encode_batch_size}")
@@ -132,7 +138,7 @@ class BuildConfig:
             checkpoint_step=args.step,
             input_dir=args.input_dir,
             output_dir=Path(args.output_dir),
-            config_path=args.config,
+            frame_length=frame_length,
             seed=args.seed,
             eval_ratio=args.eval_ratio,
             chunk_length=args.chunk_length,
@@ -252,7 +258,6 @@ def encode_record(
 
 def record_bounds(
     length: int,
-    *,
     chunk_length: int,
     overlap: int,
     min_length: int,
@@ -267,7 +272,6 @@ def record_bounds(
 
 def iter_loaded_episodes(
     files: list[Path],
-    *,
     read_workers: int,
     prefetch_episodes: int,
 ):
@@ -294,80 +298,32 @@ def iter_loaded_episodes(
 
 
 class TokenizerEncoder:
-    def __init__(self, cfg: Any, build_cfg: BuildConfig) -> None:
-        self.cfg = cfg
+    def __init__(self, build_cfg: BuildConfig) -> None:
         self.build_cfg = build_cfg
-        self.model = instantiate(self.cfg.tokenizer)
-        self.patch_size = int(cfg.dataset.patch_size)
-        self.pad_width = (int(cfg.dataset.pad_width[0]), int(cfg.dataset.pad_width[1]))
-        resize_shape = cfg.dataset.resize_shape
-        self.resize_shape = (
-            None if resize_shape is None else tuple(int(value) for value in resize_shape)
+        self.tokenizer_cfg, self.variables = restore_model_export_single_device(
+            build_cfg.checkpoint_dir,
+            step=build_cfg.checkpoint_step,
         )
-        self.latents_per_frame = (int(cfg.tokenizer.num_latents), int(cfg.tokenizer.channel_dim))
+        self.preprocessor_cfg = restore_preprocessor_export(
+            build_cfg.checkpoint_dir,
+            step=build_cfg.checkpoint_step,
+        )
+        self.model = instantiate(self.tokenizer_cfg)
+        self.preprocessor = TokenizerPreprocessor.from_config(self.preprocessor_cfg)
+        self.latents_per_frame = (
+            int(self.model.num_latents),
+            int(self.model.channel_dim),
+        )
 
         @jax.jit
-        def encode_step(params, video_batch):
-            video = jnp.asarray(video_batch)
-            if self.resize_shape is not None:
-                video = jax.image.resize(
-                    video.astype(jnp.float32),
-                    (
-                        video.shape[0],
-                        video.shape[1],
-                        self.resize_shape[0],
-                        self.resize_shape[1],
-                        video.shape[-1],
-                    ),
-                    method="linear",
-                    antialias=True,
-                )
-                video = jnp.clip(jnp.rint(video), 0, 255).astype(jnp.uint8)
-
-            video = jnp.pad(
-                video,
-                (
-                    (0, 0),
-                    (0, 0),
-                    (self.pad_width[0], self.pad_width[0]),
-                    (self.pad_width[1], self.pad_width[1]),
-                    (0, 0),
-                ),
-                mode="constant",
-                constant_values=0,
+        def encode_step(variables, patch_batch):
+            return self.model.apply(
+                variables,
+                {"video": patch_batch},
+                method=Tokenizer.encode,
             )
-            video = rearrange(
-                video,
-                "b t (h p1) (w p2) c -> b t (h w) (p1 p2 c)",
-                p1=self.patch_size,
-                p2=self.patch_size,
-            )
-            return self.model.apply(params, {"video": video}, method=Tokenizer.encode)
 
         self.encode_fn = encode_step
-        self.state = self._restore_state()
-
-    def _restore_state(self) -> TokenizerTrainState:
-        init_key, sample_key = jax.random.split(jax.random.key(self.build_cfg.seed))
-        patch_count = int(self.cfg.tokenizer.x_len) * int(self.cfg.tokenizer.y_len)
-        patch_dim = int(self.cfg.dataset.patch_size) * int(self.cfg.dataset.patch_size) * 3
-        dummy_batch = {"video": np.zeros((1, 1, patch_count, patch_dim), dtype=np.uint8)}
-        state = TokenizerTrainState.create(
-            apply_fn=self.model.apply,
-            params=self.model.init(
-                {"params": init_key, "sample": sample_key},
-                dummy_batch,
-            ),
-            tx=optax.adam(0.0),
-            mse_sq_ema=jnp.ones((), dtype=jnp.float32),
-            l1_sq_ema=jnp.ones((), dtype=jnp.float32),
-            lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
-            motion_sq_ema=jnp.ones((), dtype=jnp.float32),
-        )
-        with CheckpointManager(
-            self.build_cfg.checkpoint_dir, ocp.CheckpointManagerOptions()
-        ) as manager:
-            return manager.restore(target=state, step=self.build_cfg.checkpoint_step)
 
     def encode_episode(self, frames: np.ndarray) -> np.ndarray:
         return self.encode_episodes([frames])[0]
@@ -421,8 +377,9 @@ class TokenizerEncoder:
                 batch_frames[window_idx, :length] = episodes[episode_idx][start:stop]
                 batch_lengths[window_idx] = length
 
+            batch_patches = self.preprocessor.preprocess_video(batch_frames)
             batch_latents = np.asarray(
-                jax.device_get(self.encode_fn(self.state.params, batch_frames)),
+                jax.device_get(self.encode_fn(self.variables, batch_patches)),
                 dtype=np.float32,
             )
             for window_idx, (episode_idx, start, stop, overlap) in enumerate(batch_window_refs):
@@ -437,7 +394,6 @@ class TokenizerEncoder:
 def iter_record_bytes(
     arrays: dict[str, np.ndarray],
     latents: np.ndarray,
-    *,
     episode_id: int,
     chunk_length: int,
     overlap: int,
@@ -559,9 +515,10 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input_dir", required=True, help="Directory of raw episode .npz files.")
     parser.add_argument("--output_dir", required=True, help="Output directory for token shards.")
     parser.add_argument(
-        "--config",
-        default=str(Path(__file__).resolve().parent / "config" / "breakout.yaml"),
-        help="Hydra config used to instantiate the tokenizer and preprocessing.",
+        "--frame_length",
+        type=int,
+        required=True,
+        help="Minimum token sequence length kept for each record, in frames.",
     )
     parser.add_argument("--step", type=int, help="Checkpoint step to restore. Defaults to latest.")
     parser.add_argument("--eval_ratio", type=float, default=0.1, help="Eval ratio for hash split.")
@@ -581,7 +538,7 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--encode_window_length",
         type=int,
-        help="Frames per tokenizer forward pass. Defaults to tokenizer frame_length.",
+        help="Frames per tokenizer forward pass. Defaults to --frame_length.",
     )
     parser.add_argument(
         "--encode_batch_size",
@@ -628,11 +585,14 @@ def create_parser() -> argparse.ArgumentParser:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     args = create_parser().parse_args()
-    cfg = OmegaConf.load(args.config)
-    build_cfg = BuildConfig.from_args(args, cfg)
+    build_cfg = BuildConfig.from_args(args)
 
-    logger.info("Initializing tokenizer from %s", build_cfg.config_path)
-    encoder = TokenizerEncoder(cfg, build_cfg)
+    logger.info(
+        "Initializing tokenizer from checkpoint %s (step=%s)",
+        build_cfg.checkpoint_dir,
+        build_cfg.checkpoint_step if build_cfg.checkpoint_step is not None else "latest",
+    )
+    encoder = TokenizerEncoder(build_cfg)
 
     file_splits = FileSplits.from_build_config(build_cfg)
     logger.info(
@@ -662,12 +622,16 @@ def main() -> None:
         "checkpoint_dir": build_cfg.checkpoint_dir,
         "checkpoint_step": build_cfg.checkpoint_step,
         "config": {
-            "dataset": OmegaConf.to_container(cfg.dataset, resolve=True),
-            "tokenizer": OmegaConf.to_container(cfg.tokenizer, resolve=True),
+            "dataset": {
+                "frame_length": build_cfg.frame_length,
+            },
+            "tokenizer": OmegaConf.to_container(encoder.tokenizer_cfg, resolve=True),
+            "preprocessor": dict(encoder.preprocessor_cfg),
         },
         "token_dataset": {
             "latent_shape_per_frame": encoder.latents_per_frame,
             "latent_dtype": build_cfg.latent_dtype_name,
+            "frame_length": build_cfg.frame_length,
             "chunk_length": build_cfg.chunk_length,
             "chunk_overlap": build_cfg.chunk_overlap,
             "min_length": build_cfg.min_length,

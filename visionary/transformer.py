@@ -18,31 +18,33 @@ class SwiGLU(nn.Module):
 
 
 def apply_rotary_embedding(x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray) -> jnp.ndarray:
-    x_rot = jnp.stack([-x[..., 1::2], x[..., 0::2]], axis=-1)
-    x_rot = x_rot.reshape(*x_rot.shape[:-2], -1)
+    x_left, x_right = jnp.split(x, 2, axis=-1)
 
     cos = cos.astype(x.dtype)[None, :, None, :]
     sin = sin.astype(x.dtype)[None, :, None, :]
 
-    emb = x * cos + x_rot * sin
-    return emb
+    rotated_left = x_left * cos - x_right * sin
+    rotated_right = x_right * cos + x_left * sin
+    return jnp.concatenate([rotated_left, rotated_right], axis=-1)
 
 
 def create_temporal_rope(
     base: float, head_dim: int, seq_len: int
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    theta = 1 / (base ** (jnp.arange(0, head_dim, 2) / head_dim))
+    half_head_dim = head_dim // 2
+    theta = 1 / (base ** (jnp.arange(half_head_dim) / half_head_dim))
     indicies = jnp.arange(seq_len)
     angles = jnp.outer(indicies, theta)
-    cos_emb = jnp.cos(angles).repeat(2, axis=-1)
-    sin_emb = jnp.sin(angles).repeat(2, axis=-1)
+    cos_emb = jnp.cos(angles)
+    sin_emb = jnp.sin(angles)
     return cos_emb, sin_emb
 
 
 def create_spatial_rope(
     base: float, head_dim: int, x_len: int, y_len: int
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    theta = 1 / (base ** (jnp.arange(0, head_dim, 4) / head_dim))
+    quarter_head_dim = head_dim // 4
+    theta = 1 / (base ** (jnp.arange(quarter_head_dim) / quarter_head_dim))
     indicies = jnp.arange(x_len * y_len)
     x_indicies = indicies % x_len
     y_indicies = indicies // x_len
@@ -50,10 +52,10 @@ def create_spatial_rope(
     x_angles = jnp.outer(x_indicies, theta)
     y_angles = jnp.outer(y_indicies, theta)
 
-    x_cos_emb = jnp.cos(x_angles).repeat(2, axis=-1)
-    x_sin_emb = jnp.sin(x_angles).repeat(2, axis=-1)
-    y_cos_emb = jnp.cos(y_angles).repeat(2, axis=-1)
-    y_sin_emb = jnp.sin(y_angles).repeat(2, axis=-1)
+    x_cos_emb = jnp.cos(x_angles)
+    x_sin_emb = jnp.sin(x_angles)
+    y_cos_emb = jnp.cos(y_angles)
+    y_sin_emb = jnp.sin(y_angles)
 
     cos_emb = jnp.concatenate([x_cos_emb, y_cos_emb], axis=-1)
     sin_emb = jnp.concatenate([x_sin_emb, y_sin_emb], axis=-1)
@@ -63,9 +65,11 @@ def create_spatial_rope(
 def pad_rope_for_latents(
     rope_cos: jnp.ndarray, rope_sin: jnp.ndarray, num_latents: int
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
+    latent_cos = jnp.ones((num_latents, rope_cos.shape[-1]), dtype=rope_cos.dtype)
+    latent_sin = jnp.zeros((num_latents, rope_sin.shape[-1]), dtype=rope_sin.dtype)
     return (
-        jnp.pad(rope_cos, ((num_latents, 0), (0, 0)), constant_values=1),
-        jnp.pad(rope_sin, ((num_latents, 0), (0, 0)), constant_values=0),
+        jnp.concatenate([latent_cos, rope_cos], axis=0),
+        jnp.concatenate([latent_sin, rope_sin], axis=0),
     )
 
 
@@ -84,8 +88,6 @@ class Attention(nn.Module):
         rope_emb: tuple[jnp.ndarray, jnp.ndarray] | None = None,
         mask: jnp.ndarray | None = None,
     ) -> jnp.ndarray:
-        num_groups = self.num_heads // self.num_kv_heads
-
         q = nn.Dense(self.num_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
         k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
         v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
@@ -100,9 +102,6 @@ class Attention(nn.Module):
         if rope_emb is not None:
             q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
             k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
-
-        k = jnp.repeat(k, repeats=num_groups, axis=2)
-        v = jnp.repeat(v, repeats=num_groups, axis=2)
 
         out = jax.nn.dot_product_attention(q, k, v, mask=mask, scale=1.0 / jnp.sqrt(self.head_dim))
         out = rearrange(out, "b t h d -> b t (h d)")
@@ -152,6 +151,7 @@ class SpatioTemporalTransformer(nn.Module):
     num_kv_heads: int
     head_dim: int
     mlp_hidden_dim: int
+    temporal_layer_period: int = 4
     attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
@@ -166,19 +166,26 @@ class SpatioTemporalTransformer(nn.Module):
         temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
         temporal_mask: jnp.ndarray,
     ) -> jnp.ndarray:
+        if self.num_layers % self.temporal_layer_period != 0:
+            raise ValueError(
+                "num_layers must be divisible by temporal_layer_period, "
+                f"got num_layers={self.num_layers} and "
+                f"temporal_layer_period={self.temporal_layer_period}"
+            )
+
+        batch_size = x.shape[0]
+
         # (b, t, t) -> (b*n, 1, t, t) for head broadcast
         temporal_mask = jnp.repeat(temporal_mask, total_tokens, axis=0)
         temporal_mask = temporal_mask[:, None, :, :]
 
-        for i in range(1, self.num_layers + 1):
-            if i % 4 == 0:
-                x = rearrange(x, "b t n d -> (b n) t d")
-                rope_emb, mask = temporal_rope_emb, temporal_mask
-            else:
-                x = rearrange(x, "b t n d -> (b t) n d")
-                rope_emb, mask = spatial_rope_emb, spatial_mask
-
-            x = TransformerBlock(
+        def apply_block(
+            block_idx: int,
+            x: jnp.ndarray,
+            rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+            mask: jnp.ndarray,
+        ) -> jnp.ndarray:
+            return TransformerBlock(
                 model_dim=self.model_dim,
                 num_heads=self.num_heads,
                 num_kv_heads=self.num_kv_heads,
@@ -186,11 +193,21 @@ class SpatioTemporalTransformer(nn.Module):
                 mlp_hidden_dim=self.mlp_hidden_dim,
                 attention_logit_soft_cap=self.attention_logit_soft_cap,
                 dtype=self.dtype,
+                name=f"TransformerBlock_{block_idx}",
             )(x, rope_emb, mask)
 
-            if i % 4 == 0:
-                x = rearrange(x, "(b n) t d -> b t n d", n=total_tokens)
-            else:
-                x = rearrange(x, "(b t) n d -> b t n d", t=t)
+        block_idx = 0
+        num_groups = self.num_layers // self.temporal_layer_period
+        for _ in range(num_groups):
+            x = rearrange(x, "b t n d -> (b t) n d")
+            for _ in range(self.temporal_layer_period - 1):
+                x = apply_block(block_idx, x, spatial_rope_emb, spatial_mask)
+                block_idx += 1
+            x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=t)
+
+            x = rearrange(x, "b t n d -> (b n) t d")
+            x = apply_block(block_idx, x, temporal_rope_emb, temporal_mask)
+            block_idx += 1
+            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
 
         return x

@@ -5,50 +5,16 @@ import imageio
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
-import orbax.checkpoint as ocp
-from einops import rearrange
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.checkpoint import CheckpointManager
-from visionary.common.train_state import TokenizerTrainState
-from visionary.dataset import PreprocessAndPatchify, RandomVideoCrop, VideoDataSource
+from visionary.common.checkpoint import (
+    restore_model_export_single_device,
+    restore_preprocessor_export,
+)
+from visionary.dataset import RandomVideoCrop, VideoDataSource
 from visionary.tokenizer import Tokenizer
-
-
-def unpatchify(images: jax.Array, patch_size: int, x_len: int, y_len: int) -> jax.Array:
-    return rearrange(
-        images,
-        "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
-        h=y_len,
-        w=x_len,
-        p1=patch_size,
-        p2=patch_size,
-    )
-
-
-def trim_padding(images: np.ndarray, pad_width: tuple[int, int]) -> np.ndarray:
-    h_pad, w_pad = (int(v) for v in pad_width)
-    return images[
-        :,
-        :,
-        slice(h_pad, -h_pad if h_pad else None),
-        slice(w_pad, -w_pad if w_pad else None),
-        :,
-    ]
-
-
-def patches_to_images(
-    patches: jax.Array,
-    *,
-    patch_size: int,
-    x_len: int,
-    y_len: int,
-    pad_width: tuple[int, int],
-) -> np.ndarray:
-    images = unpatchify(patches, patch_size, x_len, y_len).clip(0.0, 1.0)
-    return trim_padding(np.asarray(jax.device_get(images)), pad_width)
+from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 
 def compute_mse(prediction: jax.Array, target: jax.Array) -> float:
@@ -61,7 +27,6 @@ def build_grid(
     zero_latent: np.ndarray,
     shuffled_latent: np.ndarray,
     mean_baseline: np.ndarray,
-    *,
     seed: int,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -117,7 +82,7 @@ def main():
     )
     args = parser.parse_args()
 
-    cfg = OmegaConf.load(args.config)
+    run_cfg = OmegaConf.load(args.config)
     rng = np.random.default_rng(args.seed)
     source = VideoDataSource(args.dataset_dir)
     sample_indices = rng.choice(
@@ -125,62 +90,44 @@ def main():
         size=min(args.num_episodes, len(source)),
         replace=False,
     )
-    transform = PreprocessAndPatchify(
-        cfg.dataset.patch_size,
-        tuple(cfg.dataset.pad_width),
-        tuple(cfg.dataset.resize_shape),
-    )
 
     samples = []
     for sample_idx in np.atleast_1d(sample_indices):
         sample = source[int(sample_idx)]
-        sample = RandomVideoCrop(cfg.dataset.frame_length).random_map(sample, rng)
-        sample = transform.random_map(sample, rng)
+        sample = RandomVideoCrop(run_cfg.dataset.frame_length).random_map(sample, rng)
         samples.append(sample)
     batch = {"video": np.stack([sample["video"] for sample in samples])}
 
-    model = instantiate(cfg.tokenizer)
-    init_key, sample_key = jax.random.split(jax.random.key(args.seed))
-    state = TokenizerTrainState.create(
-        apply_fn=model.apply,
-        params=model.init({"params": init_key, "sample": sample_key}, batch),
-        tx=optax.adam(0.0),
-        mse_sq_ema=jnp.ones((), dtype=jnp.float32),
-        l1_sq_ema=jnp.ones((), dtype=jnp.float32),
-        lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
-        motion_sq_ema=jnp.ones((), dtype=jnp.float32),
+    model_cfg, variables = restore_model_export_single_device(
+        args.checkpoint_dir,
+        step=args.step,
     )
-    with CheckpointManager(args.checkpoint_dir, ocp.CheckpointManagerOptions()) as manager:
-        state = manager.restore(target=state, step=args.step)
+    preprocessor_cfg = restore_preprocessor_export(args.checkpoint_dir, step=args.step)
+    tokenizer = instantiate(model_cfg)
+    preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
+    patch_batch = {"video": preprocessor.preprocess_video(batch["video"])}
+    patch_video = jnp.asarray(patch_batch["video"], dtype=jnp.float32) / 255.0
 
-    original = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-    patch_dim = int(batch["video"].shape[-1])
+    def decode_images(latent: jax.Array) -> jax.Array:
+        return preprocessor.patches_to_images(
+            tokenizer.apply(
+                variables,
+                latent,
+                method=Tokenizer.decode,
+            ).astype(jnp.float32)
+        )
 
-    latent = state.apply_fn(state.params, batch, method=Tokenizer.encode).astype(jnp.float32)
-    reconstructed = state.apply_fn(
-        state.params,
-        latent,
-        patch_dim,
-        method=Tokenizer.decode,
-    ).astype(jnp.float32)
+    original = preprocessor.patches_to_images(patch_video).astype(jnp.float32)
 
-    zero_latent = state.apply_fn(
-        state.params,
-        jnp.zeros_like(latent),
-        patch_dim,
-        method=Tokenizer.decode,
-    ).astype(jnp.float32)
+    latent = tokenizer.apply(variables, patch_batch, method=Tokenizer.encode).astype(jnp.float32)
+    reconstructed = decode_images(latent)
+    zero_latent = decode_images(jnp.zeros_like(latent))
 
     shuffle_perm = jnp.asarray(rng.permutation(latent.shape[0]))
-    shuffled_latent = state.apply_fn(
-        state.params,
-        latent[shuffle_perm],
-        patch_dim,
-        method=Tokenizer.decode,
-    ).astype(jnp.float32)
+    shuffled_latent = decode_images(latent[shuffle_perm])
 
-    mean_patch = jnp.mean(original, axis=(0, 1), keepdims=True)
-    mean_baseline = jnp.broadcast_to(mean_patch, original.shape)
+    mean_image = jnp.mean(original, axis=(0, 1), keepdims=True)
+    mean_baseline = jnp.broadcast_to(mean_image, original.shape)
 
     flattened_latent = latent.reshape(-1, latent.shape[-2], latent.shape[-1])
     latent_stats = {
@@ -200,41 +147,11 @@ def main():
         "recon_vs_shuffled_l1": float(jnp.mean(jnp.abs(reconstructed - shuffled_latent))),
     }
 
-    original_images = patches_to_images(
-        original,
-        patch_size=cfg.dataset.patch_size,
-        x_len=cfg.tokenizer.x_len,
-        y_len=cfg.tokenizer.y_len,
-        pad_width=tuple(cfg.dataset.pad_width),
-    )
-    reconstructed_images = patches_to_images(
-        reconstructed,
-        patch_size=cfg.dataset.patch_size,
-        x_len=cfg.tokenizer.x_len,
-        y_len=cfg.tokenizer.y_len,
-        pad_width=tuple(cfg.dataset.pad_width),
-    )
-    zero_latent_images = patches_to_images(
-        zero_latent,
-        patch_size=cfg.dataset.patch_size,
-        x_len=cfg.tokenizer.x_len,
-        y_len=cfg.tokenizer.y_len,
-        pad_width=tuple(cfg.dataset.pad_width),
-    )
-    shuffled_latent_images = patches_to_images(
-        shuffled_latent,
-        patch_size=cfg.dataset.patch_size,
-        x_len=cfg.tokenizer.x_len,
-        y_len=cfg.tokenizer.y_len,
-        pad_width=tuple(cfg.dataset.pad_width),
-    )
-    mean_baseline_images = patches_to_images(
-        mean_baseline,
-        patch_size=cfg.dataset.patch_size,
-        x_len=cfg.tokenizer.x_len,
-        y_len=cfg.tokenizer.y_len,
-        pad_width=tuple(cfg.dataset.pad_width),
-    )
+    original_images = np.asarray(jax.device_get(jnp.clip(original, 0.0, 1.0)))
+    reconstructed_images = np.asarray(jax.device_get(jnp.clip(reconstructed, 0.0, 1.0)))
+    zero_latent_images = np.asarray(jax.device_get(jnp.clip(zero_latent, 0.0, 1.0)))
+    shuffled_latent_images = np.asarray(jax.device_get(jnp.clip(shuffled_latent, 0.0, 1.0)))
+    mean_baseline_images = np.asarray(jax.device_get(jnp.clip(mean_baseline, 0.0, 1.0)))
 
     grid = build_grid(
         original_images,

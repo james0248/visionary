@@ -48,7 +48,11 @@ def _array_record_source(data_dir: str) -> grain.ArrayRecordDataSource:
 
 class DynamicsDataSource(grain.RandomAccessDataSource):
     def __init__(self, data_dir: str):
-        self._source = _array_record_source(data_dir)
+        self._data_dir = epath.Path(data_dir).as_posix()
+        self._source = _array_record_source(self._data_dir)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(data_dir={self._data_dir!r})"
 
     def __len__(self):
         return len(self._source)
@@ -74,7 +78,11 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
 
 class VideoDataSource(grain.RandomAccessDataSource):
     def __init__(self, data_dir: str):
-        self._source = _array_record_source(data_dir)
+        self._data_dir = epath.Path(data_dir).as_posix()
+        self._source = _array_record_source(self._data_dir)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(data_dir={self._data_dir!r})"
 
     def __len__(self):
         return len(self._source)
