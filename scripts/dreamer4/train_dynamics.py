@@ -42,6 +42,42 @@ def make_host_seed(*values: int) -> int:
     return int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
 
 
+def log_train_timing(
+    wb: WandbLogger,
+    step: int,
+    start_step: int,
+    metrics,
+    data_time: float,
+    reshape_time: float,
+    dispatch_time: float,
+    sequence_length: int,
+    to_host,
+) -> dict[str, float]:
+    window_steps = step - start_step
+    avg_steps = max(window_steps, 1)
+    sync_start = time.monotonic()
+    train_metrics = to_host(metrics)
+    sync_time = time.monotonic() - sync_start
+
+    total_time = data_time + reshape_time + dispatch_time + sync_time
+    stats = {
+        "sps": window_steps / max(total_time, 1e-8),
+        "data_time": data_time / avg_steps,
+        "reshape_time": reshape_time / avg_steps,
+        "compute_time": (dispatch_time + sync_time) / avg_steps,
+        "wall_time": total_time / avg_steps,
+    }
+    wb.log(
+        {
+            **{k: float(v) for k, v in train_metrics.items()},
+            "train/sequence_length": sequence_length,
+            **{f"train/{k}": v for k, v in stats.items()},
+        },
+        step=step,
+    )
+    return stats
+
+
 @partial(
     jax.pmap,
     axis_name=PMAP_AXIS_NAME,
@@ -558,10 +594,8 @@ def main(cfg: DictConfig):
         wb.finish()
         return
 
-    train_window_start_step = step
-    train_window_data_time = 0.0
-    train_window_reshape_time = 0.0
-    train_window_dispatch_time = 0.0
+    timing_start_step = step
+    timing_data_time = timing_reshape_time = timing_dispatch_time = 0.0
     logger.info(
         "Asynchronous timing mode enabled for dynamics training; timing logs are averaged "
         "over each logging window."
@@ -580,10 +614,10 @@ def main(cfg: DictConfig):
             except StopIteration:
                 train_iterators[sequence_length] = iter(train_loaders[sequence_length])
                 batch = next(train_iterators[sequence_length])
-        t1 = time.monotonic()
+        data_done = time.monotonic()
 
         batch = reshape_batch(batch)
-        t2 = time.monotonic()
+        reshape_done = time.monotonic()
 
         bootstrap_rows = bootstrap_rows_for_step(current_step)
         state, metrics = train_step(
@@ -593,54 +627,28 @@ def main(cfg: DictConfig):
             current_step,
             bootstrap_rows,
         )
-        t3 = time.monotonic()
+        train_dispatched = time.monotonic()
 
         step = current_step + 1
-        data_time = t1 - step_start
-        reshape_time = t2 - t1
-        dispatch_time = t3 - t2
-        train_window_data_time += data_time
-        train_window_reshape_time += reshape_time
-        train_window_dispatch_time += dispatch_time
+        timing_data_time += data_done - step_start
+        timing_reshape_time += reshape_done - data_done
+        timing_dispatch_time += train_dispatched - reshape_done
 
-        should_log_train = step % cfg.log_interval == 0
-        train_sps = 0.0
-        avg_data_time = 0.0
-        avg_reshape_time = 0.0
-        avg_compute_time = 0.0
-        avg_wall_time = 0.0
-        if should_log_train:
-            window_steps = step - train_window_start_step
-            sync_start = time.monotonic()
-            train_metrics = to_host(metrics)
-            sync_time = time.monotonic() - sync_start
-            total_window_time = (
-                train_window_data_time
-                + train_window_reshape_time
-                + train_window_dispatch_time
-                + sync_time
-            )
-            train_sps = window_steps / max(total_window_time, 1e-8)
-            avg_data_time = train_window_data_time / max(window_steps, 1)
-            avg_reshape_time = train_window_reshape_time / max(window_steps, 1)
-            avg_compute_time = (train_window_dispatch_time + sync_time) / max(window_steps, 1)
-            avg_wall_time = total_window_time / max(window_steps, 1)
-            wb.log(
-                {
-                    **{k: float(v) for k, v in train_metrics.items()},
-                    "train/sequence_length": sequence_length,
-                    "train/sps": float(train_sps),
-                    "train/data_time": float(avg_data_time),
-                    "train/reshape_time": float(avg_reshape_time),
-                    "train/compute_time": float(avg_compute_time),
-                    "train/wall_time": float(avg_wall_time),
-                },
+        timing_stats = None
+        if step % cfg.log_interval == 0:
+            timing_stats = log_train_timing(
+                wb,
                 step=step,
+                start_step=timing_start_step,
+                metrics=metrics,
+                data_time=timing_data_time,
+                reshape_time=timing_reshape_time,
+                dispatch_time=timing_dispatch_time,
+                sequence_length=sequence_length,
+                to_host=to_host,
             )
-            train_window_start_step = step
-            train_window_data_time = 0.0
-            train_window_reshape_time = 0.0
-            train_window_dispatch_time = 0.0
+            timing_start_step = step
+            timing_data_time = timing_reshape_time = timing_dispatch_time = 0.0
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -698,17 +706,17 @@ def main(cfg: DictConfig):
         if checkpoint_manager.should_save(step):
             checkpoint_manager.save(step=step, state=to_host(state), extra_items=iterator_items())
 
-        if should_log_train:
+        if timing_stats is not None:
             logger.info(
                 "Step %d - seq: %d, sps: %.2f, data: %.3fs, reshape: %.3fs, "
                 "compute: %.3fs, wall: %.3fs, eval: %.3fs",
                 step,
                 sequence_length,
-                train_sps,
-                avg_data_time,
-                avg_reshape_time,
-                avg_compute_time,
-                avg_wall_time,
+                timing_stats["sps"],
+                timing_stats["data_time"],
+                timing_stats["reshape_time"],
+                timing_stats["compute_time"],
+                timing_stats["wall_time"],
                 t_eval,
             )
         if step >= total_steps:

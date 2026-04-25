@@ -38,6 +38,39 @@ def make_host_seed(*values: int) -> int:
     return int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
 
 
+def log_train_timing(
+    wb: WandbLogger,
+    step: int,
+    start_step: int,
+    metrics,
+    data_time: float,
+    transfer_time: float,
+    dispatch_time: float,
+) -> dict[str, float]:
+    window_steps = step - start_step
+    avg_steps = max(window_steps, 1)
+    sync_start = time.monotonic()
+    train_metrics = jax.device_get(metrics)
+    sync_time = time.monotonic() - sync_start
+
+    total_time = data_time + transfer_time + dispatch_time + sync_time
+    stats = {
+        "sps": window_steps / max(total_time, 1e-8),
+        "data_time": data_time / avg_steps,
+        "transfer_time": transfer_time / avg_steps,
+        "compute_time": (dispatch_time + sync_time) / avg_steps,
+        "wall_time": total_time / avg_steps,
+    }
+    wb.log(
+        {
+            **{k: float(v) for k, v in train_metrics.items()},
+            **{f"train/{k}": v for k, v in stats.items()},
+        },
+        step=step,
+    )
+    return stats
+
+
 @lru_cache(maxsize=1)
 def get_lpips_loss_fn():
     return LPIPS(pretrained_network=LPIPS_PRETRAINED_NETWORK)
@@ -433,10 +466,8 @@ def main(cfg: DictConfig):
         wb.finish()
         return
 
-    train_window_start_step = step
-    train_window_data_time = 0.0
-    train_window_transfer_time = 0.0
-    train_window_dispatch_time = 0.0
+    timing_start_step = step
+    timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
     logger.info(
         "Asynchronous timing mode enabled for tokenizer training; timing logs are averaged "
         "over each logging window."
@@ -449,10 +480,10 @@ def main(cfg: DictConfig):
         except StopIteration:
             train_iterator = iter(train_dataloader)
             batch = next(train_iterator)
-        t1 = time.monotonic()
+        data_done = time.monotonic()
 
         batch = jax.device_put(batch)
-        t2 = time.monotonic()
+        transfer_done = time.monotonic()
 
         state, metrics = train_step(
             state,
@@ -462,49 +493,26 @@ def main(cfg: DictConfig):
             cfg.lpips_weight,
             preprocessor,
         )
-        t3 = time.monotonic()
+        train_dispatched = time.monotonic()
 
         step = current_step + 1
-        data_time = t1 - step_start
-        transfer_time = t2 - t1
-        dispatch_time = t3 - t2
-        train_window_data_time += data_time
-        train_window_transfer_time += transfer_time
-        train_window_dispatch_time += dispatch_time
+        timing_data_time += data_done - step_start
+        timing_transfer_time += transfer_done - data_done
+        timing_dispatch_time += train_dispatched - transfer_done
 
-        should_log_console = step % cfg.log_interval == 0
-        train_sps = 0.0
-        if should_log_console:
-            window_steps = step - train_window_start_step
-            sync_start = time.monotonic()
-            train_metrics = jax.device_get(metrics)
-            sync_time = time.monotonic() - sync_start
-            total_window_time = (
-                train_window_data_time
-                + train_window_transfer_time
-                + train_window_dispatch_time
-                + sync_time
-            )
-            train_sps = window_steps / max(total_window_time, 1e-8)
-            avg_data_time = train_window_data_time / max(window_steps, 1)
-            avg_transfer_time = train_window_transfer_time / max(window_steps, 1)
-            avg_compute_time = (train_window_dispatch_time + sync_time) / max(window_steps, 1)
-            avg_wall_time = total_window_time / max(window_steps, 1)
-            wb.log(
-                {
-                    **{k: float(v) for k, v in train_metrics.items()},
-                    "train/sps": float(train_sps),
-                    "train/data_time": float(avg_data_time),
-                    "train/transfer_time": float(avg_transfer_time),
-                    "train/compute_time": float(avg_compute_time),
-                    "train/wall_time": float(avg_wall_time),
-                },
+        timing_stats = None
+        if step % cfg.log_interval == 0:
+            timing_stats = log_train_timing(
+                wb,
                 step=step,
+                start_step=timing_start_step,
+                metrics=metrics,
+                data_time=timing_data_time,
+                transfer_time=timing_transfer_time,
+                dispatch_time=timing_dispatch_time,
             )
-            train_window_start_step = step
-            train_window_data_time = 0.0
-            train_window_transfer_time = 0.0
-            train_window_dispatch_time = 0.0
+            timing_start_step = step
+            timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -560,16 +568,16 @@ def main(cfg: DictConfig):
         if checkpoint_manager.should_save(step):
             save_checkpoint(step)
 
-        if should_log_console:
+        if timing_stats is not None:
             logger.info(
                 "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, compute: %.3fs, "
                 "wall: %.3fs, eval: %.3fs",
                 step,
-                train_sps,
-                avg_data_time,
-                avg_transfer_time,
-                avg_compute_time,
-                avg_wall_time,
+                timing_stats["sps"],
+                timing_stats["data_time"],
+                timing_stats["transfer_time"],
+                timing_stats["compute_time"],
+                timing_stats["wall_time"],
                 t_eval,
             )
         if step >= total_steps:
