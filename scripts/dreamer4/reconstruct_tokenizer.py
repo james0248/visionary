@@ -5,39 +5,17 @@ from pathlib import Path
 import grain.python as grain
 import imageio
 import jax
-import jax.numpy as jnp
 import numpy as np
-import optax
-import orbax.checkpoint as ocp
-from einops import rearrange
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from visionary.common.checkpoint import CheckpointManager
-from visionary.common.train_state import TokenizerTrainState
-from visionary.dataset import PreprocessAndPatchify, RandomVideoCrop
-
-
-def unpatchify(images: jax.Array, patch_size: int, x_len: int, y_len: int) -> jax.Array:
-    return rearrange(
-        images,
-        "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
-        h=y_len,
-        w=x_len,
-        p1=patch_size,
-        p2=patch_size,
-    )
-
-
-def trim_padding(images: np.ndarray, pad_width: tuple[int, int]) -> np.ndarray:
-    h_pad, w_pad = (int(v) for v in pad_width)
-    return images[
-        :,
-        :,
-        slice(h_pad, -h_pad if h_pad else None),
-        slice(w_pad, -w_pad if w_pad else None),
-        :,
-    ]
+from visionary.common.checkpoint import (
+    restore_model_export_single_device,
+    restore_preprocessor_export,
+)
+from visionary.dataset import RandomVideoCrop
+from visionary.tokenizer import Tokenizer
+from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 
 def main():
@@ -51,7 +29,7 @@ def main():
     parser.add_argument("--mask_prob", type=float, default=0.1)
     args = parser.parse_args()
 
-    cfg = OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout.yaml")
+    run_cfg = OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout.yaml")
     rng = np.random.default_rng(args.seed)
     shard_paths = sorted(Path(args.dataset_dir).glob("*.arecord"))
     shard_indices = rng.choice(
@@ -64,75 +42,38 @@ def main():
         source = grain.ArrayRecordDataSource([shard_paths[int(shard_idx)].as_posix()])
         with np.load(io.BytesIO(source[int(rng.integers(len(source)))])) as data:
             sample = {"video": np.asarray(data["frames"])}
-        sample = RandomVideoCrop(cfg.dataset.frame_length).random_map(sample, rng)
-        sample = PreprocessAndPatchify(
-            cfg.dataset.patch_size,
-            tuple(cfg.dataset.pad_width),
-            tuple(cfg.dataset.resize_shape),
-        ).random_map(sample, rng)
+        sample = RandomVideoCrop(run_cfg.dataset.frame_length).random_map(sample, rng)
         samples.append(sample)
     batch = {
         "video": np.stack([sample["video"] for sample in samples]),
     }
 
-    model = instantiate(cfg.tokenizer)
-    init_key, sample_key = jax.random.split(jax.random.key(args.seed))
-    state = TokenizerTrainState.create(
-        apply_fn=model.apply,
-        params=model.init({"params": init_key, "sample": sample_key}, batch),
-        tx=optax.adam(0.0),
-        mse_sq_ema=jnp.ones((), dtype=jnp.float32),
-        l1_sq_ema=jnp.ones((), dtype=jnp.float32),
-        lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
-        motion_sq_ema=jnp.ones((), dtype=jnp.float32),
+    model_cfg, variables = restore_model_export_single_device(
+        args.checkpoint_dir,
+        step=args.step,
     )
-    with CheckpointManager(args.checkpoint_dir, ocp.CheckpointManagerOptions()) as manager:
-        state = manager.restore(target=state, step=args.step)
-
-    reconstructed, mask = state.apply_fn(
-        state.params,
-        batch,
+    preprocessor_cfg = restore_preprocessor_export(args.checkpoint_dir, step=args.step)
+    tokenizer = instantiate(model_cfg)
+    preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
+    patch_batch = {"video": preprocessor.preprocess_video(batch["video"])}
+    patch_video = jax.numpy.asarray(patch_batch["video"], dtype=jax.numpy.float32) / 255.0
+    reconstructed_patches, mask = tokenizer.apply(
+        variables,
+        patch_batch,
         mask_prob=float(args.mask_prob),
+        method=Tokenizer.reconstruct,
         rngs={"sample": jax.random.key(args.seed + 1)},
     )
-
-    original = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-    mask_f32 = jnp.expand_dims(mask, axis=-1).astype(original.dtype)
-    masked = original * (1.0 - mask_f32)
-    reconstructed = reconstructed.astype(jnp.float32)
-
-    original = trim_padding(
-        np.asarray(
-            jax.device_get(
-                unpatchify(
-                    original, cfg.dataset.patch_size, cfg.tokenizer.x_len, cfg.tokenizer.y_len
-                ).clip(0.0, 1.0)
-            )
-        ),
-        tuple(cfg.dataset.pad_width),
-    )
-    masked = trim_padding(
-        np.asarray(
-            jax.device_get(
-                unpatchify(
-                    masked, cfg.dataset.patch_size, cfg.tokenizer.x_len, cfg.tokenizer.y_len
-                ).clip(0.0, 1.0)
-            )
-        ),
-        tuple(cfg.dataset.pad_width),
-    )
-    reconstructed = trim_padding(
-        np.asarray(
-            jax.device_get(
-                unpatchify(
-                    reconstructed,
-                    cfg.dataset.patch_size,
-                    cfg.tokenizer.x_len,
-                    cfg.tokenizer.y_len,
-                ).clip(0.0, 1.0)
-            )
-        ),
-        tuple(cfg.dataset.pad_width),
+    original = preprocessor.patches_to_images(patch_video)
+    reconstructed = preprocessor.patches_to_images(reconstructed_patches.astype(jax.numpy.float32))
+    mask_images = preprocessor.mask_to_images(mask).astype(original.dtype)
+    masked = original * (1.0 - mask_images)
+    original, masked, reconstructed = jax.device_get(
+        (
+            jax.numpy.clip(original, 0.0, 1.0),
+            jax.numpy.clip(masked, 0.0, 1.0),
+            jax.numpy.clip(reconstructed, 0.0, 1.0),
+        )
     )
 
     episode_indices = np.arange(original.shape[0])

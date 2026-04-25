@@ -322,6 +322,18 @@ def run_command(
     return result.stdout
 
 
+def command_failure_detail(exc: subprocess.CalledProcessError) -> str:
+    return (exc.stderr or exc.output or "").strip()
+
+
+def log_command_failure(exc: subprocess.CalledProcessError, *, message: str) -> None:
+    command = " ".join(str(part) for part in exc.cmd)
+    print(f"[watcher] {message}: {command}", file=sys.stderr)
+    detail = command_failure_detail(exc)
+    if detail:
+        print(detail, file=sys.stderr)
+
+
 def gcloud_command(cfg: dict[str, Any], *args: str, json_output: bool = False) -> list[str]:
     watcher_cfg = cfg.get("watcher", {})
     cmd = ["gcloud", *args]
@@ -370,7 +382,17 @@ def delete_queued_resource(cfg: dict[str, Any], *, queued_resource_name: str, zo
         "--force",
         "--quiet",
     )
-    run_command(cmd, cfg=cfg, capture_output=True)
+    try:
+        run_command(cmd, cfg=cfg, capture_output=True)
+    except subprocess.CalledProcessError as exc:
+        detail = command_failure_detail(exc).lower()
+        if "not_found" in detail or "not found" in detail:
+            print(
+                f"[watcher] Queued resource {queued_resource_name} is already absent.",
+                file=sys.stderr,
+            )
+            return
+        raise
 
 
 def queued_resource_state(desc: dict[str, Any]) -> str:
@@ -1063,14 +1085,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("[watcher] Interrupted.", file=sys.stderr)
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.output or "").strip()
-        if detail:
-            raise SystemExit(
-                f"[watcher] Command failed: {' '.join(str(part) for part in exc.cmd)}\n{detail}"
-            ) from exc
-        raise
+    while True:
+        try:
+            main()
+            break
+        except KeyboardInterrupt:
+            print("[watcher] Interrupted.", file=sys.stderr)
+            break
+        except subprocess.CalledProcessError as exc:
+            log_command_failure(exc, message="Ignoring command failure; retrying watcher loop")
+            time.sleep(60)

@@ -1,5 +1,5 @@
 seed: 42
-learning_rate: 2e-4
+learning_rate: 3e-4
 log_interval: 100
 eval_steps: 1000
 total_steps: 500000
@@ -18,14 +18,13 @@ video_eval:
   fps: 20
   output_dir: artifacts/dreamer4_dynamics_eval
   tokenizer:
-    config_path: scripts/dreamer4/config/breakout.yaml
     checkpoint_dir: gs://visionary-exp/breakout/checkpoints/tokenizer_l8p8
     checkpoint_step: null
 
 dataset:
   train_dir: data/tokenized/train/
   eval_dir: data/tokenized/eval/
-  batch_size: 8
+  batch_size: 32
   batch_length: 128
   alternating_lengths:
     enabled: true
@@ -53,8 +52,8 @@ dynamics:
   head_dim: 64
   mlp_hidden_dim: 768
   context_length: 64
+  temporal_layer_period: 4
   base: 10000.0
-  attention_logit_soft_cap: 50.0
 
 checkpoint:
   manager:

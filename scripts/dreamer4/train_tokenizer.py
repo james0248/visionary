@@ -9,21 +9,21 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from einops import rearrange
 from hydra.utils import instantiate
-from jaxlpips import LPIPS
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
-from visionary.common.checkpoint import CheckpointManager
+from visionary.common.checkpoint import (
+    CheckpointManager,
+    save_model_export,
+    save_preprocessor_export,
+)
+from visionary.common.jax import fold_in_many
 from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
-from visionary.dataset import (
-    PreprocessAndPatchify,
-    RandomVideoCrop,
-    VideoDataset,
-    VideoDataSource,
-)
+from visionary.dataset import RandomVideoCrop, VideoDataset, VideoDataSource
+from visionary.lpips import LPIPS
 from visionary.tokenizer import Tokenizer
+from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -33,70 +33,78 @@ LOSS_RMS_DECAY = 0.99
 LOSS_RMS_EPS = 1e-8
 
 
+def make_host_seed(*values: int) -> int:
+    seed_sequence = np.random.SeedSequence([int(value) for value in values])
+    return int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
+
+
+def log_train_timing(
+    wb: WandbLogger,
+    step: int,
+    start_step: int,
+    metrics,
+    data_time: float,
+    transfer_time: float,
+    dispatch_time: float,
+) -> dict[str, float]:
+    window_steps = step - start_step
+    avg_steps = max(window_steps, 1)
+    sync_start = time.monotonic()
+    train_metrics = jax.device_get(metrics)
+    sync_time = time.monotonic() - sync_start
+
+    total_time = data_time + transfer_time + dispatch_time + sync_time
+    stats = {
+        "sps": window_steps / max(total_time, 1e-8),
+        "data_time": data_time / avg_steps,
+        "transfer_time": transfer_time / avg_steps,
+        "compute_time": (dispatch_time + sync_time) / avg_steps,
+        "wall_time": total_time / avg_steps,
+    }
+    wb.log(
+        {
+            **{k: float(v) for k, v in train_metrics.items()},
+            **{f"train/{k}": v for k, v in stats.items()},
+        },
+        step=step,
+    )
+    return stats
+
+
 @lru_cache(maxsize=1)
 def get_lpips_loss_fn():
     return LPIPS(pretrained_network=LPIPS_PRETRAINED_NETWORK)
 
 
-def unpatchify(
-    images: jax.Array, patch_size: int, width_tokens: int, height_tokens: int
-) -> jax.Array:
-    return rearrange(
-        images,
-        "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
-        p1=patch_size,
-        p2=patch_size,
-        h=height_tokens,
-        w=width_tokens,
-    )
-
-
 def compute_lpips_loss(
     original: jax.Array,
     reconstructed: jax.Array,
-    patch_size: int,
-    width_tokens: int,
-    height_tokens: int,
+    preprocessor: TokenizerPreprocessor,
 ) -> jax.Array:
-    original_images = unpatchify(original, patch_size, width_tokens, height_tokens)
-    reconstructed_images = unpatchify(reconstructed, patch_size, width_tokens, height_tokens)
-    original_images, reconstructed_images = (
-        original_images * 2.0 - 1.0,
-        reconstructed_images * 2.0 - 1.0,
-    )
-    # jaxlpips expects NHWC images, so fold time into the batch axis.
-    original_images = rearrange(original_images, "b t h w c -> (b t) h w c")
-    reconstructed_images = rearrange(reconstructed_images, "b t h w c -> (b t) h w c")
+    original_images = preprocessor.patches_to_images(original)
+    reconstructed_images = preprocessor.patches_to_images(reconstructed)
+    original_images = original_images * 2.0 - 1.0
+    reconstructed_images = reconstructed_images * 2.0 - 1.0
+    original_images = original_images.reshape((-1, *original_images.shape[2:]))
+    reconstructed_images = reconstructed_images.reshape((-1, *reconstructed_images.shape[2:]))
     return jnp.mean(get_lpips_loss_fn()(original_images, reconstructed_images))
 
 
 def update_loss_ema(
     state: TokenizerTrainState,
     mse_loss: jax.Array,
-    l1_loss: jax.Array,
     lpips_loss: jax.Array,
-    motion_loss: jax.Array,
 ) -> TokenizerTrainState:
     mse_loss = mse_loss.astype(jnp.float32)
-    l1_loss = l1_loss.astype(jnp.float32)
     lpips_loss = lpips_loss.astype(jnp.float32)
-    motion_loss = motion_loss.astype(jnp.float32)
     step_size = jnp.asarray(1.0 - LOSS_RMS_DECAY, dtype=mse_loss.dtype)
     return state.replace(
         mse_sq_ema=optax.incremental_update(
             jnp.square(mse_loss), state.mse_sq_ema.astype(mse_loss.dtype), step_size
         ),
-        l1_sq_ema=optax.incremental_update(
-            jnp.square(l1_loss), state.l1_sq_ema.astype(l1_loss.dtype), step_size
-        ),
         lpips_sq_ema=optax.incremental_update(
             jnp.square(lpips_loss),
             state.lpips_sq_ema.astype(lpips_loss.dtype),
-            step_size,
-        ),
-        motion_sq_ema=optax.incremental_update(
-            jnp.square(motion_loss),
-            state.motion_sq_ema.astype(motion_loss.dtype),
             step_size,
         ),
     )
@@ -107,143 +115,60 @@ def compute_loss_metrics(
     batch: VideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
-    reconstruction_loss: str,
-    motion_weighted_mse: bool,
-    motion_reference: float,
-    motion_max_boost: float,
     lpips_weight: float,
-    motion_loss_weight: float,
-    masked_mse: bool,
-    patch_size: int,
-    width_tokens: int,
-    height_tokens: int,
+    preprocessor: TokenizerPreprocessor,
 ):
-    reconstructed_f32 = reconstructed.astype(jnp.float32)
     original = batch["video"].astype(jnp.float32) / 255.0
-    mask_f32 = jnp.expand_dims(mask, axis=-1).astype(reconstructed_f32.dtype)
-    reconstruction_error = reconstructed_f32 - original
-    mse_weights = mask_f32 if masked_mse else jnp.ones_like(reconstruction_error)
-    if masked_mse:
-        mse_weights = jnp.broadcast_to(mse_weights, reconstruction_error.shape)
-    if motion_weighted_mse:
-        frame_diffs = jnp.abs(original[:, 1:] - original[:, :-1])
-        motion_magnitude = jnp.maximum(
-            jnp.pad(frame_diffs, ((0, 0), (1, 0), (0, 0), (0, 0)), constant_values=0),
-            jnp.pad(frame_diffs, ((0, 0), (0, 1), (0, 0), (0, 0)), constant_values=0),
-        )
-        # Per-patch motion: average over patch_dim, keep (b, t, patches)
-        motion_per_patch = jnp.mean(motion_magnitude, axis=-1)
-        motion_boost = jnp.clip(motion_per_patch / motion_reference, 0.0, motion_max_boost)
-        mse_weights = mse_weights * (1.0 + motion_boost[..., None])
-    num_mse = jnp.maximum(jnp.sum(mse_weights), 1.0)
-    mse_loss = jnp.sum(jnp.square(reconstruction_error) * mse_weights) / num_mse
+    reconstructed = reconstructed.astype(jnp.float32)
+    mask = jnp.expand_dims(mask, axis=-1).astype(reconstructed.dtype)
+    reconstruction_error = reconstructed - original
+
+    mse_loss = jnp.mean(jnp.square(reconstruction_error))
     mse_rms = jnp.sqrt(state.mse_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     normalized_mse_loss = mse_loss / jax.lax.stop_gradient(mse_rms)
 
-    l1_rms = jnp.sqrt(state.l1_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
-    l1_base_weights = mask_f32 if masked_mse else jnp.ones_like(reconstruction_error)
-    if masked_mse:
-        l1_base_weights = jnp.broadcast_to(l1_base_weights, reconstruction_error.shape)
-    num_l1 = jnp.maximum(jnp.sum(l1_base_weights), 1.0)
-    l1_loss = jnp.sum(jnp.abs(reconstruction_error) * l1_base_weights) / num_l1
-    normalized_l1_loss = l1_loss / jax.lax.stop_gradient(l1_rms)
-
-    if reconstruction_loss == "mse":
-        raw_reconstruction_loss = mse_loss
-        normalized_reconstruction_loss = normalized_mse_loss
-    elif reconstruction_loss == "l1":
-        raw_reconstruction_loss = l1_loss
-        normalized_reconstruction_loss = normalized_l1_loss
-    else:
-        raise ValueError(f"Unknown reconstruction_loss: {reconstruction_loss}")
-
     lpips_rms = jnp.sqrt(state.lpips_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if lpips_weight > 0:
-        inpainted_reconstruction = reconstructed_f32 * mask_f32 + original * (1.0 - mask_f32)
-        lpips_loss = compute_lpips_loss(
-            original,
-            inpainted_reconstruction,
-            patch_size=patch_size,
-            width_tokens=width_tokens,
-            height_tokens=height_tokens,
-        )
+        lpips_loss = compute_lpips_loss(original, reconstructed, preprocessor)
     else:
         lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
     normalized_lpips_loss = lpips_loss / jax.lax.stop_gradient(lpips_rms)
 
-    if motion_loss_weight > 0 and reconstructed_f32.shape[1] > 1:
-        reconstructed_diff = reconstructed_f32[:, 1:] - reconstructed_f32[:, :-1]
-        original_diff = original[:, 1:] - original[:, :-1]
-        motion_loss = jnp.mean(jnp.square(reconstructed_diff - original_diff))
-    else:
-        motion_loss = jnp.zeros((), dtype=mse_loss.dtype)
-    motion_rms = jnp.sqrt(state.motion_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
-    normalized_motion_loss = motion_loss / jax.lax.stop_gradient(motion_rms)
-
-    raw_loss = (
-        raw_reconstruction_loss + lpips_weight * lpips_loss + motion_loss_weight * motion_loss
-    )
-    loss = (
-        normalized_reconstruction_loss
-        + lpips_weight * normalized_lpips_loss
-        + motion_loss_weight * normalized_motion_loss
-    )
+    raw_loss = mse_loss + lpips_weight * lpips_loss
+    loss = normalized_mse_loss + lpips_weight * normalized_lpips_loss
     metrics = {
         "loss": loss,
         "raw_loss": raw_loss,
-        "raw_reconstruction_loss": raw_reconstruction_loss,
         "mse_loss": mse_loss,
-        "l1_loss": l1_loss,
         "lpips_loss": lpips_loss,
-        "motion_loss": motion_loss,
-        "normalized_reconstruction_loss": normalized_reconstruction_loss,
         "normalized_mse_loss": normalized_mse_loss,
-        "normalized_l1_loss": normalized_l1_loss,
         "normalized_lpips_loss": normalized_lpips_loss,
-        "normalized_motion_loss": normalized_motion_loss,
         "mse_rms": mse_rms,
-        "l1_rms": l1_rms,
         "lpips_rms": lpips_rms,
-        "motion_rms": motion_rms,
-        "mask_ratio": jnp.mean(mask_f32),
+        "mask_ratio": jnp.mean(mask),
     }
     return loss, metrics
 
 
 @partial(
     jax.jit,
-    static_argnames=(
-        "reconstruction_loss",
-        "motion_weighted_mse",
-        "motion_reference",
-        "motion_max_boost",
-        "lpips_weight",
-        "motion_loss_weight",
-        "masked_mse",
-        "patch_size",
-        "width_tokens",
-        "height_tokens",
-    ),
+    static_argnames=("lpips_weight", "preprocessor"),
 )
 def train_step(
     state: TokenizerTrainState,
     batch: VideoDataset,
-    sample_key: jax.Array,
-    reconstruction_loss: str,
-    motion_weighted_mse: bool,
-    motion_reference: float,
-    motion_max_boost: float,
+    base_sample_key: jax.Array,
+    global_step: int,
     lpips_weight: float,
-    motion_loss_weight: float,
-    masked_mse: bool,
-    patch_size: int,
-    width_tokens: int,
-    height_tokens: int,
+    preprocessor: TokenizerPreprocessor,
 ):
+    sample_key = fold_in_many(base_sample_key, global_step)
+
     def loss_fn(params):
         reconstructed, mask = state.apply_fn(
             params,
             batch,
+            method=Tokenizer.reconstruct,
             rngs={"sample": sample_key},
         )
         return compute_loss_metrics(
@@ -251,16 +176,8 @@ def train_step(
             batch,
             reconstructed,
             mask,
-            reconstruction_loss,
-            motion_weighted_mse,
-            motion_reference,
-            motion_max_boost,
             lpips_weight,
-            motion_loss_weight,
-            masked_mse,
-            patch_size,
-            width_tokens,
-            height_tokens,
+            preprocessor,
         )
 
     (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
@@ -268,50 +185,32 @@ def train_step(
     state = update_loss_ema(
         state,
         metrics["mse_loss"],
-        metrics["l1_loss"],
         metrics["lpips_loss"],
-        metrics["motion_loss"],
     )
     return state, metrics
 
 
 @partial(
     jax.jit,
-    static_argnames=(
-        "reconstruction_loss",
-        "motion_weighted_mse",
-        "motion_reference",
-        "motion_max_boost",
-        "lpips_weight",
-        "motion_loss_weight",
-        "masked_mse",
-        "patch_size",
-        "width_tokens",
-        "height_tokens",
-        "pad_width",
-    ),
+    static_argnames=("lpips_weight", "preprocessor"),
 )
 def eval_step(
     state: TokenizerTrainState,
     batch: VideoDataset,
-    sample_key: jax.Array,
-    reconstruction_loss: str,
-    motion_weighted_mse: bool,
-    motion_reference: float,
-    motion_max_boost: float,
+    base_sample_key: jax.Array,
+    global_step: int,
+    batch_index: int,
     lpips_weight: float,
-    motion_loss_weight: float,
-    masked_mse: bool,
-    patch_size: int,
-    width_tokens: int,
-    height_tokens: int,
-    pad_width: tuple[int, int],
+    preprocessor: TokenizerPreprocessor,
 ):
+    sample_key = fold_in_many(base_sample_key, global_step, batch_index)
     model_key, frame_key = jax.random.split(sample_key)
     reconstructed, mask = state.apply_fn(
         state.params,
         batch,
-        method=Tokenizer.reconstruct_eval,
+        mask_prob=0.1,
+        independent=jnp.zeros((batch["video"].shape[0],), dtype=bool),
+        method=Tokenizer.reconstruct,
         rngs={"sample": model_key},
     )
     _, metrics = compute_loss_metrics(
@@ -319,70 +218,29 @@ def eval_step(
         batch,
         reconstructed,
         mask,
-        reconstruction_loss,
-        motion_weighted_mse,
-        motion_reference,
-        motion_max_boost,
         lpips_weight,
-        motion_loss_weight,
-        masked_mse,
-        patch_size,
-        width_tokens,
-        height_tokens,
+        preprocessor,
     )
     sampled_frames = sample_sequence_frames(
         batch,
         reconstructed,
         mask,
-        patch_size=patch_size,
-        width_tokens=width_tokens,
-        height_tokens=height_tokens,
-        pad_width=pad_width,
-        frame_key=frame_key,
+        preprocessor,
+        frame_key,
     )
     return metrics, sampled_frames
-
-
-def trim_padding(images: np.ndarray, pad_width: tuple[int, int]) -> np.ndarray:
-    height_pad, width_pad = (int(p) for p in pad_width)
-    h_slice = slice(height_pad, -height_pad if height_pad else None)
-    w_slice = slice(width_pad, -width_pad if width_pad else None)
-    return images[:, :, h_slice, w_slice, :]
-
-
-def patches_to_images(
-    patches: jax.Array,
-    *,
-    patch_size: int,
-    width_tokens: int,
-    height_tokens: int,
-    pad_width: tuple[int, int],
-) -> jax.Array:
-    images = unpatchify(
-        rearrange(patches, "b n d -> b 1 n d"),
-        patch_size,
-        width_tokens,
-        height_tokens,
-    )
-    images = trim_padding(images, pad_width)[:, 0]
-    return jnp.clip(jnp.rint(images * 255.0), 0, 255).astype(jnp.uint8)
 
 
 def sample_sequence_frames(
     batch: VideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
-    *,
-    patch_size: int,
-    width_tokens: int,
-    height_tokens: int,
-    pad_width: tuple[int, int],
+    preprocessor: TokenizerPreprocessor,
     frame_key: jax.Array,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    original = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+    original = batch["video"].astype(jnp.float32) / 255.0
     reconstructed = reconstructed.astype(jnp.float32)
-    mask_f32 = jnp.expand_dims(mask, axis=-1).astype(original.dtype)
-    masked_input = original * (1.0 - mask_f32)
+    masked_input = original * (1.0 - jnp.expand_dims(mask, axis=-1).astype(original.dtype))
 
     batch_size, seq_len, _, _ = original.shape
     batch_indices = jnp.arange(batch_size)
@@ -391,46 +249,24 @@ def sample_sequence_frames(
     original = original[batch_indices, frame_indices]
     reconstructed = reconstructed[batch_indices, frame_indices]
     masked_input = masked_input[batch_indices, frame_indices]
-
-    return (
-        patches_to_images(
-            original,
-            patch_size=patch_size,
-            width_tokens=width_tokens,
-            height_tokens=height_tokens,
-            pad_width=pad_width,
-        ),
-        patches_to_images(
-            reconstructed,
-            patch_size=patch_size,
-            width_tokens=width_tokens,
-            height_tokens=height_tokens,
-            pad_width=pad_width,
-        ),
-        patches_to_images(
-            masked_input,
-            patch_size=patch_size,
-            width_tokens=width_tokens,
-            height_tokens=height_tokens,
-            pad_width=pad_width,
-        ),
-    )
+    sampled_frames = []
+    for patches in (original, reconstructed, masked_input):
+        images = preprocessor.patches_to_images(patches)
+        sampled_frames.append(jnp.clip(jnp.rint(images * 255.0), 0, 255).astype(jnp.uint8))
+    return tuple(sampled_frames)
 
 
 def build_reconstruction_grid(
     originals: np.ndarray,
     reconstructions: np.ndarray,
     masked_inputs: np.ndarray,
-    *,
-    frame_key: jax.Array,
+    frame_seed: int,
     num_frames: int,
 ) -> np.ndarray:
     total_frames = originals.shape[0]
     num_frames = min(int(num_frames), total_frames)
-    frame_indices = np.asarray(
-        jax.device_get(
-            jax.random.choice(frame_key, total_frames, shape=(num_frames,), replace=False)
-        )
+    frame_indices = np.random.default_rng(frame_seed).choice(
+        total_frames, size=num_frames, replace=False
     )
 
     originals = originals[frame_indices]
@@ -460,8 +296,13 @@ def build_reconstruction_grid(
 
 @hydra.main(config_path="config", version_base=None)
 def main(cfg: DictConfig):
-    logger.info("JAX backend: %s, devices: %s", jax.default_backend(), jax.devices())
-    wb = WandbLogger(cfg)
+    logger.info(
+        "JAX backend: %s device_count=%d devices=%s",
+        jax.default_backend(),
+        jax.device_count(),
+        jax.devices(),
+    )
+    wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled))
     total_steps = int(cfg.total_steps)
 
     train_source = VideoDataSource(cfg.dataset.train_dir)
@@ -470,6 +311,10 @@ def main(cfg: DictConfig):
         "Loaded %d training videos and %d eval videos",
         len(train_source),
         len(eval_source),
+    )
+    logger.info(
+        "Batch layout: batch_size=%d",
+        int(cfg.dataset.batch_size),
     )
     effective_read_threads = max(int(cfg.dataset.worker_count), 1) * int(cfg.dataset.num_threads)
     logger.info(
@@ -480,19 +325,22 @@ def main(cfg: DictConfig):
         int(cfg.dataset.prefetch_buffer_size),
         effective_read_threads,
     )
-    transforms = [
-        RandomVideoCrop(cfg.dataset.frame_length),
-        PreprocessAndPatchify(
-            cfg.dataset.patch_size,
-            tuple(cfg.dataset.pad_width),
-            tuple(cfg.dataset.resize_shape),
-        ),
-    ]
+    preprocessor = TokenizerPreprocessor(
+        resize_shape=tuple(cfg.tokenizer.resize_shape),
+        pad_width=tuple(cfg.tokenizer.pad_width),
+        patch_size=int(cfg.tokenizer.patch_size),
+    )
+    logger.info(
+        "LPIPS settings: weight=%.3f",
+        float(cfg.lpips_weight),
+    )
+    crop_transform = RandomVideoCrop(cfg.dataset.frame_length)
+    preprocess_transform = preprocessor.as_grain_transform()
 
-    def make_loader(source, *, shuffle: bool, drop_remainder: bool, seed: int):
+    def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int):
         sampler = grain.IndexSampler(
             num_records=len(source),
-            shard_options=grain.ShardByJaxProcess(),
+            shard_options=grain.NoSharding(),
             shuffle=shuffle,
             seed=seed,
         )
@@ -504,9 +352,10 @@ def main(cfg: DictConfig):
             data_source=source,
             sampler=sampler,
             operations=[
-                *transforms,
+                crop_transform,
+                preprocess_transform,
                 grain.Batch(
-                    batch_size=cfg.dataset.batch_size,
+                    batch_size=int(cfg.dataset.batch_size),
                     drop_remainder=drop_remainder,
                 ),
             ],
@@ -524,16 +373,27 @@ def main(cfg: DictConfig):
     logger.info("Train DataLoader creation took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
+    eval_loader = make_loader(
+        eval_source,
+        shuffle=False,
+        drop_remainder=False,
+        seed=int(cfg.seed),
+    )
+    logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
+
+    _t = time.monotonic()
     sample_batch = next(iter(train_dataloader))
     logger.info("First batch fetch took %.1fs", time.monotonic() - _t)
-    if bool(cfg.overfit_single_batch):
-        logger.info("Overfit mode enabled: reusing the first sampled batch for training.")
 
     _t = time.monotonic()
     key = jax.random.key(cfg.seed)
     init_key, init_sample_key, train_key, eval_key = jax.random.split(key, num=4)
     model = instantiate(cfg.tokenizer)
-    params = model.init({"params": init_key, "sample": init_sample_key}, sample_batch)
+    params = model.init(
+        {"params": init_key, "sample": init_sample_key},
+        sample_batch,
+        method=Tokenizer.reconstruct,
+    )
     logger.info("Model init took %.1fs", time.monotonic() - _t)
 
     if cfg.lpips_weight > 0:
@@ -544,23 +404,34 @@ def main(cfg: DictConfig):
     _t = time.monotonic()
     optimizer = optax.adam(cfg.learning_rate)
     state = TokenizerTrainState.create(
-        apply_fn=model.apply,
-        params=params,
-        tx=optimizer,
-        mse_sq_ema=jnp.ones((), dtype=jnp.float32),
-        l1_sq_ema=jnp.ones((), dtype=jnp.float32),
-        lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
-        motion_sq_ema=jnp.ones((), dtype=jnp.float32),
+        model.apply,
+        params,
+        optimizer,
     )
     logger.info("TrainState creation took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
+    checkpoint_manager.save_metadata({"config": OmegaConf.to_container(cfg, resolve=False)})
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
-    train_iterator = None if bool(cfg.overfit_single_batch) else iter(train_dataloader)
+    train_iterator = iter(train_dataloader)
+
+    def save_checkpoint(step: int, force: bool = False) -> None:
+        checkpoint_manager.save(
+            step=step,
+            state=state,
+            extra_items=iterator_items(),
+            force=force,
+        )
+        save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
+        save_preprocessor_export(
+            checkpoint_manager.directory,
+            step,
+            preprocessor.export_config(),
+        )
 
     def iterator_items():
-        return None if train_iterator is None else {"train_iterator": train_iterator}
+        return {"train_iterator": train_iterator}
 
     resume_spec = cfg.checkpoint.resume_step
     resume_step = None
@@ -568,15 +439,20 @@ def main(cfg: DictConfig):
         if isinstance(resume_spec, str) and resume_spec.strip().lower() == "latest":
             resume_step = checkpoint_manager.latest_step()
             if resume_step is None:
-                logger.info("No tokenizer checkpoint found in %s; starting fresh.", checkpoint_manager.directory)
+                logger.info(
+                    "No tokenizer checkpoint found in %s; starting fresh.",
+                    checkpoint_manager.directory,
+                )
         else:
             resume_step = int(resume_spec)
 
     if resume_step is not None:
-        state = checkpoint_manager.restore(target=state, step=resume_step, extra_items=iterator_items())
+        state = checkpoint_manager.restore(
+            target=state, step=resume_step, extra_items=iterator_items()
+        )
         logger.info("Resumed tokenizer training from step %d", int(state.step))
 
-    step = int(state.step)
+    step = int(jax.device_get(state.step))
     logger.info("Tokenizer training target step: %d", total_steps)
 
     if step >= total_steps:
@@ -590,84 +466,78 @@ def main(cfg: DictConfig):
         wb.finish()
         return
 
-    t0 = time.monotonic()
+    timing_start_step = step
+    timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
+    logger.info(
+        "Asynchronous timing mode enabled for tokenizer training; timing logs are averaged "
+        "over each logging window."
+    )
     while True:
-        if bool(cfg.overfit_single_batch):
-            batch = sample_batch
-        else:
-            try:
-                batch = next(train_iterator)
-            except StopIteration:
-                train_iterator = iter(train_dataloader)
-                batch = next(train_iterator)
-        t1 = time.monotonic()
+        step_start = time.monotonic()
+        current_step = step
+        try:
+            batch = next(train_iterator)
+        except StopIteration:
+            train_iterator = iter(train_dataloader)
+            batch = next(train_iterator)
+        data_done = time.monotonic()
 
         batch = jax.device_put(batch)
-        t2 = time.monotonic()
+        transfer_done = time.monotonic()
 
-        sample_key = jax.random.fold_in(train_key, step)
         state, metrics = train_step(
             state,
             batch,
-            sample_key,
-            cfg.reconstruction_loss,
-            bool(cfg.motion_weighted_mse),
-            float(cfg.motion_reference),
-            float(cfg.motion_max_boost),
+            train_key,
+            current_step,
             cfg.lpips_weight,
-            cfg.motion_loss_weight,
-            bool(cfg.masked_mse),
-            patch_size=cfg.dataset.patch_size,
-            width_tokens=cfg.tokenizer.x_len,
-            height_tokens=cfg.tokenizer.y_len,
+            preprocessor,
         )
-        jax.block_until_ready(metrics)
-        t3 = time.monotonic()
+        train_dispatched = time.monotonic()
 
-        step = int(state.step)
+        step = current_step + 1
+        timing_data_time += data_done - step_start
+        timing_transfer_time += transfer_done - data_done
+        timing_dispatch_time += train_dispatched - transfer_done
+
+        timing_stats = None
+        if step % cfg.log_interval == 0:
+            timing_stats = log_train_timing(
+                wb,
+                step=step,
+                start_step=timing_start_step,
+                metrics=metrics,
+                data_time=timing_data_time,
+                transfer_time=timing_transfer_time,
+                dispatch_time=timing_dispatch_time,
+            )
+            timing_start_step = step
+            timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
             t_eval_start = time.monotonic()
             totals: dict[str, float] = {}
             num_batches = 0
-            eval_run_key = jax.random.fold_in(eval_key, step)
-            if bool(cfg.overfit_single_batch):
-                eval_batches = [sample_batch]
-            else:
-                eval_dataloader = make_loader(
-                    eval_source,
-                    shuffle=True,
-                    drop_remainder=False,
-                    seed=int(cfg.seed) + step,
-                )
-                eval_batches = itertools.islice(iter(eval_dataloader), cfg.dataset.eval.max_batches)
+            eval_batches = list(itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches))
             vis_original_batches = []
             vis_reconstruction_batches = []
             vis_masked_batches = []
             for batch_idx, eval_batch in enumerate(eval_batches):
-                eval_sample_key = jax.random.fold_in(eval_run_key, batch_idx)
                 batch_metrics, sampled_frames = eval_step(
                     state,
-                    eval_batch,
-                    eval_sample_key,
-                    cfg.reconstruction_loss,
-                    bool(cfg.motion_weighted_mse),
-                    float(cfg.motion_reference),
-                    float(cfg.motion_max_boost),
+                    jax.device_put(eval_batch),
+                    eval_key,
+                    step,
+                    batch_idx,
                     cfg.lpips_weight,
-                    cfg.motion_loss_weight,
-                    bool(cfg.masked_mse),
-                    patch_size=cfg.dataset.patch_size,
-                    width_tokens=cfg.tokenizer.x_len,
-                    height_tokens=cfg.tokenizer.y_len,
-                    pad_width=tuple(cfg.dataset.pad_width),
+                    preprocessor,
                 )
+                sampled_frames = jax.device_get(sampled_frames)
+                batch_metrics = jax.device_get(batch_metrics)
                 for k, v in batch_metrics.items():
                     totals[k] = totals.get(k, 0.0) + float(v)
-                sampled_originals, sampled_reconstructions, sampled_masked_inputs = jax.device_get(
-                    sampled_frames
-                )
+                sampled_originals, sampled_reconstructions, sampled_masked_inputs = sampled_frames
                 vis_original_batches.append(np.asarray(sampled_originals))
                 vis_reconstruction_batches.append(np.asarray(sampled_reconstructions))
                 vis_masked_batches.append(np.asarray(sampled_masked_inputs))
@@ -678,47 +548,44 @@ def main(cfg: DictConfig):
                     {f"eval/{k}": v for k, v in eval_metrics.items()},
                     step=step,
                 )
-                grid = build_reconstruction_grid(
-                    np.concatenate(vis_original_batches, axis=0),
-                    np.concatenate(vis_reconstruction_batches, axis=0),
-                    np.concatenate(vis_masked_batches, axis=0),
-                    frame_key=jax.random.fold_in(eval_run_key, num_batches),
-                    num_frames=int(cfg.dataset.eval.log_frames),
-                )
-                wb.log_image(
-                    "eval/reconstructions",
-                    grid,
-                    step=step,
-                    caption="Columns: original, reconstructed, masked input",
-                )
+                if vis_original_batches:
+                    grid = build_reconstruction_grid(
+                        np.concatenate(vis_original_batches, axis=0),
+                        np.concatenate(vis_reconstruction_batches, axis=0),
+                        np.concatenate(vis_masked_batches, axis=0),
+                        frame_seed=make_host_seed(cfg.seed, step, num_batches),
+                        num_frames=int(cfg.dataset.eval.log_frames),
+                    )
+                    wb.log_image(
+                        "eval/reconstructions",
+                        grid,
+                        step=step,
+                        caption="Columns: original, reconstructed, masked input",
+                    )
             t_eval = time.monotonic() - t_eval_start
-            logger.info("Eval at step %d — %d batches in %.3fs", step, num_batches, t_eval)
-
-        if step % cfg.log_interval == 0:
-            wb.log(
-                {k: float(v) for k, v in metrics.items()},
-                step=step,
-            )
+            logger.info("Eval at step %d - %d batches in %.3fs", step, num_batches, t_eval)
 
         if checkpoint_manager.should_save(step):
-            checkpoint_manager.save(step=step, state=state, extra_items=iterator_items())
+            save_checkpoint(step)
 
-        t4 = time.monotonic()
-        logger.info(
-            "Step %d — data: %.3fs, transfer: %.3fs, compute: %.3fs, overhead: %.3fs",
-            step,
-            t1 - t0,
-            t2 - t1,
-            t3 - t2,
-            t4 - t3 - t_eval,
-        )
+        if timing_stats is not None:
+            logger.info(
+                "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, compute: %.3fs, "
+                "wall: %.3fs, eval: %.3fs",
+                step,
+                timing_stats["sps"],
+                timing_stats["data_time"],
+                timing_stats["transfer_time"],
+                timing_stats["compute_time"],
+                timing_stats["wall_time"],
+                t_eval,
+            )
         if step >= total_steps:
             logger.info("Reached total_steps=%d; stopping tokenizer training.", total_steps)
             break
-        t0 = time.monotonic()
 
     if step >= total_steps and not checkpoint_manager.should_save(step):
-        checkpoint_manager.save(step=step, state=state, extra_items=iterator_items(), force=True)
+        save_checkpoint(step, force=True)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()

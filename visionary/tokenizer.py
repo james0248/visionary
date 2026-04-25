@@ -1,7 +1,6 @@
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-from einops import rearrange
 
 from visionary.dataset import VideoDataset
 from visionary.transformer import (
@@ -57,36 +56,6 @@ def build_rope_embeddings(
     return spatial_rope, temporal_rope
 
 
-def unpatchify_patches(
-    patches: jnp.ndarray,
-    patch_size: int,
-    x_len: int,
-    y_len: int,
-) -> jnp.ndarray:
-    return rearrange(
-        patches,
-        "b t (h w) (p1 p2 c) -> b t (h p1) (w p2) c",
-        h=y_len,
-        w=x_len,
-        p1=patch_size,
-        p2=patch_size,
-    )
-
-
-def trim_image_padding(
-    images: jnp.ndarray,
-    pad_width: tuple[int, int],
-) -> jnp.ndarray:
-    h_pad, w_pad = (int(v) for v in pad_width)
-    return images[
-        :,
-        :,
-        slice(h_pad, -h_pad if h_pad else None),
-        slice(w_pad, -w_pad if w_pad else None),
-        :,
-    ]
-
-
 class TokenizerEncoder(nn.Module):
     num_layers: int
     num_latents: int
@@ -101,8 +70,7 @@ class TokenizerEncoder(nn.Module):
     y_len: int
 
     base: float
-    bottleneck_norm: str = "tanh"
-    attention_logit_soft_cap: float | None = 50.0
+    temporal_layer_period: int = 4
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -151,7 +119,7 @@ class TokenizerEncoder(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
-            attention_logit_soft_cap=self.attention_logit_soft_cap,
+            temporal_layer_period=self.temporal_layer_period,
             dtype=self.dtype,
         )(
             x=x,
@@ -165,15 +133,7 @@ class TokenizerEncoder(nn.Module):
 
         latent = x[:, :, : self.num_latents, :]
         latent = nn.Dense(self.channel_dim, dtype=self.dtype)(latent)
-        if self.bottleneck_norm == "none":
-            pass
-        elif self.bottleneck_norm == "tanh":
-            latent = jnp.tanh(latent)
-        elif self.bottleneck_norm == "rmsnorm":
-            latent = nn.RMSNorm(dtype=self.dtype, name="bottleneck_rmsnorm")(latent)
-        else:
-            raise ValueError(f"Unknown bottleneck_norm: {self.bottleneck_norm}")
-        return latent
+        return nn.RMSNorm(dtype=self.dtype, name="bottleneck_rmsnorm")(latent)
 
 
 class TokenizerDecoder(nn.Module):
@@ -185,13 +145,11 @@ class TokenizerDecoder(nn.Module):
     model_dim: int
     head_dim: int
     mlp_hidden_dim: int
-    channel_dim: int
     x_len: int
     y_len: int
 
     base: float
-    single_image_token: bool = False
-    attention_logit_soft_cap: float | None = 50.0
+    temporal_layer_period: int = 4
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -201,17 +159,14 @@ class TokenizerDecoder(nn.Module):
         temporal_mask: jnp.ndarray,
         patch_dim: int,
     ) -> jnp.ndarray:
-        batch_size, seq_len, num_latents, _ = latent.shape
+        batch_size, seq_len, _, _ = latent.shape
         num_tokens = self.x_len * self.y_len
 
-        image_token_count = 1 if self.single_image_token else num_tokens
         image_tokens = self.param(
             "image_tokens",
             nn.initializers.normal(stddev=0.02),
-            (image_token_count, self.model_dim),
+            (num_tokens, self.model_dim),
         ).astype(self.dtype)
-        if self.single_image_token:
-            image_tokens = jnp.broadcast_to(image_tokens, (num_tokens, self.model_dim))
         image_tokens = jnp.broadcast_to(
             image_tokens, (batch_size, seq_len, num_tokens, self.model_dim)
         )
@@ -235,7 +190,7 @@ class TokenizerDecoder(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
-            attention_logit_soft_cap=self.attention_logit_soft_cap,
+            temporal_layer_period=self.temporal_layer_period,
             dtype=self.dtype,
         )(
             x=x,
@@ -262,17 +217,45 @@ class Tokenizer(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     channel_dim: int
-    x_len: int
-    y_len: int
+
+    patch_size: int
+    resize_shape: tuple[int, int]
+    pad_width: tuple[int, int]
 
     base: float
-    decoder_single_image_token: bool = False
-    bottleneck_norm: str = "tanh"
+    temporal_layer_period: int = 4
     independent_prob: float = 0.3
     mask_prob_min: float = 0.0
     mask_prob_max: float = 0.9
-    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
+
+    @property
+    def image_height(self) -> int:
+        return int(self.resize_shape[0])
+
+    @property
+    def image_width(self) -> int:
+        return int(self.resize_shape[1])
+
+    @property
+    def height_pad(self) -> int:
+        return int(self.pad_width[0])
+
+    @property
+    def width_pad(self) -> int:
+        return int(self.pad_width[1])
+
+    @property
+    def y_len(self) -> int:
+        return (self.image_height + 2 * self.height_pad) // int(self.patch_size)
+
+    @property
+    def x_len(self) -> int:
+        return (self.image_width + 2 * self.width_pad) // int(self.patch_size)
+
+    @property
+    def patch_dim(self) -> int:
+        return int(self.patch_size) * int(self.patch_size) * 3
 
     def setup(self):
         encoder_kwargs = dict(
@@ -280,6 +263,7 @@ class Tokenizer(nn.Module):
             num_latents=self.num_latents,
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
+            temporal_layer_period=self.temporal_layer_period,
             model_dim=self.model_dim,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
@@ -287,8 +271,6 @@ class Tokenizer(nn.Module):
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
-            bottleneck_norm=self.bottleneck_norm,
-            attention_logit_soft_cap=self.attention_logit_soft_cap,
             dtype=self.dtype,
         )
         decoder_kwargs = dict(
@@ -296,21 +278,17 @@ class Tokenizer(nn.Module):
             num_latents=self.num_latents,
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
+            temporal_layer_period=self.temporal_layer_period,
             model_dim=self.model_dim,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
-            channel_dim=self.channel_dim,
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
-            attention_logit_soft_cap=self.attention_logit_soft_cap,
             dtype=self.dtype,
         )
         self.encoder = TokenizerEncoder(**encoder_kwargs)
-        self.decoder = TokenizerDecoder(
-            **decoder_kwargs,
-            single_image_token=self.decoder_single_image_token,
-        )
+        self.decoder = TokenizerDecoder(**decoder_kwargs)
 
     def sample_independent(self, batch_size: int) -> jnp.ndarray:
         rng = self.make_rng("sample")
@@ -342,28 +320,7 @@ class Tokenizer(nn.Module):
         batch: VideoDataset,
         mask_prob: float | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
-
-        independent = self.sample_independent(batch_size)
-        mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=mask_prob)
-        temporal_mask = create_temporal_mask(independent, seq_len)
-
-        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-        latent = self.encoder(video, temporal_mask, mask=mask)
-        reconstructed = self.decoder(latent, temporal_mask, patch_dim)
-        return reconstructed, mask
-
-    def reconstruct_eval(self, batch: VideoDataset) -> tuple[jnp.ndarray, jnp.ndarray]:
-        batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
-
-        independent = jnp.zeros((batch_size,), dtype=bool)
-        mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=0.1)
-        temporal_mask = create_temporal_mask(independent, seq_len)
-
-        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
-        latent = self.encoder(video, temporal_mask, mask=mask)
-        reconstructed = self.decoder(latent, temporal_mask, patch_dim)
-        return reconstructed, mask
+        return self.reconstruct(batch, mask_prob=mask_prob)
 
     def encode(self, batch: VideoDataset) -> jnp.ndarray:
         batch_size, seq_len, _, _ = batch["video"].shape
@@ -371,17 +328,23 @@ class Tokenizer(nn.Module):
         video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
         return self.encoder(video, temporal_mask)
 
-    def decode(self, latent: jnp.ndarray, patch_dim: int) -> jnp.ndarray:
+    def decode(self, latent: jnp.ndarray) -> jnp.ndarray:
         batch_size, seq_len, _, _ = latent.shape
         temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
-        return self.decoder(latent, temporal_mask, patch_dim)
+        return self.decoder(latent, temporal_mask, self.patch_dim)
 
-    def decode_images(
+    def reconstruct(
         self,
-        latent: jnp.ndarray,
-        patch_size: int,
-        pad_width: tuple[int, int],
-    ) -> jnp.ndarray:
-        decoded = self.decode(latent, patch_size * patch_size * 3)
-        images = unpatchify_patches(decoded, patch_size, self.x_len, self.y_len)
-        return trim_image_padding(images, pad_width)
+        batch: VideoDataset,
+        mask_prob: float | None = None,
+        independent: jnp.ndarray | None = None,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
+        if independent is None:
+            independent = self.sample_independent(batch_size)
+        mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=mask_prob)
+        temporal_mask = create_temporal_mask(independent, seq_len)
+        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+        latent = self.encoder(video, temporal_mask, mask=mask)
+        reconstructed = self.decoder(latent, temporal_mask, patch_dim)
+        return reconstructed, mask

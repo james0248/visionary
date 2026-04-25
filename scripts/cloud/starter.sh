@@ -2,7 +2,21 @@
 
 set -euo pipefail
 
-LOG_PATH="/var/log/visionary-starter.log"
+resolve_log_path() {
+    local default_path="/var/log/visionary-starter.log"
+    local default_dir
+    default_dir="$(dirname "$default_path")"
+    if mkdir -p "$default_dir" 2>/dev/null && [[ -w "$default_dir" ]]; then
+        printf '%s\n' "$default_path"
+        return
+    fi
+
+    local tmp_dir="${TMPDIR:-/tmp}"
+    mkdir -p "$tmp_dir"
+    printf '%s\n' "${tmp_dir%/}/visionary-starter.log"
+}
+
+LOG_PATH="$(resolve_log_path)"
 mkdir -p "$(dirname "$LOG_PATH")"
 exec > >(tee -a "$LOG_PATH") 2>&1
 
