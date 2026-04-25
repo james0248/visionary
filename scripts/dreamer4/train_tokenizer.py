@@ -1,9 +1,7 @@
 import itertools
 import logging
 import time
-from contextlib import nullcontext
 from functools import lru_cache, partial
-from pathlib import Path
 
 import grain.python as grain
 import hydra
@@ -11,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from hydra.utils import instantiate, to_absolute_path
+from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 
 from visionary.common.checkpoint import (
@@ -38,15 +36,6 @@ LOSS_RMS_EPS = 1e-8
 def make_host_seed(*values: int) -> int:
     seed_sequence = np.random.SeedSequence([int(value) for value in values])
     return int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
-
-
-def block_until_ready(tree):
-    return jax.tree_util.tree_map(
-        lambda value: value.block_until_ready()
-        if hasattr(value, "block_until_ready")
-        else value,
-        tree,
-    )
 
 
 @lru_cache(maxsize=1)
@@ -274,7 +263,6 @@ def build_reconstruction_grid(
 
 @hydra.main(config_path="config", version_base=None)
 def main(cfg: DictConfig):
-    process_index = jax.process_index()
     logger.info(
         "JAX backend: %s device_count=%d devices=%s",
         jax.default_backend(),
@@ -434,52 +422,6 @@ def main(cfg: DictConfig):
     step = int(jax.device_get(state.step))
     logger.info("Tokenizer training target step: %d", total_steps)
 
-    profiling_cfg = cfg.get("profiling") or {}
-    profiler_enabled = bool(profiling_cfg.get("enabled", False))
-    profiler_active = False
-    profiler_start_step = 0
-    profiler_stop_step = 0
-    profiler_log_dir = None
-    profiler_create_perfetto_trace = False
-    if profiler_enabled:
-        configured_profiler_start_step = int(profiling_cfg.get("start_step", step))
-        profiler_start_step = max(configured_profiler_start_step, step)
-        profiler_num_steps = max(int(profiling_cfg.get("num_steps", cfg.log_interval)), 1)
-        profiler_stop_step = min(profiler_start_step + profiler_num_steps, total_steps)
-        if profiler_stop_step <= profiler_start_step:
-            profiler_enabled = False
-            logger.info(
-                "Profiling window [%d, %d) is empty at current step %d; skipping profiler.",
-                profiler_start_step,
-                profiler_stop_step,
-                step,
-            )
-        else:
-            profiler_root_dir = Path(
-                to_absolute_path(
-                    str(profiling_cfg.get("log_dir", "artifacts/dreamer4_tokenizer_profile"))
-                )
-            )
-            profiler_log_dir = profiler_root_dir / f"process_{process_index}"
-            profiler_log_dir.mkdir(parents=True, exist_ok=True)
-            profiler_create_perfetto_trace = bool(
-                profiling_cfg.get("create_perfetto_trace", True)
-            )
-            if profiler_start_step != configured_profiler_start_step:
-                logger.info(
-                    "Adjusted profiler start step from %d to %d because current step is %d.",
-                    configured_profiler_start_step,
-                    profiler_start_step,
-                    step,
-                )
-            logger.info(
-                "Profiler armed for steps [%d, %d) -> %s (create_perfetto_trace=%s)",
-                profiler_start_step,
-                profiler_stop_step,
-                profiler_log_dir,
-                profiler_create_perfetto_trace,
-            )
-
     if step >= total_steps:
         logger.info(
             "Current step %d is already at or above total_steps=%d; exiting.",
@@ -502,42 +444,25 @@ def main(cfg: DictConfig):
     while True:
         step_start = time.monotonic()
         current_step = step
-        if profiler_enabled and not profiler_active and current_step == profiler_start_step:
-            jax.profiler.start_trace(
-                profiler_log_dir.as_posix(),
-                create_perfetto_trace=profiler_create_perfetto_trace,
-            )
-            profiler_active = True
-            logger.info(
-                "Started JAX profiler trace at step %d -> %s",
-                current_step,
-                profiler_log_dir,
-            )
-        step_annotation = (
-            jax.profiler.StepTraceAnnotation("train", step_num=current_step)
-            if profiler_active
-            else nullcontext()
+        try:
+            batch = next(train_iterator)
+        except StopIteration:
+            train_iterator = iter(train_dataloader)
+            batch = next(train_iterator)
+        t1 = time.monotonic()
+
+        batch = jax.device_put(batch)
+        t2 = time.monotonic()
+
+        state, metrics = train_step(
+            state,
+            batch,
+            train_key,
+            current_step,
+            cfg.lpips_weight,
+            preprocessor,
         )
-        with step_annotation:
-            try:
-                batch = next(train_iterator)
-            except StopIteration:
-                train_iterator = iter(train_dataloader)
-                batch = next(train_iterator)
-            t1 = time.monotonic()
-
-            batch = jax.device_put(batch)
-            t2 = time.monotonic()
-
-            state, metrics = train_step(
-                state,
-                batch,
-                train_key,
-                current_step,
-                cfg.lpips_weight,
-                preprocessor,
-            )
-            t3 = time.monotonic()
+        t3 = time.monotonic()
 
         step = current_step + 1
         data_time = t1 - step_start
@@ -580,21 +505,6 @@ def main(cfg: DictConfig):
             train_window_data_time = 0.0
             train_window_transfer_time = 0.0
             train_window_dispatch_time = 0.0
-
-        if profiler_active and step >= profiler_stop_step:
-            profiler_sync_time = 0.0
-            if not should_log_console:
-                profiler_sync_start = time.monotonic()
-                block_until_ready(metrics)
-                profiler_sync_time = time.monotonic() - profiler_sync_start
-            jax.profiler.stop_trace()
-            profiler_active = False
-            logger.info(
-                "Stopped JAX profiler trace at step %d (final sync %.3fs) -> %s",
-                step,
-                profiler_sync_time,
-                profiler_log_dir,
-            )
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -666,10 +576,6 @@ def main(cfg: DictConfig):
             logger.info("Reached total_steps=%d; stopping tokenizer training.", total_steps)
             break
 
-    if profiler_active:
-        block_until_ready(state)
-        jax.profiler.stop_trace()
-        logger.info("Stopped JAX profiler trace during shutdown -> %s", profiler_log_dir)
     if step >= total_steps and not checkpoint_manager.should_save(step):
         save_checkpoint(step, force=True)
     checkpoint_manager.wait_until_finished()
