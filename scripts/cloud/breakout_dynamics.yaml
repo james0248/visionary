@@ -1,0 +1,76 @@
+project: visionary-491008
+exp_name: dynamics_l24
+checkpoint_dir: gs://visionary-exp/breakout/checkpoints/${exp_name}
+
+job:
+  name: breakout-dynamics
+  poll_interval_seconds: 60
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: refactor-and-perf
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/dreamer4/train_dynamics.py
+  config_name: breakout_dynamics
+  auto_resume: true
+  overrides:
+    - exp_name=${exp_name}
+    - dataset.train_dir=/mnt/data/train
+    - dataset.eval_dir=/mnt/data/eval
+    - checkpoint.manager.directory=${checkpoint_dir}
+    - total_steps=1000000
+
+markers:
+  complete_uri: ${checkpoint_dir}/_training_complete.json
+  failure_prefix: ${checkpoint_dir}/failures
+
+logs:
+  uri: ${checkpoint_dir}/_starter.log
+  archive_uri_prefix: ${checkpoint_dir}/logs
+  tail_lines: 120
+
+failure_policy:
+  mode: retry
+  max_retries: 3
+  retry_backoff_seconds: 30
+
+secrets:
+  wandb_secret: wandb-api-key
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: ${checkpoint_dir}/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
+# Choose one machine directly.
+# Runtime version is derived automatically from `family` unless overridden:
+# - v6e -> v2-alpha-tpuv6e
+# - v5e -> v2-alpha-tpuv5-lite
+# - v4  -> tpu-ubuntu2204-base
+#
+# Family / chip constraints from the current TRC inventory:
+# - v6e spot: regions europe-west4, us-east1; chips 1, 4, 8, 16, 32, 64
+# - v5e spot: regions europe-west4, us-central1; chips 1, 4, 8, 16, 32, 64
+# - v4 spot or on-demand: region us-central2; chips 4, 8, 16, 32
+machine:
+  family: v6e
+  chips: 1
+  region: us-east1
+  spot: true
+  data_disk:
+    source: projects/visionary-491008/zones/us-east1-d/disks/visionary-data-dynamics-ue1d
+    mode: read-only
+    mount_path: /mnt/data
