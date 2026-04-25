@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
-BRANCH="dynamics"
-TRAIN_FILE="scripts/dreamer4/train_tokenizer.py"
-DATA_DISK_SOURCE="projects/visionary-491008/zones/us-east1-d/disks/visionary-data-tokenizer-ue1d"
-CONFIG_NAME="breakout_tokenizer"
-EXP_NAME="breakout-tokenizer-debug"
+BRANCH="refactor-and-perf"
+TRAIN_FILE="scripts/dreamer4/train_dynamics.py"
+DATA_DISK_SOURCE="projects/visionary-491008/zones/us-east1-d/disks/visionary-data-dynamics-ue1d"
+CONFIG_NAME="breakout_dynamics"
+EXP_NAME="breakout-dynamics-debug"
 
 gcloud compute tpus queued-resources create "visionary-debug-v6e1" \
   --zone="us-east1-d" \
