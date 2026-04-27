@@ -23,6 +23,7 @@ from visionary.common.checkpoint import (
     CheckpointManager,
     restore_model_export_single_device,
     restore_preprocessor_export,
+    save_model_export,
 )
 from visionary.common.jax import fold_in_many, maybe_initialize_distributed
 from visionary.common.train_state import DynamicsTrainState
@@ -704,7 +705,9 @@ def main(cfg: DictConfig):
             logger.info("Eval at step %d - %d batches in %.3fs", step, num_batches, t_eval)
 
         if checkpoint_manager.should_save(step):
-            checkpoint_manager.save(step=step, state=to_host(state), extra_items=iterator_items())
+            host_state = to_host(state)
+            checkpoint_manager.save(step=step, state=host_state, extra_items=iterator_items())
+            save_model_export(checkpoint_manager.directory, step, cfg.dynamics, host_state.params)
 
         if timing_stats is not None:
             logger.info(
@@ -725,12 +728,14 @@ def main(cfg: DictConfig):
 
     multihost_utils.sync_global_devices("dynamics_train_complete")
     if step >= total_steps and not checkpoint_manager.should_save(step):
+        host_state = to_host(state)
         checkpoint_manager.save(
             step=step,
-            state=to_host(state),
+            state=host_state,
             extra_items=iterator_items(),
             force=True,
         )
+        save_model_export(checkpoint_manager.directory, step, cfg.dynamics, host_state.params)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()
