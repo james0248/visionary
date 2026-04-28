@@ -19,10 +19,10 @@
     ],
     "num_kv_heads": 2,
     "ownership": "browser_runtime",
-    "reason": "Cached ONNX graphs require inference-only temporal attention kernels. Do not treat the uncached dynamics graph as production browser success.",
+    "reason": null,
     "static_axes": true,
-    "status": "contract_only",
-    "target_frame_policy": "Do not commit or reuse target-frame cache entries across diffusion/sample iterations unless z_t, action_t, step_level_t, and signal_level_t are identical.",
+    "status": "available",
+    "target_frame_policy": "Use committed cache for attention on all sample iterations. Discard candidate cache for sample steps 0-2. Commit candidate cache only on sample step 3.",
     "temporal_blocks": 6,
     "tensors": {
       "cache_length": {
@@ -63,7 +63,7 @@
     "tokenizer_step": 1000000
   },
   "context_latents": null,
-  "created_at": "2026-04-28T12:19:00.988602+00:00",
+  "created_at": "2026-04-28T15:10:08.378493+00:00",
   "dynamics": {
     "context_length": 64,
     "max_step_size": 6,
@@ -172,6 +172,320 @@
         "max_rel_error": 0.04560260474681854,
         "mean_abs_error": 5.199181600801239e-07,
         "mean_rel_error": 5.454489837575238e-06,
+        "passed": true,
+        "rtol": 0.05
+      }
+    },
+    {
+      "external_data": [],
+      "inputs": {
+        "latent": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            1,
+            64,
+            16
+          ]
+        }
+      },
+      "name": "breakout_tokenizer_decoder_b1_t1",
+      "outputs": {
+        "patches": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            1,
+            192,
+            192
+          ]
+        }
+      },
+      "path": "breakout_tokenizer_decoder_b1_t1.onnx",
+      "production_browser_ready": true,
+      "sha256": "e9109f40813b3b6dd48498177ee8d5b3f89d77f9d8defb8caa39a59195c0ad85",
+      "validation": {
+        "atol": 0.05,
+        "max_abs_error": 2.0265579223632812e-06,
+        "max_rel_error": 3.9515395164489746,
+        "mean_abs_error": 5.040506323439331e-08,
+        "mean_rel_error": 0.0017923569539561868,
+        "passed": true,
+        "rtol": 0.05
+      }
+    },
+    {
+      "external_data": [],
+      "inputs": {
+        "actions": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            64
+          ]
+        },
+        "signal_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            64
+          ]
+        },
+        "step_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            64
+          ]
+        },
+        "z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            64,
+            32,
+            32
+          ]
+        }
+      },
+      "name": "breakout_dynamics_prefill_cached_b1_t64",
+      "outputs": {
+        "cache_length": {
+          "dtype": "int32",
+          "shape": [
+            1
+          ]
+        },
+        "k_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "pred_z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            64,
+            32,
+            32
+          ]
+        },
+        "v_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        }
+      },
+      "path": "breakout_dynamics_prefill_cached_b1_t64.onnx",
+      "production_browser_ready": true,
+      "sha256": "85a26ed847e1afe5b1c8492217aa3ac9711fbeac90f990005c04b7fd2bfa2626",
+      "validation": {
+        "atol": 0.05,
+        "outputs": {
+          "cache_length": {
+            "atol": 0.05,
+            "max_abs_error": 0.0,
+            "max_rel_error": 0.0,
+            "mean_abs_error": 0.0,
+            "mean_rel_error": 0.0,
+            "passed": true,
+            "rtol": 0.05
+          },
+          "k_cache": {
+            "atol": 0.05,
+            "max_abs_error": 1.0728836059570312e-05,
+            "max_rel_error": 1.1578947305679321,
+            "mean_abs_error": 6.141789299363154e-07,
+            "mean_rel_error": 6.00903331360314e-06,
+            "passed": true,
+            "rtol": 0.05
+          },
+          "pred_z": {
+            "atol": 0.05,
+            "max_abs_error": 7.569789886474609e-06,
+            "max_rel_error": 0.04560260474681854,
+            "mean_abs_error": 5.199181600801239e-07,
+            "mean_rel_error": 5.454489837575238e-06,
+            "passed": true,
+            "rtol": 0.05
+          },
+          "v_cache": {
+            "atol": 0.05,
+            "max_abs_error": 1.2755393981933594e-05,
+            "max_rel_error": 0.46371832489967346,
+            "mean_abs_error": 2.855717582406214e-07,
+            "mean_rel_error": 7.890738743299153e-06,
+            "passed": true,
+            "rtol": 0.05
+          }
+        },
+        "passed": true,
+        "rtol": 0.05
+      }
+    },
+    {
+      "external_data": [],
+      "inputs": {
+        "actions": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "cache_length": {
+          "dtype": "int32",
+          "shape": [
+            1
+          ]
+        },
+        "k_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "position_index": {
+          "dtype": "int32",
+          "shape": [
+            1
+          ]
+        },
+        "signal_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "step_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "v_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            1,
+            32,
+            32
+          ]
+        }
+      },
+      "name": "breakout_dynamics_step_cached_b1_t1",
+      "outputs": {
+        "candidate_cache_length": {
+          "dtype": "int32",
+          "shape": [
+            1
+          ]
+        },
+        "candidate_k_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "candidate_v_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "pred_z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            1,
+            32,
+            32
+          ]
+        }
+      },
+      "path": "breakout_dynamics_step_cached_b1_t1.onnx",
+      "production_browser_ready": true,
+      "sha256": "7416ce42029fe304599ebb1fc62d49a2fcaba14d9aef951c66b7484d29efab97",
+      "validation": {
+        "atol": 0.05,
+        "outputs": {
+          "candidate_cache_length": {
+            "atol": 0.05,
+            "max_abs_error": 0.0,
+            "max_rel_error": 0.0,
+            "mean_abs_error": 0.0,
+            "mean_rel_error": 0.0,
+            "passed": true,
+            "rtol": 0.05
+          },
+          "candidate_k_cache": {
+            "atol": 0.05,
+            "max_abs_error": 2.0623207092285156e-05,
+            "max_rel_error": 0.0071675414219498634,
+            "mean_abs_error": 1.1160941504329003e-08,
+            "mean_rel_error": 5.282834791842106e-08,
+            "passed": true,
+            "rtol": 0.05
+          },
+          "candidate_v_cache": {
+            "atol": 0.05,
+            "max_abs_error": 3.814697265625e-06,
+            "max_rel_error": 0.019690711051225662,
+            "mean_abs_error": 3.3237479435399564e-09,
+            "mean_rel_error": 7.642009336450428e-08,
+            "passed": true,
+            "rtol": 0.05
+          },
+          "pred_z": {
+            "atol": 0.05,
+            "max_abs_error": 8.344650268554688e-07,
+            "max_rel_error": 0.00041128083830699325,
+            "mean_abs_error": 1.976604835363105e-07,
+            "mean_rel_error": 1.679525325926079e-06,
+            "passed": true,
+            "rtol": 0.05
+          }
+        },
         "passed": true,
         "rtol": 0.05
       }

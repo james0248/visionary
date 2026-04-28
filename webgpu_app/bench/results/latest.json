@@ -1,0 +1,1012 @@
+{
+  "schema_version": 2,
+  "status": "passed",
+  "streaming_contract_status": "available",
+  "benchmark_modes": [
+    "cached_prefill",
+    "cached_step",
+    "streaming_frame"
+  ],
+  "config": {
+    "mode": "streaming",
+    "warmupRuns": 1,
+    "timedRuns": 8,
+    "requireHardwareGpu": true
+  },
+  "created_at": "2026-04-28T15:11:41.133Z",
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7727.15 Safari/537.36",
+  "platform": "Win32",
+  "ort_version": null,
+  "provider_options": {
+    "executionProviders": [
+      {
+        "name": "webgpu"
+      }
+    ],
+    "graphOptimizationLevel": "all"
+  },
+  "gpu": {
+    "vendor": "apple",
+    "architecture": "metal-3",
+    "device": "",
+    "description": "",
+    "features": [
+      "depth32float-stencil8",
+      "chromium-experimental-subgroup-matrix",
+      "rg11b10ufloat-renderable",
+      "bgra8unorm-storage",
+      "texture-formats-tier1",
+      "texture-compression-bc",
+      "dual-source-blending",
+      "core-features-and-limits",
+      "float32-filterable",
+      "indirect-first-instance",
+      "texture-compression-astc-sliced-3d",
+      "float32-blendable",
+      "texture-compression-astc",
+      "texture-compression-etc2",
+      "depth-clip-control",
+      "texture-compression-bc-sliced-3d",
+      "clip-distances",
+      "timestamp-query",
+      "texture-formats-tier2",
+      "shader-f16",
+      "primitive-index",
+      "texture-component-swizzle",
+      "subgroups"
+    ],
+    "limits": {}
+  },
+  "sampling": {
+    "sample_steps": 4,
+    "sample_step_level": 2,
+    "context_step_level": 5,
+    "context_tau_effective": 0.90625,
+    "generated_frames": 8
+  },
+  "cache_abi": {
+    "status": "available",
+    "ownership": "browser_runtime",
+    "target_frame_policy": "Use committed cache for attention on all sample iterations. Discard candidate cache for sample steps 0-2. Commit candidate cache only on sample step 3.",
+    "invalidation": [
+      "new_episode",
+      "checkpoint_or_config_change",
+      "context_latent_change",
+      "action_history_change",
+      "latent_history_change",
+      "context_tau_change",
+      "batch_order_change"
+    ],
+    "k_cache": {
+      "dtype": "float32",
+      "shape": [
+        6,
+        1,
+        36,
+        64,
+        2,
+        64
+      ]
+    },
+    "v_cache": {
+      "dtype": "float32",
+      "shape": [
+        6,
+        1,
+        36,
+        64,
+        2,
+        64
+      ]
+    },
+    "cache_length": {
+      "dtype": "int32",
+      "shape": [
+        1
+      ]
+    }
+  },
+  "manifest": {
+    "opset": 23,
+    "schema_version": 1,
+    "checkpoints": {
+      "dynamics_dir": "gs://visionary-exp/breakout/checkpoints/dynamics_l24",
+      "dynamics_step": 1000000,
+      "tokenizer_dir": "gs://visionary-exp/breakout/checkpoints/tokenizer_l8p8",
+      "tokenizer_step": 1000000
+    },
+    "axes_policy": {
+      "batch_size": 1,
+      "context_length": 64,
+      "seq_len": 64,
+      "static": true
+    },
+    "dynamics": {
+      "context_length": 64,
+      "max_step_size": 6,
+      "num_actions": 4,
+      "num_obs_tokens": 32,
+      "num_registers": 2,
+      "temporal_blocks": 6,
+      "token_dim": 32,
+      "total_tokens": 36
+    },
+    "tokenizer": {
+      "channel_dim": 16,
+      "num_latents": 64,
+      "pad_width": [
+        0,
+        0
+      ],
+      "patch_count": 192,
+      "patch_dim": 192,
+      "patch_size": 8,
+      "resize_shape": [
+        128,
+        96
+      ]
+    },
+    "exports": [
+      {
+        "name": "breakout_tokenizer_decoder_b1_t1",
+        "path": "breakout_tokenizer_decoder_b1_t1.onnx",
+        "sha256": "e9109f40813b3b6dd48498177ee8d5b3f89d77f9d8defb8caa39a59195c0ad85",
+        "external_data": [],
+        "inputs": {
+          "latent": {
+            "dtype": "float32",
+            "shape": [
+              1,
+              1,
+              64,
+              16
+            ]
+          }
+        },
+        "outputs": {
+          "patches": {
+            "dtype": "float32",
+            "shape": [
+              1,
+              1,
+              192,
+              192
+            ]
+          }
+        },
+        "production_browser_ready": true
+      },
+      {
+        "name": "breakout_dynamics_prefill_cached_b1_t64",
+        "path": "breakout_dynamics_prefill_cached_b1_t64.onnx",
+        "sha256": "85a26ed847e1afe5b1c8492217aa3ac9711fbeac90f990005c04b7fd2bfa2626",
+        "external_data": [],
+        "inputs": {
+          "actions": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              64
+            ]
+          },
+          "signal_levels": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              64
+            ]
+          },
+          "step_levels": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              64
+            ]
+          },
+          "z": {
+            "dtype": "float32",
+            "shape": [
+              1,
+              64,
+              32,
+              32
+            ]
+          }
+        },
+        "outputs": {
+          "cache_length": {
+            "dtype": "int32",
+            "shape": [
+              1
+            ]
+          },
+          "k_cache": {
+            "dtype": "float32",
+            "shape": [
+              6,
+              1,
+              36,
+              64,
+              2,
+              64
+            ]
+          },
+          "pred_z": {
+            "dtype": "float32",
+            "shape": [
+              1,
+              64,
+              32,
+              32
+            ]
+          },
+          "v_cache": {
+            "dtype": "float32",
+            "shape": [
+              6,
+              1,
+              36,
+              64,
+              2,
+              64
+            ]
+          }
+        },
+        "production_browser_ready": true
+      },
+      {
+        "name": "breakout_dynamics_step_cached_b1_t1",
+        "path": "breakout_dynamics_step_cached_b1_t1.onnx",
+        "sha256": "7416ce42029fe304599ebb1fc62d49a2fcaba14d9aef951c66b7484d29efab97",
+        "external_data": [],
+        "inputs": {
+          "actions": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              1
+            ]
+          },
+          "cache_length": {
+            "dtype": "int32",
+            "shape": [
+              1
+            ]
+          },
+          "k_cache": {
+            "dtype": "float32",
+            "shape": [
+              6,
+              1,
+              36,
+              64,
+              2,
+              64
+            ]
+          },
+          "position_index": {
+            "dtype": "int32",
+            "shape": [
+              1
+            ]
+          },
+          "signal_levels": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              1
+            ]
+          },
+          "step_levels": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              1
+            ]
+          },
+          "v_cache": {
+            "dtype": "float32",
+            "shape": [
+              6,
+              1,
+              36,
+              64,
+              2,
+              64
+            ]
+          },
+          "z": {
+            "dtype": "float32",
+            "shape": [
+              1,
+              1,
+              32,
+              32
+            ]
+          }
+        },
+        "outputs": {
+          "candidate_cache_length": {
+            "dtype": "int32",
+            "shape": [
+              1
+            ]
+          },
+          "candidate_k_cache": {
+            "dtype": "float32",
+            "shape": [
+              6,
+              1,
+              36,
+              64,
+              2,
+              64
+            ]
+          },
+          "candidate_v_cache": {
+            "dtype": "float32",
+            "shape": [
+              6,
+              1,
+              36,
+              64,
+              2,
+              64
+            ]
+          },
+          "pred_z": {
+            "dtype": "float32",
+            "shape": [
+              1,
+              1,
+              32,
+              32
+            ]
+          }
+        },
+        "production_browser_ready": true
+      }
+    ]
+  },
+  "results": [
+    {
+      "mode": "cached_prefill",
+      "artifact_role": "dynamics_prefill",
+      "name": "breakout_dynamics_prefill_cached_b1_t64",
+      "model_url": "/webgpu_app/assets/breakout_dynamics_prefill_cached_b1_t64.onnx",
+      "model_fetch_ms": 0.9850000143051147,
+      "model_bytes": 88918385,
+      "session_create_ms": 633.2549999952316,
+      "inputs": {
+        "actions": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            64
+          ]
+        },
+        "signal_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            64
+          ]
+        },
+        "step_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            64
+          ]
+        },
+        "z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            64,
+            32,
+            32
+          ]
+        }
+      },
+      "outputs": {
+        "cache_length": {
+          "dtype": "int32",
+          "shape": [
+            1
+          ]
+        },
+        "k_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "pred_z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            64,
+            32,
+            32
+          ]
+        },
+        "v_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        }
+      },
+      "timing": {
+        "prefill": {
+          "mean_ms": 1620.1999999284744,
+          "median_ms": 1620.1999999284744,
+          "p90_ms": 1620.1999999284744,
+          "p95_ms": 1620.1999999284744,
+          "min_ms": 1620.1999999284744,
+          "max_ms": 1620.1999999284744,
+          "stddev_ms": 0,
+          "throughput_hz": 0.617207752156614,
+          "samples_ms": [
+            1620.1999999284744
+          ]
+        }
+      },
+      "cache": {
+        "outputs": {
+          "k": "k_cache",
+          "v": "v_cache",
+          "length": "cache_length"
+        },
+        "k_cache": {
+          "dtype": "float32",
+          "dims": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ],
+          "min": -7.518139839172363,
+          "max": 9.354090690612793,
+          "mean": -0.023347937748510645
+        },
+        "v_cache": {
+          "dtype": "float32",
+          "dims": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ],
+          "min": -5.246253490447998,
+          "max": 5.507941246032715,
+          "mean": 0.003069726536456263
+        },
+        "cache_length": {
+          "dtype": "int32",
+          "dims": [
+            1
+          ],
+          "min": 64,
+          "max": 64,
+          "mean": 64
+        }
+      }
+    },
+    {
+      "mode": "cached_step",
+      "artifact_role": "dynamics_step",
+      "name": "breakout_dynamics_step_cached_b1_t1",
+      "model_url": "/webgpu_app/assets/breakout_dynamics_step_cached_b1_t1.onnx",
+      "model_fetch_ms": 2.5250000953674316,
+      "model_bytes": 88758873,
+      "session_create_ms": 387.085000038147,
+      "inputs": {
+        "actions": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "cache_length": {
+          "dtype": "int32",
+          "shape": [
+            1
+          ]
+        },
+        "k_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "position_index": {
+          "dtype": "int32",
+          "shape": [
+            1
+          ]
+        },
+        "signal_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "step_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            1
+          ]
+        },
+        "v_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            1,
+            32,
+            32
+          ]
+        }
+      },
+      "outputs": {
+        "candidate_cache_length": {
+          "dtype": "int32",
+          "shape": [
+            1
+          ]
+        },
+        "candidate_k_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "candidate_v_cache": {
+          "dtype": "float32",
+          "shape": [
+            6,
+            1,
+            36,
+            64,
+            2,
+            64
+          ]
+        },
+        "pred_z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            1,
+            32,
+            32
+          ]
+        }
+      },
+      "timing": {
+        "target_forward": {
+          "mean_ms": 251.37062500044703,
+          "median_ms": 250.2524999976158,
+          "p90_ms": 256.84700002670286,
+          "p95_ms": 257.52599999308586,
+          "min_ms": 246.59500002861023,
+          "max_ms": 258.15499997138977,
+          "stddev_ms": 3.5864425113024714,
+          "throughput_hz": 3.978189575644416,
+          "samples_ms": [
+            254.2150000333786,
+            247.71000003814697,
+            249.57500004768372,
+            246.81500005722046,
+            256.8200000524521,
+            248.28000009059906,
+            250.46000003814697,
+            246.59500002861023,
+            251.07999992370605,
+            248.6599999666214,
+            246.95500004291534,
+            252.92500007152557,
+            258.15499997138977,
+            249.45499992370605,
+            249.125,
+            249.57499992847443,
+            255.99500000476837,
+            249.52999997138977,
+            246.62999999523163,
+            248.31000006198883,
+            258.06499993801117,
+            253.08499991893768,
+            252.09999990463257,
+            252.62000000476837,
+            256.85000002384186,
+            247.52999997138977,
+            248.25499999523163,
+            254.2849999666214,
+            257.085000038147,
+            254.70000004768372,
+            250.04499995708466,
+            252.375
+          ]
+        },
+        "dynamics_frame": {
+          "mean_ms": 1005.4825000017881,
+          "median_ms": 1004.2325000166893,
+          "p90_ms": 1014.7044999599457,
+          "p95_ms": 1015.2872498631477,
+          "min_ms": 998.3150001764297,
+          "max_ms": 1015.8699997663498,
+          "stddev_ms": 6.212113581170905,
+          "throughput_hz": 0.994547393911104,
+          "samples_ms": [
+            998.3150001764297,
+            1002.1550002098083,
+            999.6200000047684,
+            1006.3099998235703,
+            1000.4650000333786,
+            1015.8699997663498,
+            1006.9199999570847,
+            1014.2050000429153
+          ]
+        }
+      },
+      "cache": {
+        "outputs": {
+          "k": "candidate_k_cache",
+          "v": "candidate_v_cache",
+          "length": "candidate_cache_length"
+        },
+        "commit_policy": "discard sample forwards 1-3; commit sample forward 4 once per frame"
+      },
+      "output": {
+        "dtype": "float32",
+        "dims": [
+          1,
+          1,
+          32,
+          32
+        ],
+        "min": -2.7260923385620117,
+        "max": 3.3075296878814697,
+        "mean": -0.08713278710274608
+      }
+    },
+    {
+      "mode": "streaming_frame",
+      "artifact_role": "demo_frame",
+      "name": "dreamer4_demo_streaming_frame",
+      "inputs": {
+        "context": {
+          "actions": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              64
+            ]
+          },
+          "signal_levels": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              64
+            ]
+          },
+          "step_levels": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              64
+            ]
+          },
+          "z": {
+            "dtype": "float32",
+            "shape": [
+              1,
+              64,
+              32,
+              32
+            ]
+          }
+        },
+        "step": {
+          "actions": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              1
+            ]
+          },
+          "cache_length": {
+            "dtype": "int32",
+            "shape": [
+              1
+            ]
+          },
+          "k_cache": {
+            "dtype": "float32",
+            "shape": [
+              6,
+              1,
+              36,
+              64,
+              2,
+              64
+            ]
+          },
+          "position_index": {
+            "dtype": "int32",
+            "shape": [
+              1
+            ]
+          },
+          "signal_levels": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              1
+            ]
+          },
+          "step_levels": {
+            "dtype": "int32",
+            "shape": [
+              1,
+              1
+            ]
+          },
+          "v_cache": {
+            "dtype": "float32",
+            "shape": [
+              6,
+              1,
+              36,
+              64,
+              2,
+              64
+            ]
+          },
+          "z": {
+            "dtype": "float32",
+            "shape": [
+              1,
+              1,
+              32,
+              32
+            ]
+          }
+        },
+        "decoder": {
+          "latent": {
+            "dtype": "float32",
+            "shape": [
+              1,
+              1,
+              64,
+              16
+            ]
+          }
+        }
+      },
+      "outputs": {
+        "pred_z_t": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            1,
+            32,
+            32
+          ]
+        },
+        "frame_t": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            1,
+            192,
+            192
+          ]
+        }
+      },
+      "timing": {
+        "target_forward": {
+          "mean_ms": 251.37062500044703,
+          "median_ms": 250.2524999976158,
+          "p90_ms": 256.84700002670286,
+          "p95_ms": 257.52599999308586,
+          "min_ms": 246.59500002861023,
+          "max_ms": 258.15499997138977,
+          "stddev_ms": 3.5864425113024714,
+          "throughput_hz": 3.978189575644416,
+          "samples_ms": [
+            254.2150000333786,
+            247.71000003814697,
+            249.57500004768372,
+            246.81500005722046,
+            256.8200000524521,
+            248.28000009059906,
+            250.46000003814697,
+            246.59500002861023,
+            251.07999992370605,
+            248.6599999666214,
+            246.95500004291534,
+            252.92500007152557,
+            258.15499997138977,
+            249.45499992370605,
+            249.125,
+            249.57499992847443,
+            255.99500000476837,
+            249.52999997138977,
+            246.62999999523163,
+            248.31000006198883,
+            258.06499993801117,
+            253.08499991893768,
+            252.09999990463257,
+            252.62000000476837,
+            256.85000002384186,
+            247.52999997138977,
+            248.25499999523163,
+            254.2849999666214,
+            257.085000038147,
+            254.70000004768372,
+            250.04499995708466,
+            252.375
+          ]
+        },
+        "dynamics_frame": {
+          "mean_ms": 1005.4825000017881,
+          "median_ms": 1004.2325000166893,
+          "p90_ms": 1014.7044999599457,
+          "p95_ms": 1015.2872498631477,
+          "min_ms": 998.3150001764297,
+          "max_ms": 1015.8699997663498,
+          "stddev_ms": 6.212113581170905,
+          "throughput_hz": 0.994547393911104,
+          "samples_ms": [
+            998.3150001764297,
+            1002.1550002098083,
+            999.6200000047684,
+            1006.3099998235703,
+            1000.4650000333786,
+            1015.8699997663498,
+            1006.9199999570847,
+            1014.2050000429153
+          ]
+        },
+        "decoder_frame": {
+          "mean_ms": 121.52687500417233,
+          "median_ms": 121.14499998092651,
+          "p90_ms": 123.321499979496,
+          "p95_ms": 124.09324999451637,
+          "min_ms": 118.93500006198883,
+          "max_ms": 124.86500000953674,
+          "stddev_ms": 1.6444906724003436,
+          "throughput_hz": 8.228632555273617,
+          "samples_ms": [
+            118.93500006198883,
+            124.86500000953674,
+            122.6599999666214,
+            121.26499998569489,
+            120.56499993801117,
+            122.23500001430511,
+            120.66500008106232,
+            121.02499997615814
+          ]
+        },
+        "cache_commit": {
+          "mean_ms": 0.0062499940395355225,
+          "median_ms": 0.004999995231628418,
+          "p90_ms": 0.012999987602233885,
+          "p95_ms": 0.016499984264373775,
+          "min_ms": 0,
+          "max_ms": 0.019999980926513672,
+          "stddev_ms": 0.005994783687064212,
+          "throughput_hz": 160000.15258803614,
+          "samples_ms": [
+            0.019999980926513672,
+            0.004999995231628418,
+            0.004999995231628418,
+            0.004999995231628418,
+            0.009999990463256836,
+            0,
+            0,
+            0.004999995231628418
+          ]
+        },
+        "pack_unpack": {
+          "mean_ms": 0.01000000536441803,
+          "median_ms": 0.009999990463256836,
+          "p90_ms": 0.014999985694885254,
+          "p95_ms": 0.014999985694885254,
+          "min_ms": 0.004999995231628418,
+          "max_ms": 0.014999985694885254,
+          "stddev_ms": 0.00353553053440467,
+          "throughput_hz": 99999.94635584849,
+          "samples_ms": [
+            0.014999985694885254,
+            0.009999990463256836,
+            0.004999995231628418,
+            0.014999985694885254,
+            0.009999990463256836,
+            0.009999990463256836,
+            0.004999995231628418,
+            0.010000109672546387
+          ]
+        },
+        "streaming_frame": {
+          "mean_ms": 1127.2049999833107,
+          "median_ms": 1127.4850000143051,
+          "p90_ms": 1136.243499994278,
+          "p95_ms": 1137.2567499876022,
+          "min_ms": 1117.5,
+          "max_ms": 1138.2699999809265,
+          "stddev_ms": 6.534975139815345,
+          "throughput_hz": 0.8871500747555289,
+          "samples_ms": [
+            1117.5,
+            1127.2450000047684,
+            1122.4799998998642,
+            1127.7849999666214,
+            1121.2599999904633,
+            1138.2699999809265,
+            1127.7250000238419,
+            1135.375
+          ]
+        },
+        "steady_state_ms_per_frame": 1127.2049999833107,
+        "steady_state_fps": 0.8871500747555289,
+        "cold_stream_ms_per_frame": 1329.72999997437
+      },
+      "cache": {
+        "commit_policy": "cache_length advances once per generated frame"
+      },
+      "output": {
+        "dtype": "float32",
+        "dims": [
+          1,
+          1,
+          192,
+          192
+        ],
+        "min": 1.3629667352257246e-23,
+        "max": 0.7937377691268921,
+        "mean": 0.14888064982721091
+      }
+    }
+  ]
+}

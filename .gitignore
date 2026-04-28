@@ -11,6 +11,11 @@ build/
 # uv
 .python-version
 
+# JavaScript
+node_modules/
+test-results/
+playwright-report/
+
 # IDE
 .idea/
 .vscode/

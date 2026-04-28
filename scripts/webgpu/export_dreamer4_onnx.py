@@ -17,6 +17,8 @@ from visionary.common.checkpoint import (
     restore_model_export_single_device,
 )
 from visionary.export.onnx_wrappers import (
+    apply_dynamics_cached_prefill,
+    apply_dynamics_cached_step,
     apply_dynamics_uncached,
     apply_tokenizer_decoder,
     dynamics_shapes,
@@ -25,7 +27,10 @@ from visionary.export.onnx_wrappers import (
 
 
 TOKENIZER_DECODER_NAME = "breakout_tokenizer_decoder_b1_t64"
+TOKENIZER_DECODER_STEP_NAME = "breakout_tokenizer_decoder_b1_t1"
 DYNAMICS_UNCACHED_NAME = "breakout_dynamics_b1_t64"
+DYNAMICS_CACHED_PREFILL_NAME = "breakout_dynamics_prefill_cached_b1_t64"
+DYNAMICS_CACHED_STEP_NAME = "breakout_dynamics_step_cached_b1_t1"
 MANIFEST_NAME = "breakout_onnx_manifest.json"
 
 
@@ -63,8 +68,8 @@ def parse_args() -> argparse.Namespace:
         "--export_cached",
         action="store_true",
         help=(
-            "Reserved for the required cached dynamics graphs. Currently fails with a "
-            "clear message until inference-only temporal KV kernels are implemented."
+            "Export cached dynamics prefill/step graphs and a single-frame decoder for "
+            "the browser demo benchmark."
         ),
     )
     return parser.parse_args()
@@ -219,11 +224,13 @@ def export_file_metadata(path: Path) -> dict[str, Any]:
     return metadata
 
 
-def cache_contract(dyn_shapes) -> dict[str, Any]:
+def cache_contract(dyn_shapes, *, available: bool) -> dict[str, Any]:
     cache_shape = list(dyn_shapes.cache)
     return {
-        "status": "contract_only",
-        "reason": (
+        "status": "available" if available else "contract_only",
+        "reason": None
+        if available
+        else (
             "Cached ONNX graphs require inference-only temporal attention kernels. "
             "Do not treat the uncached dynamics graph as production browser success."
         ),
@@ -249,19 +256,10 @@ def cache_contract(dyn_shapes) -> dict[str, Any]:
             "batch_order_change",
         ],
         "target_frame_policy": (
-            "Do not commit or reuse target-frame cache entries across diffusion/sample "
-            "iterations unless z_t, action_t, step_level_t, and signal_level_t are identical."
+            "Use committed cache for attention on all sample iterations. Discard candidate "
+            "cache for sample steps 0-2. Commit candidate cache only on sample step 3."
         ),
     }
-
-
-def export_cached_requested() -> None:
-    raise NotImplementedError(
-        "--export_cached was requested, but cached dynamics ONNX export requires "
-        "inference-only temporal KV attention kernels that are not yet implemented. "
-        "The current script emits the cache ABI in the manifest and exports the "
-        "uncached baseline for conversion/parity validation."
-    )
 
 
 def validate_single_output(
@@ -283,11 +281,36 @@ def validate_single_output(
     )
 
 
+def validate_outputs(
+    *,
+    path: Path,
+    feeds: dict[str, jax.Array],
+    expected: dict[str, jax.Array],
+    atol: float,
+    rtol: float,
+) -> dict[str, Any]:
+    ort_feeds = {name: np.asarray(jax.device_get(value)) for name, value in feeds.items()}
+    actual = run_ort(path, ort_feeds)
+    results = {
+        name: compare_arrays(
+            np.asarray(jax.device_get(expected_value)),
+            actual[name],
+            atol=atol,
+            rtol=rtol,
+        )
+        for name, expected_value in expected.items()
+    }
+    return {
+        "atol": atol,
+        "rtol": rtol,
+        "passed": all(result["passed"] for result in results.values()),
+        "outputs": results,
+    }
+
+
 def main() -> None:
     args = parse_args()
     require_static_phase1_args(args)
-    if args.export_cached:
-        export_cached_requested()
 
     tokenizer_step = resolve_model_export_step(args.tokenizer_dir, args.tokenizer_step)
     dynamics_step = resolve_model_export_step(args.dynamics_dir, args.dynamics_step)
@@ -327,11 +350,17 @@ def main() -> None:
     )
 
     decoder_path = args.out_dir / f"{TOKENIZER_DECODER_NAME}.onnx"
+    decoder_step_path = args.out_dir / f"{TOKENIZER_DECODER_STEP_NAME}.onnx"
     dynamics_path = args.out_dir / f"{DYNAMICS_UNCACHED_NAME}.onnx"
+    dynamics_prefill_path = args.out_dir / f"{DYNAMICS_CACHED_PREFILL_NAME}.onnx"
+    dynamics_step_path = args.out_dir / f"{DYNAMICS_CACHED_STEP_NAME}.onnx"
     manifest_path = args.out_dir / MANIFEST_NAME
     ensure_output(manifest_path, overwrite=args.overwrite)
 
     def decoder_fn(latent: jax.Array) -> jax.Array:
+        return apply_tokenizer_decoder(tokenizer_variables, tokenizer_cfg, latent)
+
+    def decoder_step_fn(latent: jax.Array) -> jax.Array:
         return apply_tokenizer_decoder(tokenizer_variables, tokenizer_cfg, latent)
 
     def dynamics_fn(
@@ -347,6 +376,44 @@ def main() -> None:
             actions,
             step_levels,
             signal_levels,
+        )
+
+    def dynamics_prefill_fn(
+        z: jax.Array,
+        actions: jax.Array,
+        step_levels: jax.Array,
+        signal_levels: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        return apply_dynamics_cached_prefill(
+            dynamics_variables,
+            dynamics_cfg,
+            z,
+            actions,
+            step_levels,
+            signal_levels,
+        )
+
+    def dynamics_step_fn(
+        z: jax.Array,
+        actions: jax.Array,
+        step_levels: jax.Array,
+        signal_levels: jax.Array,
+        position_index: jax.Array,
+        k_cache: jax.Array,
+        v_cache: jax.Array,
+        cache_length: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        return apply_dynamics_cached_step(
+            dynamics_variables,
+            dynamics_cfg,
+            z,
+            actions,
+            step_levels,
+            signal_levels,
+            position_index,
+            k_cache,
+            v_cache,
+            cache_length,
         )
 
     export_to_onnx(
@@ -375,9 +442,84 @@ def main() -> None:
         overwrite=args.overwrite,
     )
 
+    cached_inputs: dict[str, jax.Array] = {}
+    if args.export_cached:
+        cached_inputs = {
+            "latent_step": inputs["latent"][:, :1],
+            "z_step": inputs["z"][:, :1],
+            "actions_step": inputs["actions"][:, :1],
+            "step_levels_step": jnp.full(dyn_shapes.step_levels, 2, dtype=jnp.int32),
+            "signal_levels_step": jnp.zeros(dyn_shapes.step_levels, dtype=jnp.int32),
+            "position_index": jnp.asarray([dyn_shapes.context_length], dtype=jnp.int32),
+            "k_cache": jnp.zeros(dyn_shapes.cache, dtype=jnp.float32),
+            "v_cache": jnp.zeros(dyn_shapes.cache, dtype=jnp.float32),
+            "cache_length": jnp.asarray([dyn_shapes.context_length], dtype=jnp.int32),
+        }
+        export_to_onnx(
+            fn=decoder_step_fn,
+            inputs=(cached_inputs["latent_step"],),
+            output_path=decoder_step_path,
+            model_name=TOKENIZER_DECODER_STEP_NAME,
+            opset=args.opset,
+            input_names=("latent",),
+            output_names=("patches",),
+            overwrite=args.overwrite,
+        )
+        export_to_onnx(
+            fn=dynamics_prefill_fn,
+            inputs=(
+                inputs["z"],
+                inputs["actions"],
+                inputs["step_levels"],
+                inputs["signal_levels"],
+            ),
+            output_path=dynamics_prefill_path,
+            model_name=DYNAMICS_CACHED_PREFILL_NAME,
+            opset=args.opset,
+            input_names=("z", "actions", "step_levels", "signal_levels"),
+            output_names=("pred_z", "k_cache", "v_cache", "cache_length"),
+            overwrite=args.overwrite,
+        )
+        export_to_onnx(
+            fn=dynamics_step_fn,
+            inputs=(
+                cached_inputs["z_step"],
+                cached_inputs["actions_step"],
+                cached_inputs["step_levels_step"],
+                cached_inputs["signal_levels_step"],
+                cached_inputs["position_index"],
+                cached_inputs["k_cache"],
+                cached_inputs["v_cache"],
+                cached_inputs["cache_length"],
+            ),
+            output_path=dynamics_step_path,
+            model_name=DYNAMICS_CACHED_STEP_NAME,
+            opset=args.opset,
+            input_names=(
+                "z",
+                "actions",
+                "step_levels",
+                "signal_levels",
+                "position_index",
+                "k_cache",
+                "v_cache",
+                "cache_length",
+            ),
+            output_names=(
+                "pred_z",
+                "candidate_k_cache",
+                "candidate_v_cache",
+                "candidate_cache_length",
+            ),
+            overwrite=args.overwrite,
+        )
+
     validation = {
         TOKENIZER_DECODER_NAME: {"skipped": not args.validate},
         DYNAMICS_UNCACHED_NAME: {"skipped": not args.validate},
+        TOKENIZER_DECODER_STEP_NAME: {"skipped": not (args.validate and args.export_cached)},
+        DYNAMICS_CACHED_PREFILL_NAME: {"skipped": not (args.validate and args.export_cached)},
+        DYNAMICS_CACHED_STEP_NAME: {"skipped": not (args.validate and args.export_cached)},
     }
     if args.validate:
         validation[TOKENIZER_DECODER_NAME] = validate_single_output(
@@ -407,7 +549,75 @@ def main() -> None:
             rtol=args.rtol,
         )
 
-        failed = [name for name, result in validation.items() if not result.get("passed", False)]
+        if args.export_cached:
+            validation[TOKENIZER_DECODER_STEP_NAME] = validate_single_output(
+                path=decoder_step_path,
+                feeds={"latent": cached_inputs["latent_step"]},
+                output_name="patches",
+                expected=decoder_step_fn(cached_inputs["latent_step"]),
+                atol=args.atol,
+                rtol=args.rtol,
+            )
+            prefill_expected = dynamics_prefill_fn(
+                inputs["z"],
+                inputs["actions"],
+                inputs["step_levels"],
+                inputs["signal_levels"],
+            )
+            validation[DYNAMICS_CACHED_PREFILL_NAME] = validate_outputs(
+                path=dynamics_prefill_path,
+                feeds={
+                    "z": inputs["z"],
+                    "actions": inputs["actions"],
+                    "step_levels": inputs["step_levels"],
+                    "signal_levels": inputs["signal_levels"],
+                },
+                expected={
+                    "pred_z": prefill_expected[0],
+                    "k_cache": prefill_expected[1],
+                    "v_cache": prefill_expected[2],
+                    "cache_length": prefill_expected[3],
+                },
+                atol=args.atol,
+                rtol=args.rtol,
+            )
+            step_expected = dynamics_step_fn(
+                cached_inputs["z_step"],
+                cached_inputs["actions_step"],
+                cached_inputs["step_levels_step"],
+                cached_inputs["signal_levels_step"],
+                cached_inputs["position_index"],
+                cached_inputs["k_cache"],
+                cached_inputs["v_cache"],
+                cached_inputs["cache_length"],
+            )
+            validation[DYNAMICS_CACHED_STEP_NAME] = validate_outputs(
+                path=dynamics_step_path,
+                feeds={
+                    "z": cached_inputs["z_step"],
+                    "actions": cached_inputs["actions_step"],
+                    "step_levels": cached_inputs["step_levels_step"],
+                    "signal_levels": cached_inputs["signal_levels_step"],
+                    "position_index": cached_inputs["position_index"],
+                    "k_cache": cached_inputs["k_cache"],
+                    "v_cache": cached_inputs["v_cache"],
+                    "cache_length": cached_inputs["cache_length"],
+                },
+                expected={
+                    "pred_z": step_expected[0],
+                    "candidate_k_cache": step_expected[1],
+                    "candidate_v_cache": step_expected[2],
+                    "candidate_cache_length": step_expected[3],
+                },
+                atol=args.atol,
+                rtol=args.rtol,
+            )
+
+        failed = [
+            name
+            for name, result in validation.items()
+            if not result.get("skipped", False) and not result.get("passed", False)
+        ]
         if failed:
             raise AssertionError(f"ONNX validation failed for: {failed}")
 
@@ -422,6 +632,86 @@ def main() -> None:
 
     decoder_files = export_file_metadata(decoder_path)
     dynamics_files = export_file_metadata(dynamics_path)
+    decoder_step_files = export_file_metadata(decoder_step_path) if args.export_cached else None
+    dynamics_prefill_files = (
+        export_file_metadata(dynamics_prefill_path) if args.export_cached else None
+    )
+    dynamics_step_files = export_file_metadata(dynamics_step_path) if args.export_cached else None
+    exports = [
+        {
+            "name": TOKENIZER_DECODER_NAME,
+            **decoder_files,
+            "inputs": {"latent": tensor_spec("float32", tok_shapes.latent)},
+            "outputs": {"patches": tensor_spec("float32", tok_shapes.patches)},
+            "validation": validation[TOKENIZER_DECODER_NAME],
+        },
+        {
+            "name": DYNAMICS_UNCACHED_NAME,
+            **dynamics_files,
+            "inputs": {
+                "z": tensor_spec("float32", dyn_shapes.z),
+                "actions": tensor_spec("int32", dyn_shapes.levels),
+                "step_levels": tensor_spec("int32", dyn_shapes.levels),
+                "signal_levels": tensor_spec("int32", dyn_shapes.levels),
+            },
+            "outputs": {"pred_z": tensor_spec("float32", dyn_shapes.z)},
+            "validation": validation[DYNAMICS_UNCACHED_NAME],
+            "production_browser_ready": False,
+        },
+    ]
+    if args.export_cached:
+        exports.extend(
+            [
+                {
+                    "name": TOKENIZER_DECODER_STEP_NAME,
+                    **decoder_step_files,
+                    "inputs": {"latent": tensor_spec("float32", (args.batch_size, 1, tok_shapes.num_latents, tok_shapes.channel_dim))},
+                    "outputs": {"patches": tensor_spec("float32", (args.batch_size, 1, tok_shapes.patch_count, tok_shapes.patch_dim))},
+                    "validation": validation[TOKENIZER_DECODER_STEP_NAME],
+                    "production_browser_ready": True,
+                },
+                {
+                    "name": DYNAMICS_CACHED_PREFILL_NAME,
+                    **dynamics_prefill_files,
+                    "inputs": {
+                        "z": tensor_spec("float32", dyn_shapes.z),
+                        "actions": tensor_spec("int32", dyn_shapes.levels),
+                        "step_levels": tensor_spec("int32", dyn_shapes.levels),
+                        "signal_levels": tensor_spec("int32", dyn_shapes.levels),
+                    },
+                    "outputs": {
+                        "pred_z": tensor_spec("float32", dyn_shapes.z),
+                        "k_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "v_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "cache_length": tensor_spec("int32", (1,)),
+                    },
+                    "validation": validation[DYNAMICS_CACHED_PREFILL_NAME],
+                    "production_browser_ready": True,
+                },
+                {
+                    "name": DYNAMICS_CACHED_STEP_NAME,
+                    **dynamics_step_files,
+                    "inputs": {
+                        "z": tensor_spec("float32", dyn_shapes.step_z),
+                        "actions": tensor_spec("int32", dyn_shapes.step_levels),
+                        "step_levels": tensor_spec("int32", dyn_shapes.step_levels),
+                        "signal_levels": tensor_spec("int32", dyn_shapes.step_levels),
+                        "position_index": tensor_spec("int32", dyn_shapes.position_index),
+                        "k_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "v_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "cache_length": tensor_spec("int32", (1,)),
+                    },
+                    "outputs": {
+                        "pred_z": tensor_spec("float32", dyn_shapes.step_z),
+                        "candidate_k_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "candidate_v_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "candidate_cache_length": tensor_spec("int32", (1,)),
+                    },
+                    "validation": validation[DYNAMICS_CACHED_STEP_NAME],
+                    "production_browser_ready": True,
+                },
+            ]
+        )
     manifest = {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -464,35 +754,18 @@ def main() -> None:
             "temporal_blocks": dyn_shapes.temporal_blocks,
             "total_tokens": dyn_shapes.total_tokens,
         },
-        "exports": [
-            {
-                "name": TOKENIZER_DECODER_NAME,
-                **decoder_files,
-                "inputs": {"latent": tensor_spec("float32", tok_shapes.latent)},
-                "outputs": {"patches": tensor_spec("float32", tok_shapes.patches)},
-                "validation": validation[TOKENIZER_DECODER_NAME],
-            },
-            {
-                "name": DYNAMICS_UNCACHED_NAME,
-                **dynamics_files,
-                "inputs": {
-                    "z": tensor_spec("float32", dyn_shapes.z),
-                    "actions": tensor_spec("int32", dyn_shapes.levels),
-                    "step_levels": tensor_spec("int32", dyn_shapes.levels),
-                    "signal_levels": tensor_spec("int32", dyn_shapes.levels),
-                },
-                "outputs": {"pred_z": tensor_spec("float32", dyn_shapes.z)},
-                "validation": validation[DYNAMICS_UNCACHED_NAME],
-                "production_browser_ready": False,
-            },
-        ],
-        "cache_contract": cache_contract(dyn_shapes),
+        "exports": exports,
+        "cache_contract": cache_contract(dyn_shapes, available=args.export_cached),
     }
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(f"Wrote {decoder_path}")
     print(f"Wrote {dynamics_path}")
+    if args.export_cached:
+        print(f"Wrote {decoder_step_path}")
+        print(f"Wrote {dynamics_prefill_path}")
+        print(f"Wrote {dynamics_step_path}")
     print(f"Wrote {manifest_path}")
 
 

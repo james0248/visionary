@@ -1,0 +1,15 @@
+{
+  "type": "module",
+  "scripts": {
+    "benchmark:webgpu": "playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium",
+    "benchmark:webgpu:ci": "playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium && uv run python scripts/webgpu/check_webgpu_benchmark.py --result webgpu_app/bench/results/latest.json --baseline webgpu_app/bench/baselines/webgpu_benchmark_baseline.json",
+    "benchmark:webgpu:headless-smoke": "ALLOW_SOFTWARE_WEBGPU=1 PLAYWRIGHT_HEADLESS=1 playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium --grep @smoke",
+    "benchmark:webgpu:smoke": "playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium --grep @smoke"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.24.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1"
+  }
+}
