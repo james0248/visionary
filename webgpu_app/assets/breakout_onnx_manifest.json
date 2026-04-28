@@ -1,0 +1,203 @@
+{
+  "axes_policy": {
+    "batch_size": 1,
+    "context_length": 64,
+    "seq_len": 64,
+    "static": true
+  },
+  "cache_contract": {
+    "context_length": 64,
+    "head_dim": 64,
+    "invalidation": [
+      "new_episode",
+      "checkpoint_or_config_change",
+      "context_latent_change",
+      "action_history_change",
+      "latent_history_change",
+      "context_tau_change",
+      "batch_order_change"
+    ],
+    "num_kv_heads": 2,
+    "ownership": "browser_runtime",
+    "reason": "Cached ONNX graphs require inference-only temporal attention kernels. Do not treat the uncached dynamics graph as production browser success.",
+    "static_axes": true,
+    "status": "contract_only",
+    "target_frame_policy": "Do not commit or reuse target-frame cache entries across diffusion/sample iterations unless z_t, action_t, step_level_t, and signal_level_t are identical.",
+    "temporal_blocks": 6,
+    "tensors": {
+      "cache_length": {
+        "dtype": "int32",
+        "shape": [
+          1
+        ]
+      },
+      "k_cache": {
+        "dtype": "float32",
+        "shape": [
+          6,
+          1,
+          36,
+          64,
+          2,
+          64
+        ]
+      },
+      "v_cache": {
+        "dtype": "float32",
+        "shape": [
+          6,
+          1,
+          36,
+          64,
+          2,
+          64
+        ]
+      }
+    },
+    "total_tokens": 36
+  },
+  "checkpoints": {
+    "dynamics_dir": "gs://visionary-exp/breakout/checkpoints/dynamics_l24",
+    "dynamics_step": 1000000,
+    "tokenizer_dir": "gs://visionary-exp/breakout/checkpoints/tokenizer_l8p8",
+    "tokenizer_step": 1000000
+  },
+  "context_latents": null,
+  "created_at": "2026-04-28T12:19:00.988602+00:00",
+  "dynamics": {
+    "context_length": 64,
+    "max_step_size": 6,
+    "num_actions": 4,
+    "num_obs_tokens": 32,
+    "num_registers": 2,
+    "temporal_blocks": 6,
+    "token_dim": 32,
+    "total_tokens": 36
+  },
+  "exports": [
+    {
+      "external_data": [
+        {
+          "path": "breakout_tokenizer_decoder_b1_t64.onnx.data",
+          "sha256": "c4f523a76ab5560889018eecd5953fcf3c567493c6cb3ee701b58df15a8a5817"
+        }
+      ],
+      "inputs": {
+        "latent": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            64,
+            64,
+            16
+          ]
+        }
+      },
+      "name": "breakout_tokenizer_decoder_b1_t64",
+      "outputs": {
+        "patches": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            64,
+            192,
+            192
+          ]
+        }
+      },
+      "path": "breakout_tokenizer_decoder_b1_t64.onnx",
+      "sha256": "af781261669ecd98b34fb44725414d51b173f131b071c59eb15d2df357f8776c",
+      "validation": {
+        "atol": 0.05,
+        "max_abs_error": 1.2725591659545898e-05,
+        "max_rel_error": 6.13130521774292,
+        "mean_abs_error": 5.220992349563858e-08,
+        "mean_rel_error": 0.0025549991987645626,
+        "passed": true,
+        "rtol": 0.05
+      }
+    },
+    {
+      "external_data": [],
+      "inputs": {
+        "actions": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            64
+          ]
+        },
+        "signal_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            64
+          ]
+        },
+        "step_levels": {
+          "dtype": "int32",
+          "shape": [
+            1,
+            64
+          ]
+        },
+        "z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            64,
+            32,
+            32
+          ]
+        }
+      },
+      "name": "breakout_dynamics_b1_t64",
+      "outputs": {
+        "pred_z": {
+          "dtype": "float32",
+          "shape": [
+            1,
+            64,
+            32,
+            32
+          ]
+        }
+      },
+      "path": "breakout_dynamics_b1_t64.onnx",
+      "production_browser_ready": false,
+      "sha256": "49d06dbb1e4e6f0bc3d648514db198fba9e472fa4577aa4c5656f44d3032b64b",
+      "validation": {
+        "atol": 0.05,
+        "max_abs_error": 7.569789886474609e-06,
+        "max_rel_error": 0.04560260474681854,
+        "mean_abs_error": 5.199181600801239e-07,
+        "mean_rel_error": 5.454489837575238e-06,
+        "passed": true,
+        "rtol": 0.05
+      }
+    }
+  ],
+  "opset": 23,
+  "schema_version": 1,
+  "tokenizer": {
+    "channel_dim": 16,
+    "num_latents": 64,
+    "pad_width": [
+      0,
+      0
+    ],
+    "patch_count": 192,
+    "patch_dim": 192,
+    "patch_size": 8,
+    "resize_shape": [
+      128,
+      96
+    ]
+  },
+  "tool_versions": {
+    "jax": "0.9.1",
+    "jax2onnx": "unknown",
+    "onnx": "1.21.0",
+    "onnxruntime": "1.25.0"
+  }
+}
