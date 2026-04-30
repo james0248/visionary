@@ -147,6 +147,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--keep_quickgelu",
+        action="store_true",
+        help=(
+            "Keep ORT-fused QuickGelu nodes after float16 conversion instead of "
+            "rewriting them to Mul/Sigmoid/Mul. This is experimental because some "
+            "ORT WebGPU versions fail to compile FP16 QuickGelu shaders."
+        ),
+    )
+    parser.add_argument(
         "--fused_temporal_gqa",
         action="store_true",
         help=(
@@ -2777,8 +2786,11 @@ def main() -> None:
     }
     quickgelu_decomposition = {
         name: decompose_quickgelu_for_fp16_webgpu(path)
-        if name in float16_export_names
-        else {"enabled": False, "reason": "--float16 not set"}
+        if name in float16_export_names and not args.keep_quickgelu
+        else {
+            "enabled": False,
+            "reason": "--keep_quickgelu set" if name in float16_export_names else "--float16 not set",
+        }
         for name, path in exported_paths.items()
     }
     value_info_strip = {

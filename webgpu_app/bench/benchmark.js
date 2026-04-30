@@ -21,6 +21,7 @@ const DEFAULT_CONFIG = {
   profilingTopK: 20,
   debugStats: false,
   graphCapture: false,
+  stepArtifact: null,
 };
 const REQUIRED_ARTIFACTS = {
   prefill: ['breakout_dynamics_prefill_cached_b1_t64', 'breakout_dynamics_prefill_layer_cached_b1_t64'],
@@ -56,6 +57,7 @@ function parseConfig() {
     profilingTopK: Number(params.get('profilingTopK') ?? DEFAULT_CONFIG.profilingTopK),
     debugStats: (params.get('debugStats') ?? String(DEFAULT_CONFIG.debugStats)) === 'true',
     graphCapture: (params.get('graphCapture') ?? String(DEFAULT_CONFIG.graphCapture)) === 'true',
+    stepArtifact: params.get('stepArtifact') ?? DEFAULT_CONFIG.stepArtifact,
   };
 }
 
@@ -624,11 +626,14 @@ function findSpec(exportsByName, names) {
   return null;
 }
 
-function resolveDemoSpecs(manifest) {
+function resolveDemoSpecs(manifest, config = DEFAULT_CONFIG) {
   const exportsByName = byExportName(manifest);
+  const stepNames = config.stepArtifact
+    ? [config.stepArtifact, ...REQUIRED_ARTIFACTS.step]
+    : REQUIRED_ARTIFACTS.step;
   return {
     prefill: findSpec(exportsByName, REQUIRED_ARTIFACTS.prefill),
-    step: findSpec(exportsByName, REQUIRED_ARTIFACTS.step),
+    step: findSpec(exportsByName, stepNames),
     decoder: findSpec(exportsByName, REQUIRED_ARTIFACTS.decoder),
   };
 }
@@ -1509,7 +1514,7 @@ async function runBenchmark() {
   }
   const profiler = createProfilingCollector({ config, gpu });
 
-  const specs = resolveDemoSpecs(manifest);
+  const specs = resolveDemoSpecs(manifest, config);
   const missing = missingDemoArtifacts(specs);
   if (missing.length > 0 || manifest.cache_contract?.status === 'contract_only') {
     return blockedResult({ config, manifest, gpu, missing, profiler });
