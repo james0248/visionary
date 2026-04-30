@@ -1,5 +1,7 @@
 from contextlib import contextmanager
+from functools import partial
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import jax
@@ -14,7 +16,7 @@ import visionary.tokenizer as tokenizer_module
 import visionary.transformer as transformer_module
 from visionary.dynamics import DynamicsModel
 from visionary.tokenizer import Tokenizer
-from visionary.transformer import SwiGLU, TransformerBlock, apply_rotary_embedding
+from visionary.transformer import SwiGLU, apply_rotary_embedding
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,16 @@ class DynamicsShapes:
     def cache(self) -> tuple[int, int, int, int, int, int]:
         return (
             self.temporal_blocks,
+            self.batch_size,
+            self.total_tokens,
+            self.context_length,
+            self.num_kv_heads,
+            self.head_dim,
+        )
+
+    @property
+    def layer_cache(self) -> tuple[int, int, int, int, int]:
+        return (
             self.batch_size,
             self.total_tokens,
             self.context_length,
@@ -164,6 +176,27 @@ def unpack_dynamics_latents(
     return rearrange(z, "b t n (k d) -> b t (n k) d", d=latent_dim)
 
 
+def validate_sample_steps(sample_steps: int) -> int:
+    sample_steps = int(sample_steps)
+    if sample_steps <= 0 or sample_steps & (sample_steps - 1):
+        raise ValueError(f"sample_steps must be a positive power of two, got {sample_steps}.")
+    return int(round(math.log2(sample_steps)))
+
+
+def flow_update_z(
+    current_z: jnp.ndarray,
+    pred_z: jnp.ndarray,
+    *,
+    signal_level: int,
+    sample_steps: int,
+) -> jnp.ndarray:
+    tau = jnp.asarray(signal_level / sample_steps, dtype=jnp.float32)
+    step_size = jnp.asarray(1.0 / sample_steps, dtype=jnp.float32)
+    denom = jnp.maximum(1.0 - tau, 1e-6)
+    velocity = (pred_z.astype(jnp.float32) - current_z.astype(jnp.float32)) / denom
+    return current_z.astype(jnp.float32) + velocity * step_size
+
+
 def _export_dot_product_attention(
     query: jnp.ndarray,
     key: jnp.ndarray,
@@ -173,6 +206,7 @@ def _export_dot_product_attention(
     mask: jnp.ndarray | None = None,
     scale: float | jnp.ndarray | None = None,
     is_causal: bool = False,
+    grouped_gqa: bool = False,
     **_kwargs: Any,
 ) -> jnp.ndarray:
     if bias is not None:
@@ -180,28 +214,128 @@ def _export_dot_product_attention(
     if is_causal:
         raise NotImplementedError("Export attention wrapper expects explicit masks, not is_causal.")
 
-    num_heads = query.shape[-2]
-    num_kv_heads = key.shape[-2]
+    num_heads = int(query.shape[-2])
+    num_kv_heads = int(key.shape[-2])
     if num_heads % num_kv_heads != 0:
         raise ValueError(
             f"num_heads must be divisible by num_kv_heads, got {num_heads=} {num_kv_heads=}."
         )
-    if num_heads != num_kv_heads:
-        repeat = num_heads // num_kv_heads
-        key = jnp.repeat(key, repeat, axis=-2)
-        value = jnp.repeat(value, repeat, axis=-2)
 
     if scale is None:
         scale = jnp.asarray(1.0 / (query.shape[-1] ** 0.5), dtype=query.dtype)
     else:
         scale = jnp.asarray(scale, dtype=query.dtype)
 
-    logits = jnp.einsum("bqhd,bkhd->bhqk", query, key) * scale
+    if num_heads == num_kv_heads:
+        logits = (jnp.einsum("bqhd,bkhd->bhqk", query, key) * scale).astype(jnp.float32)
+        if mask is not None:
+            mask = mask.astype(logits.dtype)
+            logits = logits + (1.0 - mask) * jnp.asarray(-1.0e9, dtype=logits.dtype)
+        weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+        return jnp.einsum("bhqk,bkhd->bqhd", weights, value)
+
+    repeat = num_heads // num_kv_heads
+    if grouped_gqa:
+        batch_size, query_length, _, head_dim = query.shape
+        key_length = key.shape[1]
+        query = rearrange(query, "b q (kv r) d -> b kv r q d", kv=num_kv_heads, r=repeat)
+        key = rearrange(key, "b s kv d -> b kv d s")
+        key = jnp.broadcast_to(
+            key[:, :, None, :, :],
+            (batch_size, num_kv_heads, repeat, head_dim, key_length),
+        )
+        query = rearrange(query, "b kv r q d -> (b kv r) q d")
+        key = rearrange(key, "b kv r d s -> (b kv r) d s")
+        logits = (jnp.matmul(query, key) * scale).astype(jnp.float32)
+        logits = rearrange(
+            logits,
+            "(b kv r) q s -> b kv r q s",
+            b=batch_size,
+            kv=num_kv_heads,
+            r=repeat,
+        )
+        if mask is not None:
+            mask = mask.astype(logits.dtype)
+            if mask.ndim == 2:
+                mask = mask[None, None, None, :, :]
+            elif mask.ndim == 3:
+                mask = mask[:, None, None, :, :]
+            elif mask.ndim == 4:
+                mask = mask[:, :, None, :, :]
+            elif mask.ndim != 5:
+                raise ValueError(f"Unsupported attention mask rank for grouped GQA: {mask.ndim}.")
+            logits = logits + (1.0 - mask) * jnp.asarray(-1.0e9, dtype=logits.dtype)
+        weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+        value = rearrange(value, "b s kv d -> b kv s d")
+        value = jnp.broadcast_to(
+            value[:, :, None, :, :],
+            (batch_size, num_kv_heads, repeat, key_length, head_dim),
+        )
+        weights = rearrange(weights, "b kv r q s -> (b kv r) q s")
+        value = rearrange(value, "b kv r s d -> (b kv r) s d")
+        out = jnp.matmul(weights, value)
+        return rearrange(
+            out,
+            "(b kv r) q d -> b q (kv r) d",
+            b=batch_size,
+            kv=num_kv_heads,
+            r=repeat,
+        )
+
+    key = jnp.repeat(key, repeat, axis=-2)
+    value = jnp.repeat(value, repeat, axis=-2)
+
+    logits = (jnp.einsum("bqhd,bkhd->bhqk", query, key) * scale).astype(jnp.float32)
     if mask is not None:
         mask = mask.astype(logits.dtype)
         logits = logits + (1.0 - mask) * jnp.asarray(-1.0e9, dtype=logits.dtype)
     weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
     return jnp.einsum("bhqk,bkhd->bqhd", weights, value)
+
+
+def _attention_for_export(
+    query: jnp.ndarray,
+    key: jnp.ndarray,
+    value: jnp.ndarray,
+    *,
+    mask: jnp.ndarray | None = None,
+    scale: float | jnp.ndarray | None = None,
+    grouped_gqa: bool = False,
+) -> jnp.ndarray:
+    return jax.nn.dot_product_attention(
+        query,
+        key,
+        value,
+        mask=mask,
+        scale=scale,
+        grouped_gqa=grouped_gqa,
+    )
+
+
+def _native_dot_product_attention_for_export(
+    original_attention: Any,
+    query: jnp.ndarray,
+    key: jnp.ndarray,
+    value: jnp.ndarray,
+    *,
+    bias: jnp.ndarray | None = None,
+    mask: jnp.ndarray | None = None,
+    scale: float | jnp.ndarray | None = None,
+    is_causal: bool = False,
+    **kwargs: Any,
+) -> jnp.ndarray:
+    if scale is not None and not isinstance(scale, float | int):
+        scale = float(1.0 / (query.shape[-1] ** 0.5))
+    return original_attention(
+        query,
+        key,
+        value,
+        bias=bias,
+        mask=mask,
+        scale=scale,
+        is_causal=is_causal,
+        **kwargs,
+    )
 
 
 def _export_create_temporal_rope(
@@ -244,12 +378,181 @@ def _export_create_temporal_mask(independent: jnp.ndarray, t: int) -> jnp.ndarra
     return jnp.broadcast_to(causal[None], (independent.shape[0], t, t))
 
 
+class _ExportRMSNorm(nn.Module):
+    dtype: jnp.dtype = jnp.bfloat16
+    epsilon: float = 1.0e-6
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        scale = self.param("scale", nn.initializers.ones, (x.shape[-1],))
+        x_f32 = x.astype(jnp.float32)
+        variance = jnp.mean(jnp.square(x_f32), axis=-1, keepdims=True)
+        y = x_f32 * jax.lax.rsqrt(variance + jnp.asarray(self.epsilon, dtype=jnp.float32))
+        y = y * scale.astype(jnp.float32)
+        return y.astype(self.dtype)
+
+
+class _ExportAttention(nn.Module):
+    model_dim: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    attention_logit_soft_cap: float | None = 50.0
+    dtype: jnp.dtype = jnp.bfloat16
+    grouped_gqa: bool = False
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        rope_emb: tuple[jnp.ndarray, jnp.ndarray] | None = None,
+        mask: jnp.ndarray | None = None,
+    ) -> jnp.ndarray:
+        q = nn.Dense(self.num_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+        k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+        v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+
+        q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
+        k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
+        v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
+
+        q = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(q)
+        k = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_1")(k)
+
+        if rope_emb is not None:
+            q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
+            k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
+
+        out = _attention_for_export(
+            q,
+            k,
+            v,
+            mask=mask,
+            scale=1.0 / jnp.sqrt(self.head_dim),
+            grouped_gqa=self.grouped_gqa,
+        )
+        out = rearrange(out, "b t h d -> b t (h d)")
+        out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
+        return out
+
+
+class _ExportTransformerBlock(nn.Module):
+    model_dim: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    mlp_hidden_dim: int
+    attention_logit_soft_cap: float | None = 50.0
+    dtype: jnp.dtype = jnp.bfloat16
+    grouped_gqa: bool = False
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        mask: jnp.ndarray,
+    ) -> jnp.ndarray:
+        residual = x
+        x = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(x)
+        x = residual + _ExportAttention(
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            attention_logit_soft_cap=self.attention_logit_soft_cap,
+            dtype=self.dtype,
+            grouped_gqa=self.grouped_gqa,
+            name="Attention_0",
+        )(x, rope_emb, mask)
+
+        residual = x
+        x = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_1")(x)
+        x = residual + SwiGLU(self.mlp_hidden_dim, dtype=self.dtype)(x)
+        return x
+
+
+class _ExportSpatioTemporalTransformer(nn.Module):
+    num_layers: int
+    model_dim: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    mlp_hidden_dim: int
+    temporal_layer_period: int = 4
+    attention_logit_soft_cap: float | None = 50.0
+    dtype: jnp.dtype = jnp.bfloat16
+    grouped_gqa: bool = False
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        t: int,
+        total_tokens: int,
+        spatial_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        spatial_mask: jnp.ndarray,
+        temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        temporal_mask: jnp.ndarray,
+    ) -> jnp.ndarray:
+        if self.num_layers % self.temporal_layer_period != 0:
+            raise ValueError(
+                "num_layers must be divisible by temporal_layer_period, "
+                f"got num_layers={self.num_layers} and "
+                f"temporal_layer_period={self.temporal_layer_period}"
+            )
+
+        batch_size = x.shape[0]
+        temporal_mask = jnp.repeat(temporal_mask, total_tokens, axis=0)[:, None, :, :]
+
+        block_idx = 0
+        num_groups = self.num_layers // self.temporal_layer_period
+        for _ in range(num_groups):
+            x = rearrange(x, "b t n d -> (b t) n d")
+            for _ in range(self.temporal_layer_period - 1):
+                x = _ExportTransformerBlock(
+                    model_dim=self.model_dim,
+                    num_heads=self.num_heads,
+                    num_kv_heads=self.num_kv_heads,
+                    head_dim=self.head_dim,
+                    mlp_hidden_dim=self.mlp_hidden_dim,
+                    attention_logit_soft_cap=self.attention_logit_soft_cap,
+                    dtype=self.dtype,
+                    grouped_gqa=self.grouped_gqa,
+                    name=f"TransformerBlock_{block_idx}",
+                )(x, spatial_rope_emb, spatial_mask)
+                block_idx += 1
+            x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=t)
+
+            x = rearrange(x, "b t n d -> (b n) t d")
+            x = _ExportTransformerBlock(
+                model_dim=self.model_dim,
+                num_heads=self.num_heads,
+                num_kv_heads=self.num_kv_heads,
+                head_dim=self.head_dim,
+                mlp_hidden_dim=self.mlp_hidden_dim,
+                attention_logit_soft_cap=self.attention_logit_soft_cap,
+                dtype=self.dtype,
+                grouped_gqa=self.grouped_gqa,
+                name=f"TransformerBlock_{block_idx}",
+            )(x, temporal_rope_emb, temporal_mask)
+            block_idx += 1
+            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+
+        return x
+
+
+_ExportSpatioTemporalTransformer.__name__ = "SpatioTemporalTransformer"
+_ExportSpatioTemporalTransformer.__qualname__ = "SpatioTemporalTransformer"
+
+
 class _CachedTemporalAttention(nn.Module):
     model_dim: int
     num_heads: int
     num_kv_heads: int
     head_dim: int
     dtype: jnp.dtype = jnp.bfloat16
+    grouped_gqa: bool = False
 
     @nn.compact
     def __call__(
@@ -266,18 +569,19 @@ class _CachedTemporalAttention(nn.Module):
         k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
         v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
 
-        q = nn.RMSNorm(dtype=self.dtype)(q)
-        k = nn.RMSNorm(dtype=self.dtype)(k)
+        q = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(q)
+        k = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_1")(k)
 
         q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
         k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
 
-        out = _export_dot_product_attention(
+        out = _attention_for_export(
             q,
             k,
             v,
             mask=mask,
             scale=1.0 / jnp.sqrt(self.head_dim),
+            grouped_gqa=self.grouped_gqa,
         )
         out = rearrange(out, "b t h d -> b t (h d)")
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
@@ -291,6 +595,7 @@ class _CachedTemporalStepAttention(nn.Module):
     head_dim: int
     context_length: int
     dtype: jnp.dtype = jnp.bfloat16
+    grouped_gqa: bool = False
 
     @nn.compact
     def __call__(
@@ -309,8 +614,8 @@ class _CachedTemporalStepAttention(nn.Module):
         k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
         v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
 
-        q = nn.RMSNorm(dtype=self.dtype)(q)
-        k = nn.RMSNorm(dtype=self.dtype)(k)
+        q = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(q)
+        k = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_1")(k)
 
         q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
         k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
@@ -321,12 +626,13 @@ class _CachedTemporalStepAttention(nn.Module):
         valid = cache_positions < (cache_length[0] + 1)
         mask = valid[None, None, None, :]
 
-        out = _export_dot_product_attention(
+        out = _attention_for_export(
             q,
             keys,
             values,
             mask=mask,
             scale=1.0 / jnp.sqrt(self.head_dim),
+            grouped_gqa=self.grouped_gqa,
         )
         out = rearrange(out, "b t h d -> b t (h d)")
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
@@ -340,6 +646,7 @@ class _CachedPrefillTransformerBlock(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     dtype: jnp.dtype = jnp.bfloat16
+    grouped_gqa: bool = False
 
     @nn.compact
     def __call__(
@@ -349,19 +656,20 @@ class _CachedPrefillTransformerBlock(nn.Module):
         mask: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         residual = x
-        x = nn.RMSNorm(dtype=self.dtype)(x)
+        x = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(x)
         attn_out, k, v = _CachedTemporalAttention(
             model_dim=self.model_dim,
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             dtype=self.dtype,
+            grouped_gqa=self.grouped_gqa,
             name="Attention_0",
         )(x, rope_emb, mask)
         x = residual + attn_out
 
         residual = x
-        x = nn.RMSNorm(dtype=self.dtype)(x)
+        x = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_1")(x)
         x = residual + SwiGLU(self.mlp_hidden_dim, dtype=self.dtype)(x)
         return x, k, v
 
@@ -374,6 +682,7 @@ class _CachedStepTransformerBlock(nn.Module):
     mlp_hidden_dim: int
     context_length: int
     dtype: jnp.dtype = jnp.bfloat16
+    grouped_gqa: bool = False
 
     @nn.compact
     def __call__(
@@ -385,7 +694,7 @@ class _CachedStepTransformerBlock(nn.Module):
         cache_length: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         residual = x
-        x = nn.RMSNorm(dtype=self.dtype)(x)
+        x = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(x)
         attn_out, k, v = _CachedTemporalStepAttention(
             model_dim=self.model_dim,
             num_heads=self.num_heads,
@@ -393,12 +702,13 @@ class _CachedStepTransformerBlock(nn.Module):
             head_dim=self.head_dim,
             context_length=self.context_length,
             dtype=self.dtype,
+            grouped_gqa=self.grouped_gqa,
             name="Attention_0",
         )(x, rope_emb, k_cache, v_cache, cache_length)
         x = residual + attn_out
 
         residual = x
-        x = nn.RMSNorm(dtype=self.dtype)(x)
+        x = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_1")(x)
         x = residual + SwiGLU(self.mlp_hidden_dim, dtype=self.dtype)(x)
         return x, k, v
 
@@ -411,8 +721,11 @@ class _CachedSpatioTemporalTransformer(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     context_length: int
+    base: float
     temporal_layer_period: int = 4
     dtype: jnp.dtype = jnp.bfloat16
+    grouped_gqa: bool = False
+    cache_update: str = "fill"
 
     @nn.compact
     def prefill(
@@ -434,13 +747,14 @@ class _CachedSpatioTemporalTransformer(nn.Module):
         for _ in range(num_groups):
             x = rearrange(x, "b t n d -> (b t) n d")
             for _ in range(self.temporal_layer_period - 1):
-                x = TransformerBlock(
+                x = _ExportTransformerBlock(
                     model_dim=self.model_dim,
                     num_heads=self.num_heads,
                     num_kv_heads=self.num_kv_heads,
                     head_dim=self.head_dim,
                     mlp_hidden_dim=self.mlp_hidden_dim,
                     dtype=self.dtype,
+                    grouped_gqa=self.grouped_gqa,
                     name=f"TransformerBlock_{block_idx}",
                 )(x, spatial_rope_emb, spatial_mask)
                 block_idx += 1
@@ -454,6 +768,7 @@ class _CachedSpatioTemporalTransformer(nn.Module):
                 head_dim=self.head_dim,
                 mlp_hidden_dim=self.mlp_hidden_dim,
                 dtype=self.dtype,
+                grouped_gqa=self.grouped_gqa,
                 name=f"TransformerBlock_{block_idx}",
             )(x, temporal_rope_emb, temporal_mask)
             cache_ks.append(rearrange(k, "(b n) t h d -> b n t h d", b=batch_size, n=total_tokens))
@@ -484,13 +799,14 @@ class _CachedSpatioTemporalTransformer(nn.Module):
         for _ in range(num_groups):
             x = rearrange(x, "b t n d -> (b t) n d")
             for _ in range(self.temporal_layer_period - 1):
-                x = TransformerBlock(
+                x = _ExportTransformerBlock(
                     model_dim=self.model_dim,
                     num_heads=self.num_heads,
                     num_kv_heads=self.num_kv_heads,
                     head_dim=self.head_dim,
                     mlp_hidden_dim=self.mlp_hidden_dim,
                     dtype=self.dtype,
+                    grouped_gqa=self.grouped_gqa,
                     name=f"TransformerBlock_{block_idx}",
                 )(x, spatial_rope_emb, spatial_mask)
                 block_idx += 1
@@ -513,12 +829,42 @@ class _CachedSpatioTemporalTransformer(nn.Module):
                 mlp_hidden_dim=self.mlp_hidden_dim,
                 context_length=self.context_length,
                 dtype=self.dtype,
+                grouped_gqa=self.grouped_gqa,
                 name=f"TransformerBlock_{block_idx}",
             )(x, temporal_rope_emb, block_k_cache, block_v_cache, cache_length)
             k = rearrange(k, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens)
             v = rearrange(v, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens)
-            candidate_ks.append(_append_cache_entry(k_cache[temporal_idx], k, cache_length))
-            candidate_vs.append(_append_cache_entry(v_cache[temporal_idx], v, cache_length))
+            if self.cache_update == "slide":
+                candidate_ks.append(
+                    jnp.concatenate(
+                        [
+                            _slide_rebased_key_cache(
+                                k_cache[temporal_idx],
+                                base=float(self.base),
+                                head_dim=self.head_dim,
+                            ),
+                            k,
+                        ],
+                        axis=2,
+                    )
+                )
+            else:
+                candidate_ks.append(
+                    _append_cache_entry(
+                        k_cache[temporal_idx],
+                        k,
+                        cache_length,
+                        update=self.cache_update,
+                    )
+                )
+            candidate_vs.append(
+                _append_cache_entry(
+                    v_cache[temporal_idx],
+                    v,
+                    cache_length,
+                    update=self.cache_update,
+                )
+            )
             block_idx += 1
             temporal_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
@@ -526,14 +872,253 @@ class _CachedSpatioTemporalTransformer(nn.Module):
         candidate_cache_length = jnp.minimum(cache_length + 1, self.context_length).astype(jnp.int32)
         return x, jnp.stack(candidate_ks, axis=0), jnp.stack(candidate_vs, axis=0), candidate_cache_length
 
+    @nn.compact
+    def step_layer_cache(
+        self,
+        x: jnp.ndarray,
+        total_tokens: int,
+        spatial_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        spatial_mask: jnp.ndarray,
+        temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        k_caches: tuple[jnp.ndarray, ...],
+        v_caches: tuple[jnp.ndarray, ...],
+        cache_length: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
+        batch_size = x.shape[0]
+        block_idx = 0
+        temporal_idx = 0
+        candidate_ks = []
+        candidate_vs = []
+        num_groups = self.num_layers // self.temporal_layer_period
+        for _ in range(num_groups):
+            x = rearrange(x, "b t n d -> (b t) n d")
+            for _ in range(self.temporal_layer_period - 1):
+                x = _ExportTransformerBlock(
+                    model_dim=self.model_dim,
+                    num_heads=self.num_heads,
+                    num_kv_heads=self.num_kv_heads,
+                    head_dim=self.head_dim,
+                    mlp_hidden_dim=self.mlp_hidden_dim,
+                    dtype=self.dtype,
+                    grouped_gqa=self.grouped_gqa,
+                    name=f"TransformerBlock_{block_idx}",
+                )(x, spatial_rope_emb, spatial_mask)
+                block_idx += 1
+            x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=1)
+
+            x = rearrange(x, "b t n d -> (b n) t d")
+            block_k_cache = rearrange(
+                k_caches[temporal_idx],
+                "b n t h d -> (b n) t h d",
+            )
+            block_v_cache = rearrange(
+                v_caches[temporal_idx],
+                "b n t h d -> (b n) t h d",
+            )
+            x, k, v = _CachedStepTransformerBlock(
+                model_dim=self.model_dim,
+                num_heads=self.num_heads,
+                num_kv_heads=self.num_kv_heads,
+                head_dim=self.head_dim,
+                mlp_hidden_dim=self.mlp_hidden_dim,
+                context_length=self.context_length,
+                dtype=self.dtype,
+                grouped_gqa=self.grouped_gqa,
+                name=f"TransformerBlock_{block_idx}",
+            )(x, temporal_rope_emb, block_k_cache, block_v_cache, cache_length)
+            k = rearrange(k, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens)
+            v = rearrange(v, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens)
+            if self.cache_update == "slide":
+                candidate_ks.append(
+                    jnp.concatenate(
+                        [
+                            _slide_rebased_key_cache(
+                                k_caches[temporal_idx],
+                                base=float(self.base),
+                                head_dim=self.head_dim,
+                            ),
+                            k,
+                        ],
+                        axis=2,
+                    )
+                )
+            else:
+                candidate_ks.append(
+                    _append_cache_entry(
+                        k_caches[temporal_idx],
+                        k,
+                        cache_length,
+                        update=self.cache_update,
+                    )
+                )
+            candidate_vs.append(
+                _append_cache_entry(
+                    v_caches[temporal_idx],
+                    v,
+                    cache_length,
+                    update=self.cache_update,
+                )
+            )
+            block_idx += 1
+            temporal_idx += 1
+            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+
+        candidate_cache_length = jnp.minimum(cache_length + 1, self.context_length).astype(jnp.int32)
+        return x, tuple(candidate_ks), tuple(candidate_vs), candidate_cache_length
+
+    @nn.compact
+    def predict_step(
+        self,
+        x: jnp.ndarray,
+        total_tokens: int,
+        spatial_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        spatial_mask: jnp.ndarray,
+        temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+    ) -> jnp.ndarray:
+        batch_size = x.shape[0]
+        block_idx = 0
+        temporal_idx = 0
+        num_groups = self.num_layers // self.temporal_layer_period
+        for _ in range(num_groups):
+            x = rearrange(x, "b t n d -> (b t) n d")
+            for _ in range(self.temporal_layer_period - 1):
+                x = _ExportTransformerBlock(
+                    model_dim=self.model_dim,
+                    num_heads=self.num_heads,
+                    num_kv_heads=self.num_kv_heads,
+                    head_dim=self.head_dim,
+                    mlp_hidden_dim=self.mlp_hidden_dim,
+                    dtype=self.dtype,
+                    grouped_gqa=self.grouped_gqa,
+                    name=f"TransformerBlock_{block_idx}",
+                )(x, spatial_rope_emb, spatial_mask)
+                block_idx += 1
+            x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=1)
+
+            x = rearrange(x, "b t n d -> (b n) t d")
+            block_k_cache = rearrange(
+                k_cache[temporal_idx],
+                "b n t h d -> (b n) t h d",
+            )
+            block_v_cache = rearrange(
+                v_cache[temporal_idx],
+                "b n t h d -> (b n) t h d",
+            )
+            x, _, _ = _CachedStepTransformerBlock(
+                model_dim=self.model_dim,
+                num_heads=self.num_heads,
+                num_kv_heads=self.num_kv_heads,
+                head_dim=self.head_dim,
+                mlp_hidden_dim=self.mlp_hidden_dim,
+                context_length=self.context_length,
+                dtype=self.dtype,
+                grouped_gqa=self.grouped_gqa,
+                name=f"TransformerBlock_{block_idx}",
+            )(x, temporal_rope_emb, block_k_cache, block_v_cache, cache_length)
+            block_idx += 1
+            temporal_idx += 1
+            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+
+        return x
+
+    @nn.compact
+    def predict_step_layer_cache(
+        self,
+        x: jnp.ndarray,
+        total_tokens: int,
+        spatial_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        spatial_mask: jnp.ndarray,
+        temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        k_caches: tuple[jnp.ndarray, ...],
+        v_caches: tuple[jnp.ndarray, ...],
+        cache_length: jnp.ndarray,
+    ) -> jnp.ndarray:
+        batch_size = x.shape[0]
+        block_idx = 0
+        temporal_idx = 0
+        num_groups = self.num_layers // self.temporal_layer_period
+        for _ in range(num_groups):
+            x = rearrange(x, "b t n d -> (b t) n d")
+            for _ in range(self.temporal_layer_period - 1):
+                x = _ExportTransformerBlock(
+                    model_dim=self.model_dim,
+                    num_heads=self.num_heads,
+                    num_kv_heads=self.num_kv_heads,
+                    head_dim=self.head_dim,
+                    mlp_hidden_dim=self.mlp_hidden_dim,
+                    dtype=self.dtype,
+                    grouped_gqa=self.grouped_gqa,
+                    name=f"TransformerBlock_{block_idx}",
+                )(x, spatial_rope_emb, spatial_mask)
+                block_idx += 1
+            x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=1)
+
+            x = rearrange(x, "b t n d -> (b n) t d")
+            block_k_cache = rearrange(
+                k_caches[temporal_idx],
+                "b n t h d -> (b n) t h d",
+            )
+            block_v_cache = rearrange(
+                v_caches[temporal_idx],
+                "b n t h d -> (b n) t h d",
+            )
+            x, _, _ = _CachedStepTransformerBlock(
+                model_dim=self.model_dim,
+                num_heads=self.num_heads,
+                num_kv_heads=self.num_kv_heads,
+                head_dim=self.head_dim,
+                mlp_hidden_dim=self.mlp_hidden_dim,
+                context_length=self.context_length,
+                dtype=self.dtype,
+                grouped_gqa=self.grouped_gqa,
+                name=f"TransformerBlock_{block_idx}",
+            )(x, temporal_rope_emb, block_k_cache, block_v_cache, cache_length)
+            block_idx += 1
+            temporal_idx += 1
+            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+
+        return x
+
 
 def _append_cache_entry(
     cache: jnp.ndarray,
     entry: jnp.ndarray,
     cache_length: jnp.ndarray,
+    *,
+    update: str,
 ) -> jnp.ndarray:
-    del cache_length
-    return jnp.concatenate([cache[:, :, 1:], entry], axis=2)
+    if update == "slide":
+        return jnp.concatenate([cache[:, :, 1:], entry], axis=2)
+    if update != "fill":
+        raise ValueError(f"Unsupported cache update mode {update!r}.")
+    write_index = jnp.minimum(cache_length[0], cache.shape[2] - 1)
+    return jax.lax.dynamic_update_slice(cache, entry, (0, 0, write_index, 0, 0))
+
+
+def _slide_rebased_key_cache(
+    cache: jnp.ndarray,
+    *,
+    base: float,
+    head_dim: int,
+) -> jnp.ndarray:
+    kept = cache[:, :, 1:]
+    half_head_dim = head_dim // 2
+    theta = 1 / (base ** (jnp.arange(half_head_dim, dtype=jnp.float32) / half_head_dim))
+    cos = jnp.cos(theta).astype(cache.dtype)
+    sin = jnp.sin(theta).astype(cache.dtype)
+    left, right = jnp.split(kept, 2, axis=-1)
+    cos = cos[None, None, None, None, :]
+    sin = sin[None, None, None, None, :]
+    return jnp.concatenate(
+        [
+            left * cos + right * sin,
+            right * cos - left * sin,
+        ],
+        axis=-1,
+    )
 
 
 class _ExportActionEmbedding(nn.Module):
@@ -566,6 +1151,8 @@ class _ExportActionEmbedding(nn.Module):
 class _CachedDynamicsModel(nn.Module):
     cfg: Any
     dtype: jnp.dtype = jnp.float32
+    grouped_gqa: bool = False
+    cache_update: str = "fill"
 
     def setup(self):
         self.shortcut_embedding = dynamics_module.ShortcutEmbedding(
@@ -591,8 +1178,11 @@ class _CachedDynamicsModel(nn.Module):
             head_dim=int(self.cfg.head_dim),
             mlp_hidden_dim=int(self.cfg.mlp_hidden_dim),
             context_length=int(self.cfg.context_length),
+            base=float(self.cfg.base),
             temporal_layer_period=int(self.cfg.temporal_layer_period),
             dtype=self.dtype,
+            grouped_gqa=self.grouped_gqa,
+            cache_update=self.cache_update,
             name="transformer",
         )
 
@@ -610,7 +1200,11 @@ class _CachedDynamicsModel(nn.Module):
             self.register_tokens.astype(self.dtype),
             (batch_size, seq_len, int(self.cfg.num_registers), int(self.cfg.model_dim)),
         )
-        observation_tokens = nn.Dense(int(self.cfg.model_dim), dtype=self.dtype)(z.astype(self.dtype))
+        observation_tokens = nn.Dense(
+            int(self.cfg.model_dim),
+            dtype=self.dtype,
+            name="Dense_0",
+        )(z.astype(self.dtype))
         tokens = jnp.concatenate(
             [action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2
         )
@@ -625,6 +1219,7 @@ class _CachedDynamicsModel(nn.Module):
             dtype=self.dtype,
             kernel_init=nn.initializers.zeros,
             bias_init=nn.initializers.zeros,
+            name="Dense_1",
         )(observation_hidden)
 
     @nn.compact
@@ -659,6 +1254,25 @@ class _CachedDynamicsModel(nn.Module):
         pred_z = self._project_output(hidden, observation_offset, token_dim)
         cache_length = jnp.asarray([seq_len], dtype=jnp.int32)
         return pred_z, k_cache.astype(jnp.float32), v_cache.astype(jnp.float32), cache_length
+
+    @nn.compact
+    def prefill_layer_cache(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray,
+        step_levels: jnp.ndarray,
+        signal_levels: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
+        pred_z, k_cache, v_cache, cache_length = self.prefill(
+            z,
+            actions,
+            step_levels,
+            signal_levels,
+        )
+        num_groups = int(self.cfg.num_layers) // int(self.cfg.temporal_layer_period)
+        k_caches = tuple(k_cache[i].astype(jnp.float32) for i in range(num_groups))
+        v_caches = tuple(v_cache[i].astype(jnp.float32) for i in range(num_groups))
+        return pred_z, k_caches, v_caches, cache_length
 
     @nn.compact
     def step(
@@ -699,17 +1313,390 @@ class _CachedDynamicsModel(nn.Module):
         pred_z = self._project_output(hidden, observation_offset, token_dim)
         return pred_z, candidate_k.astype(jnp.float32), candidate_v.astype(jnp.float32), candidate_cache_length
 
+    @nn.compact
+    def step_layer_cache(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray,
+        step_levels: jnp.ndarray,
+        signal_levels: jnp.ndarray,
+        position_index: jnp.ndarray,
+        k_caches: tuple[jnp.ndarray, ...],
+        v_caches: tuple[jnp.ndarray, ...],
+        cache_length: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
+        tokens, total_tokens, observation_offset = self._tokens(z, actions, step_levels, signal_levels)
+        token_dim = z.shape[-1]
+        spatial_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), total_tokens)
+        full_temporal_rope = _export_create_temporal_rope(
+            float(self.cfg.base),
+            int(self.cfg.head_dim),
+            int(self.cfg.context_length) + 1,
+        )
+        pos = jnp.minimum(position_index[0], int(self.cfg.context_length))
+        temporal_rope = (
+            jnp.take(full_temporal_rope[0], pos, axis=0)[None],
+            jnp.take(full_temporal_rope[1], pos, axis=0)[None],
+        )
+        spatial_mask = jnp.ones((total_tokens, total_tokens), dtype=bool)
+        hidden, candidate_ks, candidate_vs, candidate_cache_length = self.transformer.step_layer_cache(
+            tokens,
+            total_tokens,
+            spatial_rope,
+            spatial_mask,
+            temporal_rope,
+            k_caches,
+            v_caches,
+            cache_length,
+        )
+        pred_z = self._project_output(hidden, observation_offset, token_dim)
+        candidate_ks = tuple(cache.astype(jnp.float32) for cache in candidate_ks)
+        candidate_vs = tuple(cache.astype(jnp.float32) for cache in candidate_vs)
+        return pred_z, candidate_ks, candidate_vs, candidate_cache_length
+
+    @nn.compact
+    def predict_step(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray,
+        step_levels: jnp.ndarray,
+        signal_levels: jnp.ndarray,
+        position_index: jnp.ndarray,
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+    ) -> jnp.ndarray:
+        _, _, _, token_dim = z.shape
+        tokens, total_tokens, observation_offset = self._tokens(z, actions, step_levels, signal_levels)
+        spatial_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), total_tokens)
+        full_temporal_rope = _export_create_temporal_rope(
+            float(self.cfg.base),
+            int(self.cfg.head_dim),
+            int(self.cfg.context_length) + 1,
+        )
+        pos = jnp.minimum(position_index[0], int(self.cfg.context_length))
+        temporal_rope = (
+            jnp.take(full_temporal_rope[0], pos, axis=0)[None],
+            jnp.take(full_temporal_rope[1], pos, axis=0)[None],
+        )
+        spatial_mask = jnp.ones((total_tokens, total_tokens), dtype=bool)
+        hidden = self.transformer.predict_step(
+            tokens,
+            total_tokens,
+            spatial_rope,
+            spatial_mask,
+            temporal_rope,
+            k_cache,
+            v_cache,
+            cache_length,
+        )
+        return self._project_output(hidden, observation_offset, token_dim)
+
+    @nn.compact
+    def predict_step_layer_cache(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray,
+        step_levels: jnp.ndarray,
+        signal_levels: jnp.ndarray,
+        position_index: jnp.ndarray,
+        k_caches: tuple[jnp.ndarray, ...],
+        v_caches: tuple[jnp.ndarray, ...],
+        cache_length: jnp.ndarray,
+    ) -> jnp.ndarray:
+        _, _, _, token_dim = z.shape
+        tokens, total_tokens, observation_offset = self._tokens(z, actions, step_levels, signal_levels)
+        spatial_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), total_tokens)
+        full_temporal_rope = _export_create_temporal_rope(
+            float(self.cfg.base),
+            int(self.cfg.head_dim),
+            int(self.cfg.context_length) + 1,
+        )
+        pos = jnp.minimum(position_index[0], int(self.cfg.context_length))
+        temporal_rope = (
+            jnp.take(full_temporal_rope[0], pos, axis=0)[None],
+            jnp.take(full_temporal_rope[1], pos, axis=0)[None],
+        )
+        spatial_mask = jnp.ones((total_tokens, total_tokens), dtype=bool)
+        hidden = self.transformer.predict_step_layer_cache(
+            tokens,
+            total_tokens,
+            spatial_rope,
+            spatial_mask,
+            temporal_rope,
+            k_caches,
+            v_caches,
+            cache_length,
+        )
+        return self._project_output(hidden, observation_offset, token_dim)
+
+    @nn.compact
+    def sample_step_layer_cache(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray,
+        position_index: jnp.ndarray,
+        k_caches: tuple[jnp.ndarray, ...],
+        v_caches: tuple[jnp.ndarray, ...],
+        cache_length: jnp.ndarray,
+        *,
+        sample_steps: int,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        sample_step_level = validate_sample_steps(sample_steps)
+        current_z = z.astype(jnp.float32)
+        pred_z = current_z
+        step_levels = jnp.full(z.shape[:2], sample_step_level, dtype=jnp.int32)
+
+        for signal_level in range(sample_steps):
+            signal_levels = jnp.full(z.shape[:2], signal_level, dtype=jnp.int32)
+            pred_z = self.predict_step_layer_cache(
+                current_z,
+                actions,
+                step_levels,
+                signal_levels,
+                position_index,
+                k_caches,
+                v_caches,
+                cache_length,
+            )
+            current_z = flow_update_z(
+                current_z,
+                pred_z,
+                signal_level=signal_level,
+                sample_steps=sample_steps,
+            )
+
+        return current_z, pred_z
+
+    @nn.compact
+    def sample_step(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray,
+        position_index: jnp.ndarray,
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+        *,
+        sample_steps: int,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        sample_step_level = validate_sample_steps(sample_steps)
+        current_z = z.astype(jnp.float32)
+        candidate_k = k_cache
+        candidate_v = v_cache
+        candidate_cache_length = cache_length
+        pred_z = current_z
+        step_levels = jnp.full(z.shape[:2], sample_step_level, dtype=jnp.int32)
+
+        for signal_level in range(sample_steps):
+            signal_levels = jnp.full(z.shape[:2], signal_level, dtype=jnp.int32)
+            if signal_level == sample_steps - 1:
+                pred_z, candidate_k, candidate_v, candidate_cache_length = self.step(
+                    current_z,
+                    actions,
+                    step_levels,
+                    signal_levels,
+                    position_index,
+                    k_cache,
+                    v_cache,
+                    cache_length,
+                )
+            else:
+                pred_z = self.predict_step(
+                    current_z,
+                    actions,
+                    step_levels,
+                    signal_levels,
+                    position_index,
+                    k_cache,
+                    v_cache,
+                    cache_length,
+                )
+            current_z = flow_update_z(
+                current_z,
+                pred_z,
+                signal_level=signal_level,
+                sample_steps=sample_steps,
+            )
+
+        return current_z, pred_z, candidate_k.astype(jnp.float32), candidate_v.astype(jnp.float32), candidate_cache_length
+
+    @nn.compact
+    def sample_step_append_context(
+        self,
+        sample_noise: jnp.ndarray,
+        context_noise: jnp.ndarray,
+        actions: jnp.ndarray,
+        position_index: jnp.ndarray,
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+        *,
+        context_tau: float,
+        sample_steps: int,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        final_z, pred_z, _, _, _ = self.sample_step(
+            sample_noise,
+            actions,
+            position_index,
+            k_cache,
+            v_cache,
+            cache_length,
+            sample_steps=sample_steps,
+        )
+
+        context_step_level = int(self.cfg.max_step_size) - 1
+        context_step_count = 1 << context_step_level
+        context_signal_level = min(
+            max(int(round(float(context_tau) * context_step_count)), 0),
+            context_step_count - 1,
+        )
+        context_tau_used = jnp.asarray(context_signal_level / context_step_count, dtype=jnp.float32)
+        noised_context_z = context_tau_used * final_z.astype(jnp.float32) + (
+            jnp.asarray(1.0, dtype=jnp.float32) - context_tau_used
+        ) * context_noise.astype(jnp.float32)
+        context_step_levels = jnp.full(
+            final_z.shape[:2],
+            context_step_level,
+            dtype=jnp.int32,
+        )
+        context_signal_levels = jnp.full(
+            final_z.shape[:2],
+            context_signal_level,
+            dtype=jnp.int32,
+        )
+        if self.cache_update == "slide":
+            context_position_index = jnp.asarray([int(self.cfg.context_length) - 1], dtype=jnp.int32)
+        else:
+            context_position_index = position_index
+        _, context_k, context_v, context_cache_length = self.step(
+            noised_context_z,
+            actions,
+            context_step_levels,
+            context_signal_levels,
+            context_position_index,
+            k_cache,
+            v_cache,
+            cache_length,
+        )
+        return (
+            final_z,
+            pred_z,
+            context_k.astype(jnp.float32),
+            context_v.astype(jnp.float32),
+            context_cache_length,
+        )
+
+    @nn.compact
+    def sample_step_append_context_layer_cache(
+        self,
+        sample_noise: jnp.ndarray,
+        context_noise: jnp.ndarray,
+        actions: jnp.ndarray,
+        position_index: jnp.ndarray,
+        k_caches: tuple[jnp.ndarray, ...],
+        v_caches: tuple[jnp.ndarray, ...],
+        cache_length: jnp.ndarray,
+        *,
+        context_tau: float,
+        sample_steps: int,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
+        final_z, pred_z = self.sample_step_layer_cache(
+            sample_noise,
+            actions,
+            position_index,
+            k_caches,
+            v_caches,
+            cache_length,
+            sample_steps=sample_steps,
+        )
+
+        context_step_level = int(self.cfg.max_step_size) - 1
+        context_step_count = 1 << context_step_level
+        context_signal_level = min(
+            max(int(round(float(context_tau) * context_step_count)), 0),
+            context_step_count - 1,
+        )
+        context_tau_used = jnp.asarray(context_signal_level / context_step_count, dtype=jnp.float32)
+        noised_context_z = context_tau_used * final_z.astype(jnp.float32) + (
+            jnp.asarray(1.0, dtype=jnp.float32) - context_tau_used
+        ) * context_noise.astype(jnp.float32)
+        context_step_levels = jnp.full(
+            final_z.shape[:2],
+            context_step_level,
+            dtype=jnp.int32,
+        )
+        context_signal_levels = jnp.full(
+            final_z.shape[:2],
+            context_signal_level,
+            dtype=jnp.int32,
+        )
+        if self.cache_update == "slide":
+            context_position_index = jnp.asarray([int(self.cfg.context_length) - 1], dtype=jnp.int32)
+        else:
+            context_position_index = position_index
+        _, context_ks, context_vs, context_cache_length = self.step_layer_cache(
+            noised_context_z,
+            actions,
+            context_step_levels,
+            context_signal_levels,
+            context_position_index,
+            k_caches,
+            v_caches,
+            cache_length,
+        )
+        return final_z, pred_z, context_ks, context_vs, context_cache_length
+
+    @nn.compact
+    def sample_step_full_cache(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray,
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        *,
+        sample_steps: int,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        cache_length = jnp.asarray([int(self.cfg.context_length)], dtype=jnp.int32)
+        position_index = jnp.asarray([int(self.cfg.context_length)], dtype=jnp.int32)
+        final_z, pred_z, candidate_k, candidate_v, _ = self.sample_step(
+            z,
+            actions,
+            position_index,
+            k_cache,
+            v_cache,
+            cache_length,
+            sample_steps=sample_steps,
+        )
+        return final_z, pred_z, candidate_k, candidate_v
+
 
 @contextmanager
-def export_overrides():
+def export_overrides(*, native_attention: bool = False, grouped_gqa: bool = False):
     original = jax.nn.dot_product_attention
+    original_transformer_spatiotemporal = transformer_module.SpatioTemporalTransformer
     original_transformer_temporal_rope = transformer_module.create_temporal_rope
     original_transformer_spatial_rope = transformer_module.create_spatial_rope
+    original_tokenizer_spatiotemporal = tokenizer_module.SpatioTemporalTransformer
     original_tokenizer_temporal_rope = tokenizer_module.create_temporal_rope
     original_tokenizer_spatial_rope = tokenizer_module.create_spatial_rope
     original_tokenizer_temporal_mask = tokenizer_module.create_temporal_mask
     original_dynamics_temporal_rope = dynamics_module.create_temporal_rope
-    jax.nn.dot_product_attention = _export_dot_product_attention
+    if native_attention:
+        jax.nn.dot_product_attention = partial(_native_dot_product_attention_for_export, original)
+    else:
+        jax.nn.dot_product_attention = partial(
+            _export_dot_product_attention,
+            grouped_gqa=grouped_gqa,
+        )
+    transformer_module.SpatioTemporalTransformer = partial(
+        _ExportSpatioTemporalTransformer,
+        grouped_gqa=grouped_gqa,
+    )
+    tokenizer_module.SpatioTemporalTransformer = partial(
+        _ExportSpatioTemporalTransformer,
+        grouped_gqa=grouped_gqa,
+    )
     transformer_module.create_temporal_rope = _export_create_temporal_rope
     transformer_module.create_spatial_rope = _export_create_spatial_rope
     tokenizer_module.create_temporal_rope = _export_create_temporal_rope
@@ -720,8 +1707,10 @@ def export_overrides():
         yield
     finally:
         jax.nn.dot_product_attention = original
+        transformer_module.SpatioTemporalTransformer = original_transformer_spatiotemporal
         transformer_module.create_temporal_rope = original_transformer_temporal_rope
         transformer_module.create_spatial_rope = original_transformer_spatial_rope
+        tokenizer_module.SpatioTemporalTransformer = original_tokenizer_spatiotemporal
         tokenizer_module.create_temporal_rope = original_tokenizer_temporal_rope
         tokenizer_module.create_spatial_rope = original_tokenizer_spatial_rope
         tokenizer_module.create_temporal_mask = original_tokenizer_temporal_mask
@@ -734,9 +1723,55 @@ def apply_tokenizer_decoder(
     latent: jnp.ndarray,
     *,
     dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
 ) -> jnp.ndarray:
     model = create_tokenizer(cfg, dtype=dtype)
-    with export_overrides():
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+        return model.apply(variables, latent, method=Tokenizer.decode)
+
+
+def apply_tokenizer_decode_z(
+    variables: Any,
+    cfg: DictConfig,
+    z: jnp.ndarray,
+    *,
+    num_obs_tokens: int | None = None,
+    dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
+) -> jnp.ndarray:
+    model = create_tokenizer(cfg, dtype=dtype)
+    if len(z.shape) != 4:
+        raise ValueError(f"decode_z expects rank-4 input, got shape={tuple(z.shape)}.")
+
+    _, _, token_count, token_dim = z.shape
+    channel_dim = int(cfg.channel_dim)
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+        if token_count == int(cfg.num_latents) and token_dim == channel_dim:
+            return model.apply(variables, z, method=Tokenizer.decode)
+
+        if num_obs_tokens is not None and token_count != int(num_obs_tokens):
+            raise ValueError(
+                "decode_z dynamics token count mismatch: "
+                f"got shape={tuple(z.shape)}, num_obs_tokens={num_obs_tokens}."
+            )
+        if token_dim % channel_dim != 0:
+            raise ValueError(
+                "decode_z cannot pack dynamics z into tokenizer latents: "
+                f"got shape={tuple(z.shape)}, channel_dim={channel_dim}."
+            )
+        latents_per_obs = token_dim // channel_dim
+        if token_count * latents_per_obs != int(cfg.num_latents):
+            raise ValueError(
+                "decode_z latent count mismatch: "
+                f"got shape={tuple(z.shape)}, inferred_latents={token_count * latents_per_obs}, "
+                f"expected_latents={int(cfg.num_latents)}, channel_dim={channel_dim}."
+            )
+
+        # Avoid ONNX Reshape in the browser hot path. For the demo shape this is
+        # equivalent to einops "b t n (k d) -> b t (n k) d".
+        latent = jnp.concatenate(jnp.split(z, latents_per_obs, axis=-1), axis=2)
         return model.apply(variables, latent, method=Tokenizer.decode)
 
 
@@ -749,9 +1784,11 @@ def apply_dynamics_uncached(
     signal_levels: jnp.ndarray,
     *,
     dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
 ) -> jnp.ndarray:
     model = create_dynamics(cfg, dtype=dtype)
-    with export_overrides():
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
         return model.apply(
             variables,
             z,
@@ -771,9 +1808,15 @@ def apply_dynamics_cached_prefill(
     signal_levels: jnp.ndarray,
     *,
     dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    model = _CachedDynamicsModel(cfg, dtype=dtype or jnp.float32)
-    with export_overrides():
+    model = _CachedDynamicsModel(
+        cfg,
+        dtype=dtype or jnp.float32,
+        grouped_gqa=grouped_gqa,
+    )
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
         return model.apply(
             variables,
             z,
@@ -781,6 +1824,30 @@ def apply_dynamics_cached_prefill(
             step_levels,
             signal_levels,
             method=_CachedDynamicsModel.prefill,
+        )
+
+
+def apply_dynamics_cached_prefill_layer_cache(
+    variables: Any,
+    cfg: DictConfig,
+    z: jnp.ndarray,
+    actions: jnp.ndarray,
+    step_levels: jnp.ndarray,
+    signal_levels: jnp.ndarray,
+    *,
+    dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
+) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
+    model = _CachedDynamicsModel(cfg, dtype=dtype or jnp.float32, grouped_gqa=grouped_gqa)
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+        return model.apply(
+            variables,
+            z,
+            actions,
+            step_levels,
+            signal_levels,
+            method=_CachedDynamicsModel.prefill_layer_cache,
         )
 
 
@@ -797,9 +1864,17 @@ def apply_dynamics_cached_step(
     cache_length: jnp.ndarray,
     *,
     dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
+    cache_update: str = "fill",
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    model = _CachedDynamicsModel(cfg, dtype=dtype or jnp.float32)
-    with export_overrides():
+    model = _CachedDynamicsModel(
+        cfg,
+        dtype=dtype or jnp.float32,
+        grouped_gqa=grouped_gqa,
+        cache_update=cache_update,
+    )
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
         return model.apply(
             variables,
             z,
@@ -811,4 +1886,150 @@ def apply_dynamics_cached_step(
             v_cache,
             cache_length,
             method=_CachedDynamicsModel.step,
+        )
+
+
+def apply_dynamics_cached_sample_step(
+    variables: Any,
+    cfg: DictConfig,
+    z: jnp.ndarray,
+    actions: jnp.ndarray,
+    position_index: jnp.ndarray,
+    k_cache: jnp.ndarray,
+    v_cache: jnp.ndarray,
+    cache_length: jnp.ndarray,
+    *,
+    sample_steps: int,
+    dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
+    cache_update: str = "fill",
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    model = _CachedDynamicsModel(
+        cfg,
+        dtype=dtype or jnp.float32,
+        grouped_gqa=grouped_gqa,
+        cache_update=cache_update,
+    )
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+        return model.apply(
+            variables,
+            z,
+            actions,
+            position_index,
+            k_cache,
+            v_cache,
+            cache_length,
+            sample_steps=sample_steps,
+            method=_CachedDynamicsModel.sample_step,
+        )
+
+
+def apply_dynamics_cached_sample_step_append_context(
+    variables: Any,
+    cfg: DictConfig,
+    sample_noise: jnp.ndarray,
+    context_noise: jnp.ndarray,
+    actions: jnp.ndarray,
+    position_index: jnp.ndarray,
+    k_cache: jnp.ndarray,
+    v_cache: jnp.ndarray,
+    cache_length: jnp.ndarray,
+    *,
+    context_tau: float,
+    sample_steps: int,
+    dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
+    cache_update: str = "fill",
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    model = _CachedDynamicsModel(
+        cfg,
+        dtype=dtype or jnp.float32,
+        grouped_gqa=grouped_gqa,
+        cache_update=cache_update,
+    )
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+        return model.apply(
+            variables,
+            sample_noise,
+            context_noise,
+            actions,
+            position_index,
+            k_cache,
+            v_cache,
+            cache_length,
+            context_tau=context_tau,
+            sample_steps=sample_steps,
+            method=_CachedDynamicsModel.sample_step_append_context,
+        )
+
+
+def apply_dynamics_cached_sample_step_append_context_layer_cache(
+    variables: Any,
+    cfg: DictConfig,
+    sample_noise: jnp.ndarray,
+    context_noise: jnp.ndarray,
+    actions: jnp.ndarray,
+    position_index: jnp.ndarray,
+    k_caches: tuple[jnp.ndarray, ...],
+    v_caches: tuple[jnp.ndarray, ...],
+    cache_length: jnp.ndarray,
+    *,
+    context_tau: float,
+    sample_steps: int,
+    dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
+    cache_update: str = "fill",
+) -> tuple[jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
+    model = _CachedDynamicsModel(
+        cfg,
+        dtype=dtype or jnp.float32,
+        grouped_gqa=grouped_gqa,
+        cache_update=cache_update,
+    )
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+        return model.apply(
+            variables,
+            sample_noise,
+            context_noise,
+            actions,
+            position_index,
+            k_caches,
+            v_caches,
+            cache_length,
+            context_tau=context_tau,
+            sample_steps=sample_steps,
+            method=_CachedDynamicsModel.sample_step_append_context_layer_cache,
+        )
+
+
+def apply_dynamics_cached_sample_step_full_cache(
+    variables: Any,
+    cfg: DictConfig,
+    z: jnp.ndarray,
+    actions: jnp.ndarray,
+    k_cache: jnp.ndarray,
+    v_cache: jnp.ndarray,
+    *,
+    sample_steps: int,
+    dtype: Any | None = jnp.float32,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    model = _CachedDynamicsModel(
+        cfg,
+        dtype=dtype or jnp.float32,
+        grouped_gqa=grouped_gqa,
+    )
+    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+        return model.apply(
+            variables,
+            z,
+            actions,
+            k_cache,
+            v_cache,
+            sample_steps=sample_steps,
+            method=_CachedDynamicsModel.sample_step_full_cache,
         )

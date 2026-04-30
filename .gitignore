@@ -33,3 +33,9 @@ outputs/
 wandb/
 artifacts/
 data/
+
+# Generated WebGPU/ONNX artifacts
+webgpu_app/assets/*.onnx
+webgpu_app/assets/*.onnx.data
+webgpu_app/assets/*.pre_*.onnx
+webgpu_app/bench/results/*.json
