@@ -1,6 +1,7 @@
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+from einops import rearrange
 
 from visionary.dataset import VideoDataset
 from visionary.transformer import (
@@ -332,6 +333,45 @@ class Tokenizer(nn.Module):
         batch_size, seq_len, _, _ = latent.shape
         temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
         return self.decoder(latent, temporal_mask, self.patch_dim)
+
+    def decode_z(
+        self,
+        z: jnp.ndarray,
+        *,
+        num_obs_tokens: int | None = None,
+    ) -> jnp.ndarray:
+        if len(z.shape) != 4:
+            raise ValueError(
+                "decode_z expects rank-4 input, "
+                f"got shape={tuple(z.shape)}."
+            )
+
+        _, _, token_count, token_dim = z.shape
+        if token_count == self.num_latents and token_dim == self.channel_dim:
+            return self.decode(z)
+
+        if num_obs_tokens is not None and token_count != int(num_obs_tokens):
+            raise ValueError(
+                "decode_z dynamics token count mismatch: "
+                f"got shape={tuple(z.shape)}, num_obs_tokens={num_obs_tokens}."
+            )
+        if token_dim % self.channel_dim != 0:
+            raise ValueError(
+                "decode_z cannot pack dynamics z into tokenizer latents: "
+                f"got shape={tuple(z.shape)}, channel_dim={self.channel_dim}."
+            )
+
+        latents_per_obs = token_dim // self.channel_dim
+        latent_count = token_count * latents_per_obs
+        if latent_count != self.num_latents:
+            raise ValueError(
+                "decode_z latent count mismatch: "
+                f"got shape={tuple(z.shape)}, inferred_latents={latent_count}, "
+                f"expected_latents={self.num_latents}, channel_dim={self.channel_dim}."
+            )
+
+        latent = rearrange(z, "b t n (k d) -> b t (n k) d", d=self.channel_dim)
+        return self.decode(latent)
 
     def reconstruct(
         self,

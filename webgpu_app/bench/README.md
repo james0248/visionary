@@ -92,6 +92,69 @@ context_tau_effective = 29 / 32
 Fetch time, session creation time, warmup, and browser metadata are reported separately from
 steady-state frame timing.
 
+## Profiling
+
+WebGPU kernel profiling is opt-in because it adds timestamp-query overhead and should not be used
+as the latency baseline.
+
+```bash
+bun run benchmark:webgpu:profile
+```
+
+To require profiling support and fail if the browser/GPU cannot provide timestamp queries:
+
+```bash
+WEBGPU_BENCHMARK_PROFILING_REQUIRED=1 bun run benchmark:webgpu:profile
+```
+
+To wait longer for async profiling callbacks after each profiled inference:
+
+```bash
+WEBGPU_BENCHMARK_PROFILING_DRAIN_MS=200 bun run benchmark:webgpu:profile
+```
+
+Profiling data is written to `webgpu_app/bench/results/latest.json` under `profiling`.
+If the browser and GPU expose timestamp queries but ONNX Runtime Web does not emit callback data,
+the benchmark still writes the latency result and reports `profiling.available: false` with a
+reason. In that case there are no kernel-level rows to inspect.
+
+To check whether the installed ONNX Runtime Web package can emit profiling data at all:
+
+```bash
+bun run benchmark:webgpu:profile:diagnostic
+```
+
+This writes:
+
+- `webgpu_app/bench/results/profile_diagnostic_import_matrix.json`
+- `webgpu_app/bench/results/profile_diagnostic_latest.json`
+- a timestamped copy of the previous `latest.json` as `profile_baseline_*.json`
+
+The diagnostic tests browser-loadable WebGPU import variants and records both `ondata` callback
+events and console fallback rows containing `[profiling]`.
+
+To also test ORT session profiling with `enableProfiling` / `endProfiling()` for WebGPU and WASM:
+
+```bash
+bun run benchmark:webgpu:profile:session-diagnostic
+```
+
+To summarize a profiling result:
+
+```bash
+bun run benchmark:webgpu:profile:summary
+```
+
+Start with:
+
+- `profiling.summary.by_role.cached_step.top_kernels`
+- `profiling.summary.by_role.cached_prefill.top_kernels`
+- `profiling.summary.by_role.single_frame_decoder.top_kernels`
+
+If `profiling.attribution.late_event_count` is high, rerun with a larger
+`WEBGPU_BENCHMARK_PROFILING_DRAIN_MS`. Late and unscoped events are reported separately and are not
+assigned to the next profiling scope.
+
 ## Baselines
 
 `webgpu_app/bench/baselines/webgpu_benchmark_baseline.json` starts in warning mode. After cached

@@ -16,6 +16,7 @@ export default defineConfig({
     launchOptions: {
       args: [
         '--enable-unsafe-webgpu',
+        '--disable-dawn-features=disallow_unsafe_apis',
         '--ignore-gpu-blocklist',
         '--enable-gpu-rasterization',
         '--disable-gpu-sandbox',

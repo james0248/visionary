@@ -4,7 +4,14 @@
     "benchmark:webgpu": "playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium",
     "benchmark:webgpu:ci": "playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium && uv run python scripts/webgpu/check_webgpu_benchmark.py --result webgpu_app/bench/results/latest.json --baseline webgpu_app/bench/baselines/webgpu_benchmark_baseline.json",
     "benchmark:webgpu:headless-smoke": "ALLOW_SOFTWARE_WEBGPU=1 PLAYWRIGHT_HEADLESS=1 playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium --grep @smoke",
-    "benchmark:webgpu:smoke": "playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium --grep @smoke"
+    "benchmark:webgpu:profile": "WEBGPU_BENCHMARK_PROFILING=1 playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium --grep @profile",
+    "benchmark:webgpu:profile:diagnostic": "playwright test webgpu_app/bench/run_webgpu_profile_diagnostic.spec.js --project=chromium --grep @profile-diagnostic",
+    "benchmark:webgpu:profile:session-diagnostic": "WEBGPU_PROFILE_DIAGNOSTIC_SESSION_PROFILING=1 WEBGPU_PROFILE_DIAGNOSTIC_IMPORTS=dist_bundle playwright test webgpu_app/bench/run_webgpu_profile_diagnostic.spec.js --project=chromium --grep @profile-diagnostic",
+    "benchmark:webgpu:profile:session-summary": "node scripts/webgpu/summarize_ort_session_profile.mjs webgpu_app/bench/results/profile_diagnostic_latest.json webgpu_app/bench/results/session_profile_summary.json",
+    "benchmark:webgpu:profile:summary": "node scripts/webgpu/summarize_webgpu_profile.mjs webgpu_app/bench/results/latest.json",
+    "benchmark:webgpu:smoke": "playwright test webgpu_app/bench/run_webgpu_benchmark.spec.js --project=chromium --grep @smoke",
+    "demo:webgpu": "node scripts/webgpu/serve_static.mjs --host 127.0.0.1 --port 4173",
+    "demo:webgpu:smoke": "playwright test webgpu_app/demo/run_demo_smoke.spec.js --project=chromium --grep @demo"
   },
   "dependencies": {
     "onnxruntime-web": "^1.24.3"

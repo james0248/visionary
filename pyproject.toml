@@ -35,6 +35,8 @@ dev = ["ruff>=0.15.6"]
 onnx = [
     "jax2onnx==0.13.0",
     "onnx==1.21.0",
+    "onnx-simplifier==0.4.36",
+    "onnxconverter-common>=1.16.0",
     "onnxruntime==1.25.0",
 ]
 

@@ -38,4 +38,6 @@ data/
 webgpu_app/assets/*.onnx
 webgpu_app/assets/*.onnx.data
 webgpu_app/assets/*.pre_*.onnx
+webgpu_app/assets/breakout_onnx_manifest.json
+webgpu_app/assets/breakout_demo_context.*
 webgpu_app/bench/results/*.json

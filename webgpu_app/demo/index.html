@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Breakout World Model</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="stage">
+        <canvas id="frame" width="96" height="128" aria-label="Generated Breakout frame"></canvas>
+      </section>
+      <aside class="panel">
+        <div class="topline">
+          <div>
+            <h1>Breakout World Model</h1>
+            <p id="status">Loading assets</p>
+          </div>
+          <div id="fps" class="meter">-- fps</div>
+        </div>
+
+        <div class="controls">
+          <button id="start" type="button">Start</button>
+          <button id="reset" type="button">Reset</button>
+        </div>
+
+        <div class="action-grid" aria-label="Action controls">
+          <div></div>
+          <kbd id="key-fire">Space</kbd>
+          <div></div>
+          <kbd id="key-left">←</kbd>
+          <kbd id="key-noop">Noop</kbd>
+          <kbd id="key-right">→</kbd>
+        </div>
+
+        <dl class="stats">
+          <div>
+            <dt>Action</dt>
+            <dd id="action">noop</dd>
+          </div>
+          <div>
+            <dt>Frame</dt>
+            <dd id="frame-count">0</dd>
+          </div>
+          <div>
+            <dt>Last frame</dt>
+            <dd id="latency">-- ms</dd>
+          </div>
+          <div>
+            <dt>Context</dt>
+            <dd id="context">episode_0 @ 4</dd>
+          </div>
+        </dl>
+      </aside>
+    </main>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

@@ -1806,6 +1806,35 @@ wheels = [
 ]
 
 [[package]]
+name = "onnx-simplifier"
+version = "0.4.36"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "onnx" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6a/95/9d93b8cfdd9f57abe7000cd6b9e56e2c518ce0e6bf6b312b1cf37b4e68a8/onnx-simplifier-0.4.36.tar.gz", hash = "sha256:661b7383d0a6182b96489b60b36b30852fd4f6066cfbb298b20b2f5455167ff6", size = 20987619 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b8/e3/8b4743d51a1659da7f7058c8034d858ded88f288d0d8e0a7bd7b2b647ca2/onnx_simplifier-0.4.36-cp311-cp311-macosx_10_15_universal2.whl", hash = "sha256:bed97c8fce059abdc6935e2c3f7b65ef43866269ef0049c7ec09a990ae578676", size = 3471354 },
+    { url = "https://files.pythonhosted.org/packages/06/16/b19442a60f191f08ae3c4a04627faca12a06fcc9bb24b5accc446a5977b2/onnx_simplifier-0.4.36-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b5d1c1f170fd9c07aa475d539e9e752aec352502aeaad7d5004fde7ffad2ca39", size = 2255136 },
+    { url = "https://files.pythonhosted.org/packages/ae/38/19ae776bd80556e7336cab972db7cd2f111b6b3809de7e8deb7bc8125202/onnx_simplifier-0.4.36-cp311-cp311-win_amd64.whl", hash = "sha256:02a1a7d8573e9ef1c76cf9cad99a95d8dd508941518d0e00c00ef180f53783b4", size = 1288786 },
+]
+
+[[package]]
+name = "onnxconverter-common"
+version = "1.16.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "onnx" },
+    { name = "packaging" },
+    { name = "protobuf" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/67/8dca1868a6e226f8d3f7d666cb6a48b79a60aad5267b16b24627cd8d9eb8/onnxconverter_common-1.16.0-py2.py3-none-any.whl", hash = "sha256:df39ee96f17fff119dff10dd245467651b60b9e8a96020eb93402239794852f7", size = 89511 },
+]
+
+[[package]]
 name = "onnxruntime"
 version = "1.25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2936,6 +2965,8 @@ dev = [
 onnx = [
     { name = "jax2onnx" },
     { name = "onnx" },
+    { name = "onnx-simplifier" },
+    { name = "onnxconverter-common" },
     { name = "onnxruntime" },
 ]
 
@@ -2964,6 +2995,8 @@ dev = [{ name = "ruff", specifier = ">=0.15.6" }]
 onnx = [
     { name = "jax2onnx", specifier = "==0.13.0" },
     { name = "onnx", specifier = "==1.21.0" },
+    { name = "onnx-simplifier", specifier = "==0.4.36" },
+    { name = "onnxconverter-common", specifier = ">=1.16.0" },
     { name = "onnxruntime", specifier = "==1.25.0" },
 ]
 

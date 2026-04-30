@@ -6,7 +6,13 @@ import jax.numpy as jnp
 from einops import rearrange
 
 from visionary.dataset import DynamicsBatch
-from visionary.transformer import SpatioTemporalTransformer, create_temporal_rope
+from visionary.transformer import (
+    SpatioTemporalTransformer,
+    SwiGLU,
+    apply_rotary_embedding,
+    create_temporal_rope,
+    TransformerBlock,
+)
 
 
 class ActionEmbedding(nn.Module):
@@ -72,6 +78,383 @@ class ShortcutEmbedding(nn.Module):
         return jnp.concatenate([step_tokens, signal_tokens], axis=-1)
 
 
+def validate_sample_steps(sample_steps: int) -> int:
+    sample_steps = int(sample_steps)
+    if sample_steps <= 0 or sample_steps & (sample_steps - 1):
+        raise ValueError(f"sample_steps must be a positive power of two, got {sample_steps}.")
+    return int(round(math.log2(sample_steps)))
+
+
+def flow_update_z(
+    current_z: jnp.ndarray, pred_z: jnp.ndarray, signal_level: int, sample_steps: int
+) -> jnp.ndarray:
+    tau = jnp.asarray(signal_level / sample_steps, dtype=jnp.float32)
+    step_size = jnp.asarray(1.0 / sample_steps, dtype=jnp.float32)
+    denom = jnp.maximum(1.0 - tau, 1e-6)
+    velocity = (pred_z.astype(jnp.float32) - current_z.astype(jnp.float32)) / denom
+    return current_z.astype(jnp.float32) + velocity * step_size
+
+
+class _InferenceRMSNorm(nn.Module):
+    dtype: jnp.dtype = jnp.bfloat16
+    epsilon: float = 1.0e-6
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        scale = self.param("scale", nn.initializers.ones, (x.shape[-1],))
+        x_f32 = x.astype(jnp.float32)
+        variance = jnp.mean(jnp.square(x_f32), axis=-1, keepdims=True)
+        y = x_f32 * jax.lax.rsqrt(variance + jnp.asarray(self.epsilon, dtype=jnp.float32))
+        y = y * scale.astype(jnp.float32)
+        return y.astype(self.dtype)
+
+
+class _InferenceAttention(nn.Module):
+    model_dim: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    dtype: jnp.dtype = jnp.bfloat16
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        rope_emb: tuple[jnp.ndarray, jnp.ndarray] | None = None,
+        mask: jnp.ndarray | None = None,
+    ) -> jnp.ndarray:
+        q = nn.Dense(self.num_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+        k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+        v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+
+        q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
+        k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
+        v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
+
+        q = _InferenceRMSNorm(dtype=self.dtype, name="RMSNorm_0")(q)
+        k = _InferenceRMSNorm(dtype=self.dtype, name="RMSNorm_1")(k)
+
+        if rope_emb is not None:
+            q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
+            k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
+
+        out = jax.nn.dot_product_attention(
+            q,
+            k,
+            v,
+            mask=mask,
+            scale=1.0 / jnp.sqrt(self.head_dim),
+        )
+        out = rearrange(out, "b t h d -> b t (h d)")
+        return nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
+
+
+class _InferenceTransformerBlock(nn.Module):
+    model_dim: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    mlp_hidden_dim: int
+    dtype: jnp.dtype = jnp.bfloat16
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        mask: jnp.ndarray,
+    ) -> jnp.ndarray:
+        residual = x
+        x = _InferenceRMSNorm(dtype=self.dtype, name="RMSNorm_0")(x)
+        x = residual + _InferenceAttention(
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            dtype=self.dtype,
+            name="Attention_0",
+        )(x, rope_emb, mask)
+
+        residual = x
+        x = _InferenceRMSNorm(dtype=self.dtype, name="RMSNorm_1")(x)
+        return residual + SwiGLU(self.mlp_hidden_dim, dtype=self.dtype)(x)
+
+
+class _CachedTemporalAttention(nn.Module):
+    model_dim: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    context_length: int | None = None
+    dtype: jnp.dtype = jnp.bfloat16
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        mask: jnp.ndarray | None,
+        k_cache: jnp.ndarray | None = None,
+        v_cache: jnp.ndarray | None = None,
+        cache_length: jnp.ndarray | None = None,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        q = nn.Dense(self.num_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+        k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+        v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
+
+        q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
+        k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
+        v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
+
+        q = _InferenceRMSNorm(dtype=self.dtype, name="RMSNorm_0")(q)
+        k = _InferenceRMSNorm(dtype=self.dtype, name="RMSNorm_1")(k)
+
+        q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
+        k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
+
+        keys = k
+        values = v
+        if k_cache is not None and v_cache is not None and cache_length is not None:
+            keys = jnp.concatenate([k_cache.astype(k.dtype), k], axis=1)
+            values = jnp.concatenate([v_cache.astype(v.dtype), v], axis=1)
+            cache_positions = jnp.arange(int(self.context_length) + 1, dtype=jnp.int32)
+            valid = cache_positions < (cache_length[0] + 1)
+            mask = valid[None, None, None, :]
+
+        out = jax.nn.dot_product_attention(
+            q,
+            keys,
+            values,
+            mask=mask,
+            scale=1.0 / jnp.sqrt(self.head_dim),
+        )
+        out = rearrange(out, "b t h d -> b t (h d)")
+        out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
+        return out, k, v
+
+
+class _CachedTransformerBlock(nn.Module):
+    model_dim: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    mlp_hidden_dim: int
+    context_length: int | None = None
+    dtype: jnp.dtype = jnp.bfloat16
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        mask: jnp.ndarray | None,
+        k_cache: jnp.ndarray | None = None,
+        v_cache: jnp.ndarray | None = None,
+        cache_length: jnp.ndarray | None = None,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        residual = x
+        x = _InferenceRMSNorm(dtype=self.dtype, name="RMSNorm_0")(x)
+        attn_out, k, v = _CachedTemporalAttention(
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            context_length=self.context_length,
+            dtype=self.dtype,
+            name="Attention_0",
+        )(x, rope_emb, mask, k_cache, v_cache, cache_length)
+        x = residual + attn_out
+
+        residual = x
+        x = _InferenceRMSNorm(dtype=self.dtype, name="RMSNorm_1")(x)
+        x = residual + SwiGLU(self.mlp_hidden_dim, dtype=self.dtype)(x)
+        return x, k, v
+
+
+def _append_cache_entry(
+    cache: jnp.ndarray,
+    entry: jnp.ndarray,
+    cache_length: jnp.ndarray,
+) -> jnp.ndarray:
+    write_index = jnp.minimum(cache_length[0], cache.shape[2] - 1)
+    return jax.lax.dynamic_update_slice(cache, entry, (0, 0, write_index, 0, 0))
+
+
+class _CachedSpatioTemporalTransformer(nn.Module):
+    num_layers: int
+    model_dim: int
+    num_heads: int
+    num_kv_heads: int
+    head_dim: int
+    mlp_hidden_dim: int
+    context_length: int
+    temporal_layer_period: int = 4
+    dtype: jnp.dtype = jnp.bfloat16
+
+    @nn.compact
+    def prefill(
+        self,
+        x: jnp.ndarray,
+        t: int,
+        total_tokens: int,
+        spatial_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        spatial_mask: jnp.ndarray,
+        temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        temporal_mask: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        batch_size = x.shape[0]
+        temporal_mask = jnp.repeat(temporal_mask, total_tokens, axis=0)[:, None, :, :]
+        block_idx = 0
+        cache_ks = []
+        cache_vs = []
+        num_groups = self.num_layers // self.temporal_layer_period
+        for _ in range(num_groups):
+            x = rearrange(x, "b t n d -> (b t) n d")
+            for _ in range(self.temporal_layer_period - 1):
+                x = _InferenceTransformerBlock(
+                    model_dim=self.model_dim,
+                    num_heads=self.num_heads,
+                    num_kv_heads=self.num_kv_heads,
+                    head_dim=self.head_dim,
+                    mlp_hidden_dim=self.mlp_hidden_dim,
+                    dtype=self.dtype,
+                    name=f"TransformerBlock_{block_idx}",
+                )(x, spatial_rope_emb, spatial_mask)
+                block_idx += 1
+            x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=t)
+
+            x = rearrange(x, "b t n d -> (b n) t d")
+            x, k, v = _CachedTransformerBlock(
+                model_dim=self.model_dim,
+                num_heads=self.num_heads,
+                num_kv_heads=self.num_kv_heads,
+                head_dim=self.head_dim,
+                mlp_hidden_dim=self.mlp_hidden_dim,
+                dtype=self.dtype,
+                name=f"TransformerBlock_{block_idx}",
+            )(x, temporal_rope_emb, temporal_mask)
+            cache_ks.append(rearrange(k, "(b n) t h d -> b n t h d", b=batch_size, n=total_tokens))
+            cache_vs.append(rearrange(v, "(b n) t h d -> b n t h d", b=batch_size, n=total_tokens))
+            block_idx += 1
+            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+
+        return x, jnp.stack(cache_ks, axis=0), jnp.stack(cache_vs, axis=0)
+
+    @nn.compact
+    def step(
+        self,
+        x: jnp.ndarray,
+        total_tokens: int,
+        spatial_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        spatial_mask: jnp.ndarray,
+        temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        batch_size = x.shape[0]
+        block_idx = 0
+        temporal_idx = 0
+        candidate_ks = []
+        candidate_vs = []
+        num_groups = self.num_layers // self.temporal_layer_period
+        for _ in range(num_groups):
+            x = rearrange(x, "b t n d -> (b t) n d")
+            for _ in range(self.temporal_layer_period - 1):
+                x = _InferenceTransformerBlock(
+                    model_dim=self.model_dim,
+                    num_heads=self.num_heads,
+                    num_kv_heads=self.num_kv_heads,
+                    head_dim=self.head_dim,
+                    mlp_hidden_dim=self.mlp_hidden_dim,
+                    dtype=self.dtype,
+                    name=f"TransformerBlock_{block_idx}",
+                )(x, spatial_rope_emb, spatial_mask)
+                block_idx += 1
+            x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=1)
+
+            x = rearrange(x, "b t n d -> (b n) t d")
+            block_k_cache = rearrange(k_cache[temporal_idx], "b n t h d -> (b n) t h d")
+            block_v_cache = rearrange(v_cache[temporal_idx], "b n t h d -> (b n) t h d")
+            x, k, v = _CachedTransformerBlock(
+                model_dim=self.model_dim,
+                num_heads=self.num_heads,
+                num_kv_heads=self.num_kv_heads,
+                head_dim=self.head_dim,
+                mlp_hidden_dim=self.mlp_hidden_dim,
+                context_length=self.context_length,
+                dtype=self.dtype,
+                name=f"TransformerBlock_{block_idx}",
+            )(x, temporal_rope_emb, None, block_k_cache, block_v_cache, cache_length)
+            k = rearrange(k, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens)
+            v = rearrange(v, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens)
+            candidate_ks.append(_append_cache_entry(k_cache[temporal_idx], k, cache_length))
+            candidate_vs.append(_append_cache_entry(v_cache[temporal_idx], v, cache_length))
+            block_idx += 1
+            temporal_idx += 1
+            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+
+        candidate_cache_length = jnp.minimum(cache_length + 1, self.context_length).astype(
+            jnp.int32
+        )
+        return (
+            x,
+            jnp.stack(candidate_ks, axis=0),
+            jnp.stack(candidate_vs, axis=0),
+            candidate_cache_length,
+        )
+
+    @nn.compact
+    def predict_step(
+        self,
+        x: jnp.ndarray,
+        total_tokens: int,
+        spatial_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        spatial_mask: jnp.ndarray,
+        temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+    ) -> jnp.ndarray:
+        batch_size = x.shape[0]
+        block_idx = 0
+        temporal_idx = 0
+        num_groups = self.num_layers // self.temporal_layer_period
+        for _ in range(num_groups):
+            x = rearrange(x, "b t n d -> (b t) n d")
+            for _ in range(self.temporal_layer_period - 1):
+                x = TransformerBlock(
+                    model_dim=self.model_dim,
+                    num_heads=self.num_heads,
+                    num_kv_heads=self.num_kv_heads,
+                    head_dim=self.head_dim,
+                    mlp_hidden_dim=self.mlp_hidden_dim,
+                    dtype=self.dtype,
+                    name=f"TransformerBlock_{block_idx}",
+                )(x, spatial_rope_emb, spatial_mask)
+                block_idx += 1
+            x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=1)
+
+            x = rearrange(x, "b t n d -> (b n) t d")
+            block_k_cache = rearrange(k_cache[temporal_idx], "b n t h d -> (b n) t h d")
+            block_v_cache = rearrange(v_cache[temporal_idx], "b n t h d -> (b n) t h d")
+            x, _, _ = _CachedTransformerBlock(
+                model_dim=self.model_dim,
+                num_heads=self.num_heads,
+                num_kv_heads=self.num_kv_heads,
+                head_dim=self.head_dim,
+                mlp_hidden_dim=self.mlp_hidden_dim,
+                context_length=self.context_length,
+                dtype=self.dtype,
+                name=f"TransformerBlock_{block_idx}",
+            )(x, temporal_rope_emb, None, block_k_cache, block_v_cache, cache_length)
+            block_idx += 1
+            temporal_idx += 1
+            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+
+        return x
+
+
 class DynamicsModel(nn.Module):
     num_layers: int
     num_heads: int
@@ -135,7 +518,11 @@ class DynamicsModel(nn.Module):
             self.register_tokens.astype(self.dtype),
             (batch_size, seq_len, self.num_registers, self.model_dim),
         )
-        observation_tokens = nn.Dense(self.model_dim, dtype=self.dtype)(z.astype(self.dtype))
+        observation_tokens = nn.Dense(
+            self.model_dim,
+            dtype=self.dtype,
+            name="Dense_0",
+        )(z.astype(self.dtype))
 
         num_tokens = 1 + 1 + self.num_registers + num_obs_tokens
         tokens = jnp.concatenate(
@@ -173,7 +560,251 @@ class DynamicsModel(nn.Module):
             dtype=self.dtype,
             kernel_init=nn.initializers.zeros,
             bias_init=nn.initializers.zeros,
+            name="Dense_1",
         )(observation_hidden)
+
+    def _tokens(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray | None,
+        step_levels: jnp.ndarray,
+        signal_levels: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, int, int]:
+        batch_size, seq_len, num_obs_tokens, _ = z.shape
+
+        action_tokens = self.action_embedding(actions, (batch_size, seq_len))[:, :, None, :]
+        shortcut_tokens = self.shortcut_embedding(step_levels, signal_levels)[:, :, None, :]
+        register_tokens = jnp.broadcast_to(
+            self.register_tokens.astype(self.dtype),
+            (batch_size, seq_len, self.num_registers, self.model_dim),
+        )
+        observation_tokens = nn.Dense(self.model_dim, dtype=self.dtype)(z.astype(self.dtype))
+        tokens = jnp.concatenate(
+            [action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2
+        )
+        total_tokens = 1 + 1 + self.num_registers + num_obs_tokens
+        observation_offset = 1 + 1 + self.num_registers
+        return tokens, total_tokens, observation_offset
+
+    def _project_observations(
+        self,
+        hidden: jnp.ndarray,
+        observation_offset: int,
+        token_dim: int,
+    ) -> jnp.ndarray:
+        observation_hidden = hidden[:, :, observation_offset:, :]
+        return nn.Dense(
+            token_dim,
+            dtype=self.dtype,
+            kernel_init=nn.initializers.zeros,
+            bias_init=nn.initializers.zeros,
+        )(observation_hidden)
+
+    @nn.compact
+    def cached_prefill(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray | None,
+        step_levels: jnp.ndarray,
+        signal_levels: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        _, seq_len, _, token_dim = z.shape
+        tokens, total_tokens, observation_offset = self._tokens(
+            z, actions, step_levels, signal_levels
+        )
+        spatial_rope = create_temporal_rope(self.base, self.head_dim, total_tokens)
+        temporal_rope = create_temporal_rope(self.base, self.head_dim, seq_len)
+        spatial_mask = jnp.ones((total_tokens, total_tokens), dtype=bool)
+
+        query_positions = jnp.arange(seq_len)[:, None]
+        key_positions = jnp.arange(seq_len)[None, :]
+        temporal_mask = key_positions <= query_positions
+        temporal_mask = temporal_mask & (
+            key_positions >= query_positions - (self.context_length - 1)
+        )
+        temporal_mask = jnp.broadcast_to(temporal_mask[None], (z.shape[0], seq_len, seq_len))
+
+        hidden, k_cache, v_cache = _CachedSpatioTemporalTransformer(
+            num_layers=self.num_layers,
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            mlp_hidden_dim=self.mlp_hidden_dim,
+            context_length=self.context_length,
+            temporal_layer_period=self.temporal_layer_period,
+            dtype=self.dtype,
+            name="cached_transformer",
+        ).prefill(
+            tokens,
+            seq_len,
+            total_tokens,
+            spatial_rope,
+            spatial_mask,
+            temporal_rope,
+            temporal_mask,
+        )
+        pred_z = self._project_observations(hidden, observation_offset, token_dim)
+        cache_length = jnp.asarray([seq_len], dtype=jnp.int32)
+        return pred_z, k_cache.astype(jnp.float32), v_cache.astype(jnp.float32), cache_length
+
+    @nn.compact
+    def cached_step(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray | None,
+        step_levels: jnp.ndarray,
+        signal_levels: jnp.ndarray,
+        position_index: jnp.ndarray,
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        _, _, _, token_dim = z.shape
+        tokens, total_tokens, observation_offset = self._tokens(
+            z, actions, step_levels, signal_levels
+        )
+        spatial_rope = create_temporal_rope(self.base, self.head_dim, total_tokens)
+        full_temporal_rope = create_temporal_rope(
+            self.base,
+            self.head_dim,
+            self.context_length + 1,
+        )
+        pos = jnp.minimum(position_index[0], self.context_length)
+        temporal_rope = (
+            jnp.take(full_temporal_rope[0], pos, axis=0)[None],
+            jnp.take(full_temporal_rope[1], pos, axis=0)[None],
+        )
+        spatial_mask = jnp.ones((total_tokens, total_tokens), dtype=bool)
+
+        hidden, candidate_k, candidate_v, candidate_cache_length = _CachedSpatioTemporalTransformer(
+            num_layers=self.num_layers,
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            mlp_hidden_dim=self.mlp_hidden_dim,
+            context_length=self.context_length,
+            temporal_layer_period=self.temporal_layer_period,
+            dtype=self.dtype,
+            name="cached_transformer",
+        ).step(
+            tokens,
+            total_tokens,
+            spatial_rope,
+            spatial_mask,
+            temporal_rope,
+            k_cache,
+            v_cache,
+            cache_length,
+        )
+        pred_z = self._project_observations(hidden, observation_offset, token_dim)
+        return (
+            pred_z,
+            candidate_k.astype(jnp.float32),
+            candidate_v.astype(jnp.float32),
+            candidate_cache_length,
+        )
+
+    @nn.compact
+    def cached_predict_step(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray | None,
+        step_levels: jnp.ndarray,
+        signal_levels: jnp.ndarray,
+        position_index: jnp.ndarray,
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+    ) -> jnp.ndarray:
+        _, _, _, token_dim = z.shape
+        tokens, total_tokens, observation_offset = self._tokens(
+            z, actions, step_levels, signal_levels
+        )
+        spatial_rope = create_temporal_rope(self.base, self.head_dim, total_tokens)
+        full_temporal_rope = create_temporal_rope(
+            self.base,
+            self.head_dim,
+            self.context_length + 1,
+        )
+        pos = jnp.minimum(position_index[0], self.context_length)
+        temporal_rope = (
+            jnp.take(full_temporal_rope[0], pos, axis=0)[None],
+            jnp.take(full_temporal_rope[1], pos, axis=0)[None],
+        )
+        spatial_mask = jnp.ones((total_tokens, total_tokens), dtype=bool)
+
+        hidden = _CachedSpatioTemporalTransformer(
+            num_layers=self.num_layers,
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            mlp_hidden_dim=self.mlp_hidden_dim,
+            context_length=self.context_length,
+            temporal_layer_period=self.temporal_layer_period,
+            dtype=self.dtype,
+            name="cached_transformer",
+        ).predict_step(
+            tokens,
+            total_tokens,
+            spatial_rope,
+            spatial_mask,
+            temporal_rope,
+            k_cache,
+            v_cache,
+            cache_length,
+        )
+        return self._project_observations(hidden, observation_offset, token_dim)
+
+    @nn.compact
+    def cached_sample_step(
+        self,
+        z: jnp.ndarray,
+        actions: jnp.ndarray | None,
+        position_index: jnp.ndarray,
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+        *,
+        sample_steps: int,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        sample_step_level = validate_sample_steps(sample_steps)
+        current_z = z.astype(jnp.float32)
+        candidate_k = k_cache
+        candidate_v = v_cache
+        candidate_cache_length = cache_length
+        pred_z = current_z
+
+        step_levels = jnp.full(z.shape[:2], sample_step_level, dtype=jnp.int32)
+        for signal_level in range(sample_steps):
+            signal_levels = jnp.full(z.shape[:2], signal_level, dtype=jnp.int32)
+            if signal_level == sample_steps - 1:
+                pred_z, candidate_k, candidate_v, candidate_cache_length = self.cached_step(
+                    current_z,
+                    actions,
+                    step_levels,
+                    signal_levels,
+                    position_index,
+                    k_cache,
+                    v_cache,
+                    cache_length,
+                )
+            else:
+                pred_z = self.cached_predict_step(
+                    current_z,
+                    actions,
+                    step_levels,
+                    signal_levels,
+                    position_index,
+                    k_cache,
+                    v_cache,
+                    cache_length,
+                )
+            current_z = flow_update_z(current_z, pred_z, signal_level, sample_steps)
+
+        return current_z, pred_z, candidate_k, candidate_v, candidate_cache_length
 
     def generate_next(
         self,
