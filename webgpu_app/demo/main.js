@@ -24,6 +24,8 @@ const ACTION_LABELS = {
 
 const CONTEXT_TENSOR_SIZE = 32 * 32;
 const CACHE_SHAPE = [6, 1, 36, 64, 2, 64];
+const float32Scratch = new Float32Array(1);
+const uint32Scratch = new Uint32Array(float32Scratch.buffer);
 
 const elements = {
   canvas: document.getElementById('frame'),
@@ -59,8 +61,60 @@ function setStatus(message) {
 
 function dtypeArray(dtype) {
   if (dtype === 'float32') return Float32Array;
+  if (dtype === 'float16') return Uint16Array;
   if (dtype === 'int32') return Int32Array;
   throw new Error(`Unsupported artifact dtype ${dtype}`);
+}
+
+function float32ToFloat16Bits(value) {
+  float32Scratch[0] = value;
+  const bits = uint32Scratch[0];
+  const sign = (bits >>> 16) & 0x8000;
+  const exponent = (bits >>> 23) & 0xff;
+  const mantissa = bits & 0x7fffff;
+  if (exponent === 0xff) return sign | (mantissa ? 0x7e00 : 0x7c00);
+  const halfExponent = exponent - 127 + 15;
+  if (halfExponent >= 0x1f) return sign | 0x7c00;
+  if (halfExponent <= 0) {
+    if (halfExponent < -10) return sign;
+    const subnormal = (mantissa | 0x800000) >>> (1 - halfExponent);
+    return sign | ((subnormal + 0x1000) >>> 13);
+  }
+  return sign | (halfExponent << 10) | ((mantissa + 0x1000) >>> 13);
+}
+
+function float16BitsToFloat32(bits) {
+  const sign = (bits & 0x8000) << 16;
+  let exponent = (bits >>> 10) & 0x1f;
+  let mantissa = bits & 0x03ff;
+  if (exponent === 0) {
+    if (mantissa === 0) {
+      uint32Scratch[0] = sign;
+      return float32Scratch[0];
+    }
+    exponent = 1;
+    while ((mantissa & 0x0400) === 0) {
+      mantissa <<= 1;
+      exponent -= 1;
+    }
+    mantissa &= 0x03ff;
+  } else if (exponent === 0x1f) {
+    uint32Scratch[0] = sign | 0x7f800000 | (mantissa << 13);
+    return float32Scratch[0];
+  }
+  uint32Scratch[0] = sign | ((exponent + 127 - 15) << 23) | (mantissa << 13);
+  return float32Scratch[0];
+}
+
+function makeFloatTensor(dtype, values, shape) {
+  if (dtype === 'float16') {
+    const packed = new Uint16Array(values.length);
+    for (let index = 0; index < values.length; index += 1) {
+      packed[index] = float32ToFloat16Bits(values[index]);
+    }
+    return new ort.Tensor('float16', packed, shape);
+  }
+  return new ort.Tensor('float32', new Float32Array(values), shape);
 }
 
 async function fetchJson(url) {
@@ -104,9 +158,9 @@ async function createSession(spec, options = {}) {
   });
 }
 
-function randomNormalTensor(shape) {
+function randomNormalTensor(shape, dtype = 'float32') {
   const size = shape.reduce((total, value) => total * value, 1);
-  return new ort.Tensor('float32', noiseGenerator.tensorData(size), shape);
+  return makeFloatTensor(dtype, noiseGenerator.tensorData(size), shape);
 }
 
 function zeroTensor(dtype, shape) {
@@ -119,10 +173,10 @@ function scalarTensor(value, shape = [1, 1]) {
   return new ort.Tensor('int32', new Int32Array([value]), shape);
 }
 
-function contextFrameTensor(tensor, frameIndex) {
+function contextFrameTensor(tensor, frameIndex, dtype = 'float32') {
   const start = frameIndex * CONTEXT_TENSOR_SIZE;
   const end = start + CONTEXT_TENSOR_SIZE;
-  return new ort.Tensor('float32', tensor.data.slice(start, end), [1, 1, 32, 32]);
+  return makeFloatTensor(dtype, tensor.data.slice(start, end), [1, 1, 32, 32]);
 }
 
 function contextScalarTensor(tensor, frameIndex) {
@@ -158,9 +212,19 @@ function patchesToImageData(patchesTensor, preprocessor) {
           if (x < 0 || x >= width) continue;
           const source = patchOffset + ((iy * patchSize + ix) * channels);
           const target = (y * width + x) * 4;
-          image.data[target] = Math.max(0, Math.min(255, Math.round(patches[source] * 255)));
-          image.data[target + 1] = Math.max(0, Math.min(255, Math.round(patches[source + 1] * 255)));
-          image.data[target + 2] = Math.max(0, Math.min(255, Math.round(patches[source + 2] * 255)));
+          const r =
+            patchesTensor.type === 'float16' ? float16BitsToFloat32(patches[source]) : patches[source];
+          const g =
+            patchesTensor.type === 'float16'
+              ? float16BitsToFloat32(patches[source + 1])
+              : patches[source + 1];
+          const b =
+            patchesTensor.type === 'float16'
+              ? float16BitsToFloat32(patches[source + 2])
+              : patches[source + 2];
+          image.data[target] = Math.max(0, Math.min(255, Math.round(r * 255)));
+          image.data[target + 1] = Math.max(0, Math.min(255, Math.round(g * 255)));
+          image.data[target + 2] = Math.max(0, Math.min(255, Math.round(b * 255)));
           image.data[target + 3] = 255;
         }
       }
@@ -283,6 +347,11 @@ async function loadRuntime() {
       stepLevels,
       signalLevels,
     },
+    dtypes: {
+      prefixZ: prefixStepSpec.inputs.z.dtype,
+      cache: prefixStepSpec.inputs.k_cache.dtype,
+      sampleNoise: sampleStepSpec.inputs.sample_noise.dtype,
+    },
     cache: null,
   };
 }
@@ -292,14 +361,14 @@ async function prefill() {
   disposeGpuTensor(runtime.cache?.k);
   disposeGpuTensor(runtime.cache?.v);
   runtime.cache = {
-    k: zeroTensor('float32', CACHE_SHAPE),
-    v: zeroTensor('float32', CACHE_SHAPE),
+    k: zeroTensor(runtime.dtypes.cache, CACHE_SHAPE),
+    v: zeroTensor(runtime.dtypes.cache, CACHE_SHAPE),
     length: scalarTensor(0, [1]),
   };
   for (let index = 0; index < runtime.contextManifest.context_length; index += 1) {
     const outputs = await runtime.sessions.prefixStep.run(
       {
-        z: contextFrameTensor(runtime.context.z, index),
+        z: contextFrameTensor(runtime.context.z, index, runtime.dtypes.prefixZ),
         actions: contextScalarTensor(runtime.context.actions, index),
         step_levels: contextScalarTensor(runtime.context.stepLevels, index),
         signal_levels: contextScalarTensor(runtime.context.signalLevels, index),
@@ -328,8 +397,8 @@ async function prefill() {
 async function generateFrame() {
   const started = performance.now();
   const action = new ort.Tensor('int32', new Int32Array([currentAction]), [1, 1]);
-  const sampleNoise = randomNormalTensor([1, 1, 32, 32]);
-  const contextNoise = randomNormalTensor([1, 1, 32, 32]);
+  const sampleNoise = randomNormalTensor([1, 1, 32, 32], runtime.dtypes.sampleNoise);
+  const contextNoise = randomNormalTensor([1, 1, 32, 32], runtime.dtypes.sampleNoise);
   const sampleSession =
     runtime.cache.length.data[0] >= CACHE_SHAPE[3]
       ? runtime.sessions.sampleStepSlide
