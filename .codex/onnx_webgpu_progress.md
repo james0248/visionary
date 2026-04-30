@@ -308,6 +308,17 @@ Legacy no-append-context comparison:
 - `streaming_frame` median: ~83.96 ms, p95: ~86.07 ms.
 - This is faster than the behavior-preserving append-context artifact (~94 ms median) because it avoids the extra context-cache update pass.
 - It is not equivalent to the current demo semantics, because the committed cache no longer comes from the noised context latent used by `sample_step_append_context`.
+
+Legacy no-append-context profile:
+- `breakout_dynamics_cached_sample_step_slide_b1_t1_s4` profile has 5209 WebGPU node events.
+- Top costs:
+  - `Mul`: 1085 events, ~27.25 ms profile total.
+  - `Einsum`: 576 events, ~21.25 ms.
+  - `Unsqueeze`: 754 events, ~12.14 ms.
+  - `SimplifiedLayerNormalization`: 384 events, ~9.99 ms.
+  - `Gemm`: 296 events, ~8.88 ms.
+  - cache/layout update ops (`Concat`, `Squeeze`, `Gather`, `Split`) together remain meaningful but are not enough alone to reach 50 ms.
+- Interpretation: after removing the fifth append-context pass, the core four denoise passes still dominate. Reaching 50 ms without changing `sample_steps=4` likely needs either fewer kernels per transformer pass or a cache ABI that avoids full-cache outputs plus custom GPU cache update.
   - Final hot graph has 0 `Min` and 0 `Reshape`.
 
 Benchmark after static slide rewrite:
