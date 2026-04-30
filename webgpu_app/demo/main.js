@@ -106,6 +106,17 @@ function float16BitsToFloat32(bits) {
   return float32Scratch[0];
 }
 
+function isNativeFloat16Array(values) {
+  return typeof Float16Array !== 'undefined' && values instanceof Float16Array;
+}
+
+function floatTensorValue(tensor, index) {
+  if (tensor.type !== 'float16' || isNativeFloat16Array(tensor.data)) {
+    return tensor.data[index];
+  }
+  return float16BitsToFloat32(tensor.data[index]);
+}
+
 function makeFloatTensor(dtype, values, shape) {
   if (dtype === 'float16') {
     const packed = new Uint16Array(values.length);
@@ -147,14 +158,17 @@ function optionalOutputName(spec, preferred) {
 }
 
 async function createSession(spec, options = {}) {
+  const executionProviders = options.executionProviders ?? [{ name: 'webgpu' }];
+  const sessionOptions = { ...options };
+  delete sessionOptions.executionProviders;
   return ort.InferenceSession.create(`${ASSET_DIR}/${spec.path}`, {
-    executionProviders: [{ name: 'webgpu' }],
+    executionProviders,
     graphOptimizationLevel: 'all',
     externalData: (spec.external_data ?? []).map((entry) => ({
       path: entry.path,
       data: `${ASSET_DIR}/${entry.path}`,
     })),
-    ...options,
+    ...sessionOptions,
   });
 }
 
@@ -212,16 +226,9 @@ function patchesToImageData(patchesTensor, preprocessor) {
           if (x < 0 || x >= width) continue;
           const source = patchOffset + ((iy * patchSize + ix) * channels);
           const target = (y * width + x) * 4;
-          const r =
-            patchesTensor.type === 'float16' ? float16BitsToFloat32(patches[source]) : patches[source];
-          const g =
-            patchesTensor.type === 'float16'
-              ? float16BitsToFloat32(patches[source + 1])
-              : patches[source + 1];
-          const b =
-            patchesTensor.type === 'float16'
-              ? float16BitsToFloat32(patches[source + 2])
-              : patches[source + 2];
+          const r = floatTensorValue(patchesTensor, source);
+          const g = floatTensorValue(patchesTensor, source + 1);
+          const b = floatTensorValue(patchesTensor, source + 2);
           image.data[target] = Math.max(0, Math.min(255, Math.round(r * 255)));
           image.data[target + 1] = Math.max(0, Math.min(255, Math.round(g * 255)));
           image.data[target + 2] = Math.max(0, Math.min(255, Math.round(b * 255)));
@@ -231,6 +238,68 @@ function patchesToImageData(patchesTensor, preprocessor) {
     }
   }
   return image;
+}
+
+function tensorStats(tensor) {
+  const values = tensor.data;
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  let sum = 0;
+  let finite = 0;
+  let nonzero = 0;
+
+  for (let index = 0; index < values.length; index += 1) {
+    const value = floatTensorValue(tensor, index);
+    if (!Number.isFinite(value)) continue;
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+    sum += value;
+    finite += 1;
+    if (value !== 0) nonzero += 1;
+  }
+
+  return {
+    type: tensor.type,
+    dims: tensor.dims,
+    min,
+    max,
+    mean: finite ? sum / finite : Number.NaN,
+    finite,
+    nonzero,
+  };
+}
+
+function canvasStats() {
+  const data = ctx.getImageData(0, 0, elements.canvas.width, elements.canvas.height).data;
+  let min = 255;
+  let max = 0;
+  let sum = 0;
+  let nonzero = 0;
+  for (let index = 0; index < data.length; index += 4) {
+    const value = data[index] + data[index + 1] + data[index + 2];
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+    sum += value;
+    if (value !== 0) nonzero += 1;
+  }
+  const pixels = data.length / 4;
+  return { min, max, mean: sum / pixels, nonzero };
+}
+
+async function renderLatent(zTensor) {
+  const decoderOutputs = await runtime.sessions.decoder.run(
+    {
+      z: zTensor,
+    },
+    [runtime.names.patches],
+  );
+  const patches = decoderOutputs[runtime.names.patches];
+  const image = patchesToImageData(patches, runtime.preprocessor);
+  ctx.putImageData(image, 0, 0);
+  return {
+    patches: tensorStats(patches),
+    canvas: canvasStats(),
+  };
 }
 
 function updateActionUi() {
@@ -391,6 +460,14 @@ async function prefill() {
   frameCount = 0;
   noiseGenerator = new NormalNoiseGenerator(runtime.contextManifest.noise_seed ?? 0);
   elements.frameCount.textContent = '0';
+  const preview = await renderLatent(
+    contextFrameTensor(
+      runtime.context.z,
+      runtime.contextManifest.context_length - 1,
+      runtime.dtypes.prefixZ,
+    ),
+  );
+  runtime.lastPreviewStats = preview;
   setStatus(`Ready with cache length ${runtime.cache.length.data[0]}`);
 }
 
@@ -438,16 +515,17 @@ async function generateFrame() {
   disposeGpuTensor(oldCache.k);
   disposeGpuTensor(oldCache.v);
 
-  const decoderOutputs = await runtime.sessions.decoder.run(
-    {
-      z: outputs[runtime.names.finalZ],
-    },
-    [runtime.names.patches],
-  );
+  const decoderOutputs = await runtime.sessions.decoder.run({ z: outputs[runtime.names.finalZ] }, [
+    runtime.names.patches,
+  ]);
   disposeGpuTensor(outputs[runtime.names.finalZ]);
 
   const image = patchesToImageData(decoderOutputs[runtime.names.patches], runtime.preprocessor);
   ctx.putImageData(image, 0, 0);
+  runtime.lastFrameStats = {
+    patches: tensorStats(decoderOutputs[runtime.names.patches]),
+    canvas: canvasStats(),
+  };
 
   frameCount += 1;
   const elapsed = performance.now() - started;
@@ -504,3 +582,18 @@ try {
   setStatus(error instanceof Error ? error.message : String(error));
   throw error;
 }
+
+window.visionaryDemoDebug = {
+  get runtime() {
+    return runtime;
+  },
+  canvasStats,
+  tensorStats,
+  async renderContext(frameIndex = runtime.contextManifest.context_length - 1) {
+    return renderLatent(contextFrameTensor(runtime.context.z, frameIndex, runtime.dtypes.prefixZ));
+  },
+  async generateFrame() {
+    await generateFrame();
+    return runtime.lastFrameStats;
+  },
+};
