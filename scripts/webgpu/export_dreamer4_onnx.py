@@ -82,9 +82,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional directory where the freshly exported ONNX files are copied before "
-            "any simplification, ORT optimization, precision conversion, or WebGPU graph "
-            "rewrites. Use this with scripts/webgpu/compare_onnx_artifacts.py as a "
-            "behavior-preserving optimization gate."
+            "any simplification, ORT optimization, or WebGPU graph rewrites. Use this "
+            "with scripts/webgpu/compare_onnx_artifacts.py as a behavior-preserving "
+            "optimization gate."
         ),
     )
     parser.add_argument("--batch_size", type=int, default=1)
@@ -93,23 +93,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--sample_steps", type=int, default=4)
     parser.add_argument("--context_tau", type=float, default=29 / 32)
-    parser.add_argument(
-        "--native_attention",
-        action="store_true",
-        help=(
-            "Export using JAX native dot_product_attention instead of the patched ONNX "
-            "attention decomposition. This is experimental and intended for comparing "
-            "GQA lowering in ONNX Runtime WebGPU."
-        ),
-    )
-    parser.add_argument(
-        "--grouped_gqa_attention",
-        action="store_true",
-        help=(
-            "Export patched attention with grouped GQA math instead of materializing "
-            "repeated K/V heads. Experimental WebGPU performance option."
-        ),
-    )
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--atol", type=float, default=0.05)
     parser.add_argument("--rtol", type=float, default=0.05)
@@ -150,32 +133,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--float16",
-        action="store_true",
-        help=(
-            "Convert exported ONNX graphs to float16 internally while preserving "
-            "float32 model inputs and outputs. Experimental WebGPU performance option."
-        ),
-    )
-    parser.add_argument(
-        "--float16_decoder_only",
-        action="store_true",
-        help=(
-            "Convert only tokenizer decoder artifacts to float16. This keeps the "
-            "hot dynamics graph on its faster fp32 WebGPU path while reducing "
-            "single-frame decode latency."
-        ),
-    )
-    parser.add_argument(
-        "--keep_quickgelu",
-        action="store_true",
-        help=(
-            "Keep ORT-fused QuickGelu nodes after float16 conversion instead of "
-            "rewriting them to Mul/Sigmoid/Mul. This is experimental because some "
-            "ORT WebGPU versions fail to compile FP16 QuickGelu shaders."
-        ),
-    )
-    parser.add_argument(
         "--context_latents",
         type=Path,
         default=None,
@@ -204,10 +161,6 @@ def require_static_phase1_args(args: argparse.Namespace) -> None:
         raise ValueError(
             f"--sample_steps must be a positive power of two, got {args.sample_steps}."
         )
-    if args.native_attention and args.grouped_gqa_attention:
-        raise ValueError("--native_attention and --grouped_gqa_attention are mutually exclusive.")
-    if args.float16 and args.float16_decoder_only:
-        raise ValueError("--float16 and --float16_decoder_only are mutually exclusive.")
 
 
 def ensure_output(path: Path, *, overwrite: bool) -> None:
@@ -348,7 +301,7 @@ def snapshot_raw_artifacts(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "description": (
             "Raw jax2onnx exports captured before ONNX simplification, ORT optimization, "
-            "precision conversion, or WebGPU-specific graph rewrites."
+            "or WebGPU-specific graph rewrites."
         ),
         "artifacts": copied,
     }
@@ -431,306 +384,6 @@ def optimize_onnx_for_webgpu(path: Path) -> dict[str, Any]:
         "node_count_after": int(sum(after.values())),
         "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
         "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
-    }
-
-
-def convert_onnx_to_float16_for_webgpu(
-    path: Path,
-    *,
-    keep_io_types: bool,
-) -> dict[str, Any]:
-    from onnxconverter_common import float16
-
-    before = op_counts(path)
-    model = onnx.load(path.as_posix(), load_external_data=True)
-    converted = float16.convert_float_to_float16(
-        model,
-        keep_io_types=keep_io_types,
-        disable_shape_infer=True,
-        op_block_list=["Softmax"],
-    )
-    external_data_path(path).unlink(missing_ok=True)
-    onnx.save_model(converted, path.as_posix(), save_as_external_data=False)
-    onnx.checker.check_model(path.as_posix())
-
-    after = op_counts(path)
-    tracked_ops = ("Cast", "Reshape", "Concat", "Expand", "Transpose", "Einsum", "Gemm")
-    return {
-        "enabled": True,
-        "tool": "onnxconverter-common",
-        "keep_io_types": keep_io_types,
-        "disable_shape_infer": True,
-        "op_block_list": ["Softmax"],
-        "node_count_before": int(sum(before.values())),
-        "node_count_after": int(sum(after.values())),
-        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
-        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
-    }
-
-
-def repair_cast_output_types(path: Path) -> dict[str, Any]:
-    before = op_counts(path)
-    model = onnx.load(path.as_posix(), load_external_data=True)
-    annotated_types: dict[str, int] = {}
-    for value_info in itertools.chain(
-        model.graph.input, model.graph.output, model.graph.value_info
-    ):
-        tensor_type = value_info.type.tensor_type
-        if tensor_type.elem_type:
-            annotated_types[value_info.name] = tensor_type.elem_type
-
-    rewrites: list[dict[str, str]] = []
-    for node in model.graph.node:
-        if node.op_type != "Cast" or not node.output:
-            continue
-        cast_to = next((attr for attr in node.attribute if attr.name == "to"), None)
-        annotated_type = annotated_types.get(node.output[0])
-        if cast_to is None or annotated_type is None or cast_to.i == annotated_type:
-            continue
-        rewrites.append(
-            {
-                "node": node.name,
-                "output": node.output[0],
-                "from": onnx.TensorProto.DataType.Name(cast_to.i),
-                "to": onnx.TensorProto.DataType.Name(annotated_type),
-            }
-        )
-        cast_to.i = annotated_type
-
-    if rewrites:
-        external_data_path(path).unlink(missing_ok=True)
-        onnx.save_model(model, path.as_posix(), save_as_external_data=False)
-
-    after = op_counts(path)
-    return {
-        "enabled": True,
-        "tool": "custom_cast_type_repair",
-        "reason": (
-            "Repair Cast attributes that still point at a previous graph-output "
-            "dtype after full-IO float16 conversion and export output rewrites."
-        ),
-        "node_count_before": int(sum(before.values())),
-        "node_count_after": int(sum(after.values())),
-        "rewrites": len(rewrites),
-        "rewrite_examples": rewrites[:12],
-    }
-
-
-def strip_intermediate_value_info(path: Path) -> dict[str, Any]:
-    before = op_counts(path)
-    model = onnx.load(path.as_posix(), load_external_data=True)
-    removed = len(model.graph.value_info)
-    if removed:
-        del model.graph.value_info[:]
-        external_data_path(path).unlink(missing_ok=True)
-        onnx.save_model(model, path.as_posix(), save_as_external_data=False)
-        if op_counts(path).get("SimplifiedLayerNormalization", 0) == 0:
-            onnx.checker.check_model(path.as_posix())
-
-    after = op_counts(path)
-    return {
-        "enabled": True,
-        "tool": "custom_value_info_strip",
-        "reason": (
-            "Remove stale intermediate type annotations after float16 conversion. "
-            "The converter can leave value_info entries as tensor(float) while "
-            "rewritten producers now emit tensor(float16), and ORT treats that "
-            "as a hard type mismatch at load time."
-        ),
-        "node_count_before": int(sum(before.values())),
-        "node_count_after": int(sum(after.values())),
-        "removed_value_info": removed,
-    }
-
-
-def repair_float16_binary_cast_mismatches(path: Path) -> dict[str, Any]:
-    before = op_counts(path)
-    model = onnx.load(path.as_posix(), load_external_data=True)
-    initializers = {initializer.name: initializer for initializer in model.graph.initializer}
-    producer = {output: node for node in model.graph.node for output in node.output}
-
-    def initializer_type(name: str) -> int | None:
-        initializer = initializers.get(name)
-        return None if initializer is None else initializer.data_type
-
-    def cast_to_attr(node: onnx.NodeProto) -> onnx.AttributeProto | None:
-        if node.op_type != "Cast":
-            return None
-        return next((attr for attr in node.attribute if attr.name == "to"), None)
-
-    def upstream_cast_to_float(name: str, depth: int = 0) -> onnx.NodeProto | None:
-        if depth > 4:
-            return None
-        node = producer.get(name)
-        if node is None:
-            return None
-        cast_to = cast_to_attr(node)
-        if cast_to is not None and cast_to.i == onnx.TensorProto.FLOAT:
-            return node
-        if node.op_type in {"Unsqueeze", "Squeeze", "Reshape"} and node.input:
-            return upstream_cast_to_float(node.input[0], depth + 1)
-        return None
-
-    rewrites: list[dict[str, Any]] = []
-    binary_ops = {"Add", "Sub", "Mul", "Div"}
-    for node in model.graph.node:
-        if node.op_type not in binary_ops or len(node.input) != 2:
-            continue
-        input_types = [initializer_type(input_name) for input_name in node.input]
-        for cast_index, other_index in ((0, 1), (1, 0)):
-            cast_node = upstream_cast_to_float(node.input[cast_index])
-            cast_to = cast_to_attr(cast_node) if cast_node is not None else None
-            other_type = input_types[other_index]
-            if (
-                cast_to is not None
-                and cast_to.i == onnx.TensorProto.FLOAT
-                and other_type == onnx.TensorProto.FLOAT16
-            ):
-                cast_to.i = onnx.TensorProto.FLOAT16
-                rewrites.append(
-                    {
-                        "node": node.name,
-                        "op": node.op_type,
-                        "cast": cast_node.name,
-                        "from": "FLOAT",
-                        "to": "FLOAT16",
-                    }
-                )
-
-    if rewrites:
-        external_data_path(path).unlink(missing_ok=True)
-        onnx.save_model(model, path.as_posix(), save_as_external_data=False)
-
-    after = op_counts(path)
-    return {
-        "enabled": True,
-        "tool": "custom_float16_binary_cast_repair",
-        "reason": (
-            "After float16 conversion, blocked FP32 islands can leave mask Cast "
-            "nodes feeding binary ops with FP16 constants. ORT requires both "
-            "inputs of Add/Sub/Mul/Div to have the same type."
-        ),
-        "node_count_before": int(sum(before.values())),
-        "node_count_after": int(sum(after.values())),
-        "rewrites": len(rewrites),
-        "rewrite_examples": rewrites[:12],
-    }
-
-
-def decompose_quickgelu_for_fp16_webgpu(path: Path) -> dict[str, Any]:
-    before = op_counts(path)
-    model = onnx.load(path.as_posix(), load_external_data=True)
-    if before.get("QuickGelu", 0) == 0:
-        return {
-            "enabled": True,
-            "tool": "custom_quickgelu_decomposition",
-            "reason": "No QuickGelu nodes found.",
-            "node_count_before": int(sum(before.values())),
-            "node_count_after": int(sum(before.values())),
-            "rewrites": 0,
-            "rewrite_examples": [],
-        }
-
-    value_types: dict[str, int] = {}
-    for value_info in itertools.chain(
-        model.graph.input, model.graph.output, model.graph.value_info
-    ):
-        tensor_type = value_info.type.tensor_type
-        if tensor_type.elem_type:
-            value_types[value_info.name] = tensor_type.elem_type
-    for initializer in model.graph.initializer:
-        value_types[initializer.name] = initializer.data_type
-
-    rewritten_nodes: list[onnx.NodeProto] = []
-    rewrites: list[dict[str, Any]] = []
-    for node in model.graph.node:
-        if node.op_type != "QuickGelu" or len(node.input) != 1 or len(node.output) != 1:
-            rewritten_nodes.append(node)
-            continue
-
-        alpha = 1.702
-        for attr in node.attribute:
-            if attr.name == "alpha":
-                alpha = float(onnx.helper.get_attribute_value(attr))
-
-        input_name = node.input[0]
-        output_name = node.output[0]
-        input_type = value_types.get(
-            input_name, value_types.get(output_name, onnx.TensorProto.FLOAT)
-        )
-        if input_type == onnx.TensorProto.FLOAT16:
-            alpha_initializer = onnx.numpy_helper.from_array(
-                np.asarray(alpha, dtype=np.float16),
-                name=f"{node.name or output_name}__quickgelu_alpha",
-            )
-        else:
-            alpha_initializer = onnx.numpy_helper.from_array(
-                np.asarray(alpha, dtype=np.float32),
-                name=f"{node.name or output_name}__quickgelu_alpha",
-            )
-        scaled_name = f"{node.name or output_name}__scaled"
-        sigmoid_name = f"{node.name or output_name}__sigmoid"
-        model.graph.initializer.append(alpha_initializer)
-        rewritten_nodes.extend(
-            [
-                onnx.helper.make_node(
-                    "Mul",
-                    [input_name, alpha_initializer.name],
-                    [scaled_name],
-                    name=f"{node.name or output_name}__quickgelu_scale",
-                ),
-                onnx.helper.make_node(
-                    "Sigmoid",
-                    [scaled_name],
-                    [sigmoid_name],
-                    name=f"{node.name or output_name}__quickgelu_sigmoid",
-                ),
-                onnx.helper.make_node(
-                    "Mul",
-                    [input_name, sigmoid_name],
-                    [output_name],
-                    name=f"{node.name or output_name}__quickgelu_mul",
-                ),
-            ]
-        )
-        if len(rewrites) < 12:
-            rewrites.append(
-                {
-                    "node": node.name,
-                    "input": input_name,
-                    "output": output_name,
-                    "alpha": alpha,
-                    "dtype": onnx.TensorProto.DataType.Name(input_type),
-                }
-            )
-
-    del model.graph.node[:]
-    model.graph.node.extend(rewritten_nodes)
-    external_data_path(path).unlink(missing_ok=True)
-    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
-
-    after = op_counts(path)
-    return {
-        "enabled": True,
-        "tool": "custom_quickgelu_decomposition",
-        "reason": (
-            "ORT WebGPU 1.24.3 fails to compile FP16 QuickGelu shaders on this "
-            "graph, so keep the equivalent Mul/Sigmoid/Mul form."
-        ),
-        "node_count_before": int(sum(before.values())),
-        "node_count_after": int(sum(after.values())),
-        "tracked_ops_before": {
-            "QuickGelu": int(before.get("QuickGelu", 0)),
-            "Sigmoid": int(before.get("Sigmoid", 0)),
-            "Mul": int(before.get("Mul", 0)),
-        },
-        "tracked_ops_after": {
-            "QuickGelu": int(after.get("QuickGelu", 0)),
-            "Sigmoid": int(after.get("Sigmoid", 0)),
-            "Mul": int(after.get("Mul", 0)),
-        },
-        "rewrites": int(before.get("QuickGelu", 0)),
-        "rewrite_examples": rewrites,
     }
 
 
@@ -1147,14 +800,6 @@ def rewrite_singleton_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
                 }
             )
 
-    del model.graph.node[:]
-    model.graph.node.extend(rewritten_nodes)
-    model.graph.initializer.extend(new_initializers)
-    onnx.checker.check_model(model)
-    external_data_path(path).unlink(missing_ok=True)
-    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
-
-    after = op_counts(path)
     tracked_ops = (
         "Reshape",
         "Squeeze",
@@ -1165,6 +810,27 @@ def rewrite_singleton_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
         "Einsum",
         "Gemm",
     )
+    if not rewrites:
+        return {
+            "enabled": True,
+            "tool": "custom_singleton_reshape_rewrite",
+            "reason": "No singleton-only Reshape nodes found.",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "rewrites": {},
+            "rewrite_examples": [],
+        }
+
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    model.graph.initializer.extend(new_initializers)
+    onnx.checker.check_model(model)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
     return {
         "enabled": True,
         "tool": "custom_singleton_reshape_rewrite",
@@ -2103,8 +1769,6 @@ def main() -> None:
             tokenizer_variables,
             tokenizer_cfg,
             latent,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def decoder_step_fn(latent: jax.Array) -> jax.Array:
@@ -2112,8 +1776,6 @@ def main() -> None:
             tokenizer_variables,
             tokenizer_cfg,
             latent,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def decoder_z_step_fn(z: jax.Array) -> jax.Array:
@@ -2122,8 +1784,6 @@ def main() -> None:
             tokenizer_cfg,
             z,
             num_obs_tokens=dyn_shapes.num_obs_tokens,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_fn(
@@ -2139,8 +1799,6 @@ def main() -> None:
             actions,
             step_levels,
             signal_levels,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_prefill_fn(
@@ -2156,8 +1814,6 @@ def main() -> None:
             actions,
             step_levels,
             signal_levels,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_prefill_layer_fn(
@@ -2173,8 +1829,6 @@ def main() -> None:
             actions,
             step_levels,
             signal_levels,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_step_fn(
@@ -2198,8 +1852,6 @@ def main() -> None:
             k_cache,
             v_cache,
             cache_length,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_sample_step_fn(
@@ -2220,8 +1872,6 @@ def main() -> None:
             v_cache,
             cache_length,
             sample_steps=args.sample_steps,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_sample_step_slide_fn(
@@ -2242,8 +1892,6 @@ def main() -> None:
             v_cache,
             cache_length,
             sample_steps=args.sample_steps,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
             cache_update="slide",
         )
 
@@ -2268,8 +1916,6 @@ def main() -> None:
             cache_length,
             context_tau=args.context_tau,
             sample_steps=args.sample_steps,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_sample_append_context_slide_fn(
@@ -2293,8 +1939,6 @@ def main() -> None:
             cache_length,
             context_tau=args.context_tau,
             sample_steps=args.sample_steps,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
             cache_update="slide",
         )
 
@@ -2315,8 +1959,6 @@ def main() -> None:
             v_cache,
             context_tau=args.context_tau,
             sample_steps=args.sample_steps,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_sample_append_context_slide_entry_fn(
@@ -2336,8 +1978,6 @@ def main() -> None:
             v_cache,
             context_tau=args.context_tau,
             sample_steps=args.sample_steps,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_sample_append_context_slide_layer_fn(
@@ -2371,8 +2011,6 @@ def main() -> None:
             cache_length,
             context_tau=args.context_tau,
             sample_steps=args.sample_steps,
-            native_attention=args.native_attention,
-            grouped_gqa=args.grouped_gqa_attention,
             cache_update="slide",
         )
 
@@ -2838,29 +2476,6 @@ def main() -> None:
         for name, path in exported_paths.items()
     }
 
-    float16_export_names: set[str] = set()
-    if args.float16:
-        float16_export_names = set(exported_paths)
-    elif args.float16_decoder_only:
-        float16_export_names = {
-            TOKENIZER_DECODER_NAME,
-            TOKENIZER_DECODER_STEP_NAME,
-            TOKENIZER_DECODE_Z_STEP_NAME,
-        } & set(exported_paths)
-    float16_keep_io_types = bool(args.float16_decoder_only)
-
-    precision = {name: {"float16": False, "reason": "--float16 not set"} for name in exported_paths}
-    if float16_export_names:
-        precision = {
-            name: convert_onnx_to_float16_for_webgpu(
-                path,
-                keep_io_types=float16_keep_io_types,
-            )
-            if name in float16_export_names
-            else {"float16": False, "reason": "not selected for float16 conversion"}
-            for name, path in exported_paths.items()
-        }
-
     rmsnorm_rewrite = {
         name: rewrite_rmsnorm_for_webgpu(path) for name, path in exported_paths.items()
     }
@@ -2871,33 +2486,6 @@ def main() -> None:
     gather_index_rewrite = {
         name: rewrite_gather_int64_casts_for_webgpu(path) for name, path in exported_paths.items()
     }
-    cast_type_repair = {
-        name: repair_cast_output_types(path) for name, path in exported_paths.items()
-    }
-    quickgelu_decomposition = {
-        name: decompose_quickgelu_for_fp16_webgpu(path)
-        if name in float16_export_names and not args.keep_quickgelu
-        else {
-            "enabled": False,
-            "reason": "--keep_quickgelu set"
-            if name in float16_export_names
-            else "--float16 not set",
-        }
-        for name, path in exported_paths.items()
-    }
-    value_info_strip = {
-        name: strip_intermediate_value_info(path)
-        if name in float16_export_names
-        else {"enabled": False, "reason": "--float16 not set"}
-        for name, path in exported_paths.items()
-    }
-    float16_binary_cast_repair = {
-        name: repair_float16_binary_cast_mismatches(path)
-        if name in float16_export_names
-        else {"enabled": False, "reason": "--float16 not set"}
-        for name, path in exported_paths.items()
-    }
-
     validation = {
         TOKENIZER_DECODER_NAME: {"skipped": not args.validate},
         DYNAMICS_UNCACHED_NAME: {"skipped": not args.validate},
@@ -3330,7 +2918,6 @@ def main() -> None:
             "head_projection_rewrite": head_projection_rewrite[TOKENIZER_DECODER_NAME],
             "rmsnorm_rewrite": rmsnorm_rewrite[TOKENIZER_DECODER_NAME],
             "gather_index_rewrite": gather_index_rewrite[TOKENIZER_DECODER_NAME],
-            "precision": precision[TOKENIZER_DECODER_NAME],
         },
         {
             "name": DYNAMICS_UNCACHED_NAME,
@@ -3350,7 +2937,6 @@ def main() -> None:
             "head_projection_rewrite": head_projection_rewrite[DYNAMICS_UNCACHED_NAME],
             "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_UNCACHED_NAME],
             "gather_index_rewrite": gather_index_rewrite[DYNAMICS_UNCACHED_NAME],
-            "precision": precision[DYNAMICS_UNCACHED_NAME],
             "production_browser_ready": False,
         },
     ]
@@ -3380,7 +2966,6 @@ def main() -> None:
                     "head_projection_rewrite": head_projection_rewrite[TOKENIZER_DECODER_STEP_NAME],
                     "rmsnorm_rewrite": rmsnorm_rewrite[TOKENIZER_DECODER_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[TOKENIZER_DECODER_STEP_NAME],
-                    "precision": precision[TOKENIZER_DECODER_STEP_NAME],
                     "production_browser_ready": True,
                 },
                 {
@@ -3403,7 +2988,6 @@ def main() -> None:
                     ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
-                    "precision": precision[TOKENIZER_DECODE_Z_STEP_NAME],
                     "production_browser_ready": True,
                     "decode_z": {
                         "source": "final_z_after_velocity_update",
@@ -3441,7 +3025,6 @@ def main() -> None:
                     ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_PREFILL_NAME],
                     "gather_index_rewrite": gather_index_rewrite[DYNAMICS_CACHED_PREFILL_NAME],
-                    "precision": precision[DYNAMICS_CACHED_PREFILL_NAME],
                     "production_browser_ready": True,
                 },
                 {
@@ -3477,7 +3060,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_PREFILL_LAYER_NAME
                     ],
-                    "precision": precision[DYNAMICS_CACHED_PREFILL_LAYER_NAME],
                     "production_browser_ready": True,
                     "cache_layout": "per_temporal_layer",
                 },
@@ -3508,7 +3090,6 @@ def main() -> None:
                     "head_projection_rewrite": head_projection_rewrite[DYNAMICS_CACHED_STEP_NAME],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[DYNAMICS_CACHED_STEP_NAME],
-                    "precision": precision[DYNAMICS_CACHED_STEP_NAME],
                     "production_browser_ready": True,
                 },
                 {
@@ -3539,7 +3120,6 @@ def main() -> None:
                     ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
-                    "precision": precision[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
                     "sample_cache_policy": "read_committed_each_sample_commit_final_only",
@@ -3579,7 +3159,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME
                     ],
-                    "precision": precision[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
                     "sample_cache_policy": "read_committed_each_sample_commit_final_only",
@@ -3619,7 +3198,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME
                     ],
-                    "precision": precision[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
                     "context_tau": args.context_tau,
@@ -3667,7 +3245,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME
                     ],
-                    "precision": precision[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
                     "context_tau": args.context_tau,
@@ -3714,9 +3291,6 @@ def main() -> None:
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
                     ],
                     "gather_index_rewrite": gather_index_rewrite[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
-                    ],
-                    "precision": precision[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
                     ],
                     "production_browser_ready": True,
@@ -3788,7 +3362,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
                     ],
-                    "precision": precision[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
                     "context_tau": args.context_tau,
@@ -3853,7 +3426,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
                     ],
-                    "precision": precision[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
                     "context_tau": args.context_tau,
@@ -3870,15 +3442,6 @@ def main() -> None:
         entry["skip_simplified_layer_norm_rewrite"] = skip_simplified_layer_norm_rewrite[
             entry["name"]
         ]
-        entry["cast_type_repair"] = cast_type_repair[entry["name"]]
-        entry["quickgelu_decomposition"] = quickgelu_decomposition[entry["name"]]
-        entry["value_info_strip"] = value_info_strip[entry["name"]]
-        entry["float16_binary_cast_repair"] = float16_binary_cast_repair[entry["name"]]
-        if entry["name"] in float16_export_names and not float16_keep_io_types:
-            for tensor_group in (entry.get("inputs", {}), entry.get("outputs", {})):
-                for spec in tensor_group.values():
-                    if spec.get("dtype") == "float32":
-                        spec["dtype"] = "float16"
 
     manifest = {
         "schema_version": 1,
@@ -3896,24 +3459,7 @@ def main() -> None:
             "onnx": version_or_unknown(onnx),
             "onnxruntime": version_or_unknown(ort),
         },
-        "attention_export": {
-            "implementation": (
-                "jax_native"
-                if args.native_attention
-                else "patched_grouped_gqa"
-                if args.grouped_gqa_attention
-                else "patched_onnx_decomposition"
-            ),
-            "native_attention_experimental": bool(args.native_attention),
-            "grouped_gqa_experimental": bool(args.grouped_gqa_attention),
-        },
-        "precision_export": {
-            "float16": bool(args.float16),
-            "float16_decoder_only": bool(args.float16_decoder_only),
-            "float16_exports": sorted(float16_export_names),
-            "keep_io_types": float16_keep_io_types,
-            "softmax_fp32": bool(float16_export_names),
-        },
+        "attention_export": {"implementation": "patched_onnx_decomposition"},
         "layout_rewrite": {
             "singleton_reshape_to_squeeze_unsqueeze": not args.skip_singleton_reshape_rewrite,
             "gqa_repeat_to_gather": not args.skip_singleton_reshape_rewrite,
@@ -3953,7 +3499,7 @@ def main() -> None:
         "cache_contract": cache_contract(
             dyn_shapes,
             available=args.export_cached,
-            dtype="float16" if args.float16 else "float32",
+            dtype="float32",
         ),
         "demo_generation": {
             "sample_steps": args.sample_steps,
