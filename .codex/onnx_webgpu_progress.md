@@ -584,3 +584,62 @@ Conclusion:
 - The skip-layernorm fusion is valid and reproducible, and graph-capture dynamics improved from roughly `88-89 ms` to roughly `84 ms`.
 - Overall streaming remains about `95 ms` because decoder time is still around `10 ms` in this graph-capture run.
 - This is useful cleanup/optimization, but still not enough for the 50 ms target.
+
+### 2026-05-03 Attention And Projection Rewrite Trials
+
+Failed attention lowering:
+- Changed export-only attention from `Einsum -> Softmax -> Einsum` to local `Transpose -> MatMul -> Softmax -> MatMul -> Transpose`.
+- Numerical export/validation passed, but browser latency regressed badly.
+- Normal WebGPU benchmark:
+  - Dynamics median: `299.89 ms`
+  - Decoder median: `31.84 ms`
+  - Streaming median: `330.21 ms`
+- Conclusion: local attention matmul lowering adds too much layout/kernel overhead in the current BSHD graph. Reverted the default export wrapper to the previous `Einsum` attention.
+
+RotaryEmbedding rewrite:
+- Added an opt-in `--rotary_embedding_rewrite` flag.
+- The rewrite fuses non-interleaved RoPE `Split/Mul/Sub/Add/Concat` islands into ORT's `com.microsoft::RotaryEmbedding`.
+- CPU parity was acceptable in isolated checks, but browser latency was not better because the fused op needs BSHD/BHSD transposes around most current RoPE sites.
+- Default remains disabled.
+
+Projection layout rewrite:
+- Added `--head_projection_rewrite {einsum,layout}`.
+- `einsum` is the previous default: removes head projection `Reshape` by replacing `Gemm + Reshape` / `Reshape + Gemm` with rank-aware `Einsum`.
+- `layout` is the new experimental path: keeps original `Gemm` kernels and replaces only the head-view `Reshape` nodes with static `Split/Squeeze/Unsqueeze/Concat`.
+
+Accuracy for `--head_projection_rewrite layout`:
+- Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+- Entry-cache reconstruction passed at `atol=5e-4`, `rtol=5e-4`.
+- Hot entry artifact max abs errors:
+  - `final_z`: `1.4305e-6`
+  - `pred_z`: `1.4305e-6`
+  - `candidate_k_entry`: `7.6294e-6`
+  - `candidate_v_entry`: `4.8280e-6`
+
+Graph for `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4` with layout rewrite:
+- nodes: `8752`
+- `Reshape`: `0`
+- `Einsum`: `238`
+- `Gemm`: `844`
+- `Split`: `717`
+- `Unsqueeze`: `1988`
+- `Squeeze`: `1403`
+- `Concat`: `782`
+
+Benchmark for `--head_projection_rewrite layout`:
+- Normal WebGPU:
+  - Prefill: `721.71 ms`
+  - Dynamics mean/median/p95: `72.93 / 67.30 / 97.28 ms`
+  - Decoder mean/median/p95: `4.85 / 4.91 / 5.14 ms`
+  - Streaming mean/median/p95: `77.90 / 72.14 / 102.61 ms`
+- Graph capture, 64 timed frames:
+  - Prefill: `714.23 ms`
+  - Dynamics mean/median/p95: `53.32 / 58.51 / 59.23 ms`
+  - Decoder mean/median/p95: `3.73 / 4.00 / 4.65 ms`
+  - Streaming mean/median/p95: `57.42 / 63.03 / 63.75 ms`
+
+Conclusion:
+- The layout projection rewrite is the best behavior-preserving result so far.
+- It improves graph-capture streaming median from the previous best `~94.88 ms` to `~63.03 ms`.
+- It is still above the `50 ms` target. The remaining hot cost is dynamics: four denoise passes still take about `58.5 ms` median before the decoder.
+- The next useful work is not more standalone reshape cleanup; it should reduce whole attention/projection dispatch groups, likely by changing the export/cache ABI to a layout that lets ORT WebGPU consume fused attention or fewer layout adapters.

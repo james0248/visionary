@@ -133,6 +133,25 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--head_projection_rewrite",
+        choices=("einsum", "layout"),
+        default="einsum",
+        help=(
+            "How to remove attention head projection Reshape nodes. 'einsum' replaces "
+            "Gemm+Reshape with rank-aware Einsum kernels; 'layout' keeps the Gemm kernels "
+            "and uses static Split/Squeeze/Unsqueeze/Concat layout ops."
+        ),
+    )
+    parser.add_argument(
+        "--rotary_embedding_rewrite",
+        action="store_true",
+        help=(
+            "Experimental: replace exported RoPE Split/Mul/Add/Sub/Concat islands with "
+            "ORT WebGPU's contrib RotaryEmbedding op. This is opt-in because the required "
+            "layout transposes can be slower than the unfused graph on current ORT WebGPU."
+        ),
+    )
+    parser.add_argument(
         "--context_latents",
         type=Path,
         default=None,
@@ -860,11 +879,11 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
         )
     }
 
-    producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = {}
     for node in model.graph.node:
         for input_name in node.input:
             consumers.setdefault(input_name, []).append(node)
+    producer = {output: node for node in model.graph.node for output in node.output}
 
     skip_nodes: set[str] = set()
     replacements: dict[str, list[onnx.NodeProto]] = {}
@@ -1037,11 +1056,11 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
         for initializer in model.graph.initializer
     }
     initializer_names = set(initializers)
-    producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = {}
     for node in model.graph.node:
         for input_name in node.input:
             consumers.setdefault(input_name, []).append(node)
+    producer = {output: node for node in model.graph.node for output in node.output}
 
     replacements: dict[str, list[onnx.NodeProto]] = {}
     skip_nodes: set[str] = set()
@@ -1239,6 +1258,254 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
     }
 
 
+def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    inferred = onnx.shape_inference.infer_shapes(model)
+    value_shapes = {
+        value.name: _tensor_shape(value)
+        for value in (
+            list(inferred.graph.input)
+            + list(inferred.graph.value_info)
+            + list(inferred.graph.output)
+        )
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = {}
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers.setdefault(input_name, []).append(node)
+    producer = {output: node for node in model.graph.node for output in node.output}
+
+    replacements: dict[str, list[onnx.NodeProto]] = {}
+    new_initializers: list[onnx.TensorProto] = []
+    rewrites = Counter()
+    examples: list[dict[str, Any]] = []
+
+    def can_rewrite_gemm(gemm: onnx.NodeProto) -> bool:
+        if gemm.op_type != "Gemm" or len(gemm.input) != 2:
+            return False
+        attrs = _gemm_attrs(gemm)
+        return attrs == {"alpha": 1.0, "beta": 0.0, "transA": 0, "transB": 0}
+
+    def add_i64_initializer(name: str, values: list[int]) -> str:
+        new_initializers.append(
+            onnx.numpy_helper.from_array(np.asarray(values, dtype=np.int64), name)
+        )
+        return name
+
+    def singleton_axes_for_head_shape(shape: tuple[int, ...], head_axis: int) -> list[int]:
+        axes = [axis for axis, dim in enumerate(shape) if dim == 1]
+        axes.append(head_axis)
+        return sorted(set(axes))
+
+    for reshape in model.graph.node:
+        if reshape.op_type != "Reshape" or len(reshape.output) != 1:
+            continue
+        input_shape = value_shapes.get(reshape.input[0])
+        output_shape = value_shapes.get(reshape.output[0])
+        if input_shape is None or output_shape is None:
+            continue
+
+        # Pattern 1: keep Gemm([N,K], W[K,H*D]) and replace the head-view
+        # Reshape with static split/unsqueeze/concat layout ops.
+        gemm = producer.get(reshape.input[0])
+        prefix_shape = output_shape[:-2]
+        if (
+            gemm is not None
+            and can_rewrite_gemm(gemm)
+            and len(input_shape) == 2
+            and len(output_shape) in (4, 5, 6)
+            and output_shape[-1] == 64
+            and output_shape[-2] in (2, 8)
+            and input_shape[-1] == output_shape[-2] * output_shape[-1]
+            and prefix_shape.count(input_shape[0]) == 1
+            and all(dim in (1, input_shape[0]) for dim in prefix_shape)
+        ):
+            head_count = output_shape[-2]
+            head_dim = output_shape[-1]
+            head_axis = len(output_shape) - 2
+            split_outputs = [
+                f"{reshape.output[0]}__flat_head_{head_idx}"
+                for head_idx in range(head_count)
+            ]
+            split_sizes = add_i64_initializer(
+                f"{reshape.name or reshape.output[0]}__split_sizes",
+                [head_dim] * head_count,
+            )
+            replacement_nodes = [
+                onnx.helper.make_node(
+                    "Split",
+                    [reshape.input[0], split_sizes],
+                    split_outputs,
+                    name=f"{reshape.name or reshape.output[0]}__head_split",
+                    axis=1,
+                )
+            ]
+            unsqueezed_outputs = []
+            axes = singleton_axes_for_head_shape(output_shape, head_axis)
+            axes_name = add_i64_initializer(
+                f"{reshape.name or reshape.output[0]}__head_unsqueeze_axes",
+                axes,
+            )
+            for head_idx, split_output in enumerate(split_outputs):
+                unsqueezed = f"{reshape.output[0]}__head_{head_idx}"
+                unsqueezed_outputs.append(unsqueezed)
+                replacement_nodes.append(
+                    onnx.helper.make_node(
+                        "Unsqueeze",
+                        [split_output, axes_name],
+                        [unsqueezed],
+                        name=f"{reshape.name or reshape.output[0]}__head_{head_idx}_unsqueeze",
+                    )
+                )
+            replacement_nodes.append(
+                onnx.helper.make_node(
+                    "Concat",
+                    unsqueezed_outputs,
+                    [reshape.output[0]],
+                    name=f"{reshape.name or reshape.output[0]}__head_concat",
+                    axis=head_axis,
+                )
+            )
+            replacements[reshape.name] = replacement_nodes
+            rewrites["gemm_to_head_layout"] += 1
+            if len(examples) < 12:
+                examples.append(
+                    {
+                        "kind": "gemm_to_head_layout",
+                        "gemm": gemm.name,
+                        "reshape": reshape.name,
+                        "input_shape": list(input_shape),
+                        "output_shape": list(output_shape),
+                    }
+                )
+            continue
+
+        # Pattern 2: keep the output projection Gemm and replace the flattening
+        # Reshape([singleton..., N, H, D] -> [N, H*D]) with static layout ops.
+        gemm_consumer = _single_consumer(consumers, reshape.output[0], "Gemm")
+        if (
+            gemm_consumer is not None
+            and can_rewrite_gemm(gemm_consumer)
+            and len(input_shape) in (4, 5, 6)
+            and len(output_shape) == 2
+            and input_shape[-2:] == (8, 64)
+            and input_shape[:-2].count(output_shape[0]) == 1
+            and all(dim in (1, output_shape[0]) for dim in input_shape[:-2])
+            and output_shape[1] == input_shape[-2] * input_shape[-1]
+        ):
+            head_count = input_shape[-2]
+            head_dim = input_shape[-1]
+            head_axis = len(input_shape) - 2
+            split_outputs = [
+                f"{reshape.output[0]}__ranked_head_{head_idx}"
+                for head_idx in range(head_count)
+            ]
+            split_sizes = add_i64_initializer(
+                f"{reshape.name or reshape.output[0]}__merge_split_sizes",
+                [1] * head_count,
+            )
+            replacement_nodes = [
+                onnx.helper.make_node(
+                    "Split",
+                    [reshape.input[0], split_sizes],
+                    split_outputs,
+                    name=f"{reshape.name or reshape.output[0]}__merge_split",
+                    axis=head_axis,
+                )
+            ]
+            squeezed_outputs = []
+            axes = singleton_axes_for_head_shape(input_shape, head_axis)
+            axes_name = add_i64_initializer(
+                f"{reshape.name or reshape.output[0]}__merge_squeeze_axes",
+                axes,
+            )
+            for head_idx, split_output in enumerate(split_outputs):
+                squeezed = f"{reshape.output[0]}__flat_head_{head_idx}"
+                squeezed_outputs.append(squeezed)
+                replacement_nodes.append(
+                    onnx.helper.make_node(
+                        "Squeeze",
+                        [split_output, axes_name],
+                        [squeezed],
+                        name=f"{reshape.name or reshape.output[0]}__head_{head_idx}_squeeze",
+                    )
+                )
+            replacement_nodes.append(
+                onnx.helper.make_node(
+                    "Concat",
+                    squeezed_outputs,
+                    [reshape.output[0]],
+                    name=f"{reshape.name or reshape.output[0]}__merge_concat",
+                    axis=1,
+                )
+            )
+            replacements[reshape.name] = replacement_nodes
+            rewrites["head_to_gemm_layout"] += 1
+            if len(examples) < 12:
+                examples.append(
+                    {
+                        "kind": "head_to_gemm_layout",
+                        "reshape": reshape.name,
+                        "gemm": gemm_consumer.name,
+                        "input_shape": list(input_shape),
+                        "output_shape": list(output_shape),
+                    }
+                )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_head_projection_layout_rewrite",
+            "rewrites": {},
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "tracked_ops_before": {},
+            "tracked_ops_after": {},
+            "rewrite_examples": [],
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        if node.name in replacements:
+            rewritten_nodes.extend(replacements[node.name])
+        else:
+            rewritten_nodes.append(node)
+
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    model.graph.initializer.extend(new_initializers)
+    onnx.checker.check_model(model)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    tracked_ops = (
+        "Reshape",
+        "Split",
+        "Squeeze",
+        "Unsqueeze",
+        "Concat",
+        "Einsum",
+        "Gemm",
+        "Gather",
+    )
+    return {
+        "enabled": True,
+        "tool": "custom_head_projection_layout_rewrite",
+        "reason": (
+            "Replace attention head split/merge Reshape nodes with static layout ops "
+            "while preserving the original Gemm kernels."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+    }
+
+
 def rewrite_rmsnorm_for_webgpu(path: Path) -> dict[str, Any]:
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
@@ -1246,11 +1513,11 @@ def rewrite_rmsnorm_for_webgpu(path: Path) -> dict[str, Any]:
         initializer.name: onnx.numpy_helper.to_array(initializer)
         for initializer in model.graph.initializer
     }
-    producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = {}
     for node in model.graph.node:
         for input_name in node.input:
             consumers.setdefault(input_name, []).append(node)
+    producer = {output: node for node in model.graph.node for output in node.output}
 
     def constant_scalar(name: str) -> float | None:
         value = initializers.get(name)
@@ -1261,7 +1528,7 @@ def rewrite_rmsnorm_for_webgpu(path: Path) -> dict[str, Any]:
     def only_consumed_by(output_name: str, node: onnx.NodeProto) -> bool:
         return consumers.get(output_name, []) == [node]
 
-    replacements: dict[str, onnx.NodeProto] = {}
+    replacements: dict[str, list[onnx.NodeProto]] = {}
     skip_nodes: set[str] = set()
     rewrites = Counter()
     examples: list[dict[str, Any]] = []
@@ -1531,6 +1798,302 @@ def fuse_skip_simplified_layer_norm_for_webgpu(path: Path) -> dict[str, Any]:
         "node_count_after": int(sum(after.values())),
         "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
         "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrite_examples": examples,
+    }
+
+
+def rewrite_rotary_embedding_for_webgpu(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    inferred = onnx.shape_inference.infer_shapes(model)
+    value_shapes = {
+        value.name: _tensor_shape(value)
+        for value in (
+            list(inferred.graph.input)
+            + list(inferred.graph.value_info)
+            + list(inferred.graph.output)
+        )
+    }
+    initializers = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    initializer_names = set(initializers)
+    consumers: dict[str, list[onnx.NodeProto]] = {}
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers.setdefault(input_name, []).append(node)
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def single_consumer(value_name: str, op_type: str | None = None) -> onnx.NodeProto | None:
+        value_consumers = consumers.get(value_name, [])
+        if len(value_consumers) != 1:
+            return None
+        node = value_consumers[0]
+        if op_type is not None and node.op_type != op_type:
+            return None
+        return node
+
+    def split_mul_map(split_output: str) -> dict[str, onnx.NodeProto] | None:
+        by_const: dict[str, onnx.NodeProto] = {}
+        for mul in consumers.get(split_output, []):
+            if mul.op_type != "Mul" or len(mul.input) != 2 or len(mul.output) != 1:
+                return None
+            if mul.input[0] == split_output:
+                const_name = mul.input[1]
+            elif mul.input[1] == split_output:
+                const_name = mul.input[0]
+            else:
+                return None
+            if const_name not in initializers or const_name in by_const:
+                return None
+            by_const[const_name] = mul
+        if len(by_const) != 2:
+            return None
+        return by_const
+
+    def add_cache_initializer(const_name: str, sequence_length: int, half_dim: int) -> str | None:
+        alias = f"{const_name}__rotary_cache_2d_s{sequence_length}_d{half_dim}"
+        if alias in initializer_names:
+            return alias
+        value = initializers.get(const_name)
+        if value is None or value.size != sequence_length * half_dim:
+            return None
+        cache = value.reshape((sequence_length, half_dim)).astype(value.dtype, copy=False)
+        model.graph.initializer.append(onnx.numpy_helper.from_array(cache, alias))
+        initializer_names.add(alias)
+        return alias
+
+    position_ids_name = "rotary_position_zero_i64"
+    if position_ids_name not in initializer_names:
+        model.graph.initializer.append(
+            onnx.numpy_helper.from_array(np.asarray(0, dtype=np.int64), position_ids_name)
+        )
+        initializer_names.add(position_ids_name)
+
+    replacements: dict[str, onnx.NodeProto] = {}
+    skip_nodes: set[str] = set()
+    removed_value_info: set[str] = set()
+    examples: list[dict[str, Any]] = []
+
+    for split in model.graph.node:
+        if split.op_type != "Split" or len(split.input) < 1 or len(split.output) != 2:
+            continue
+        input_shape = value_shapes.get(split.input[0])
+        left_shape = value_shapes.get(split.output[0])
+        right_shape = value_shapes.get(split.output[1])
+        if (
+            input_shape is None
+            or len(input_shape) != 4
+            or left_shape is None
+            or right_shape is None
+            or left_shape != right_shape
+            or input_shape[-1] != left_shape[-1] * 2
+            or input_shape[:-1] != left_shape[:-1]
+        ):
+            continue
+        axis = int(attr_value(split, "axis", -1))
+        if axis < 0:
+            axis += len(input_shape)
+        if axis != len(input_shape) - 1:
+            continue
+
+        left_muls = split_mul_map(split.output[0])
+        right_muls = split_mul_map(split.output[1])
+        if left_muls is None or right_muls is None:
+            continue
+        const_names = set(left_muls) & set(right_muls)
+        if len(const_names) != 2:
+            continue
+
+        sub_node = None
+        add_node = None
+        cos_const = None
+        sin_const = None
+        for left_const in const_names:
+            for right_const in const_names - {left_const}:
+                left_cos = left_muls[left_const]
+                right_sin = right_muls[right_const]
+                sub = single_consumer(left_cos.output[0], "Sub")
+                if (
+                    sub is not None
+                    and sub.input[0] == left_cos.output[0]
+                    and sub.input[1] == right_sin.output[0]
+                    and single_consumer(right_sin.output[0], "Sub") is sub
+                ):
+                    right_cos = right_muls[left_const]
+                    left_sin = left_muls[right_const]
+                    add = single_consumer(right_cos.output[0], "Add")
+                    if (
+                        add is not None
+                        and set(add.input) == {right_cos.output[0], left_sin.output[0]}
+                        and single_consumer(left_sin.output[0], "Add") is add
+                    ):
+                        sub_node = sub
+                        add_node = add
+                        cos_const = left_const
+                        sin_const = right_const
+                        break
+            if sub_node is not None:
+                break
+        if sub_node is None or add_node is None or cos_const is None or sin_const is None:
+            continue
+
+        concat = single_consumer(sub_node.output[0], "Concat")
+        if (
+            concat is None
+            or single_consumer(add_node.output[0], "Concat") is not concat
+            or list(concat.input) != [sub_node.output[0], add_node.output[0]]
+            or int(attr_value(concat, "axis", axis)) != axis
+            or len(concat.output) != 1
+            or value_shapes.get(concat.output[0]) != input_shape
+        ):
+            continue
+
+        half_dim = int(left_shape[-1])
+        direct_sequence_length = int(input_shape[-2])
+        direct_num_heads = int(input_shape[-3])
+        transposed_sequence_length = int(input_shape[-3])
+        transposed_num_heads = int(input_shape[-2])
+        cos_cache = add_cache_initializer(cos_const, direct_sequence_length, half_dim)
+        sin_cache = add_cache_initializer(sin_const, direct_sequence_length, half_dim)
+        use_transpose = False
+        sequence_length = direct_sequence_length
+        num_heads = direct_num_heads
+        if cos_cache is None or sin_cache is None:
+            cos_cache = add_cache_initializer(
+                cos_const, transposed_sequence_length, half_dim
+            )
+            sin_cache = add_cache_initializer(
+                sin_const, transposed_sequence_length, half_dim
+            )
+            use_transpose = True
+            sequence_length = transposed_sequence_length
+            num_heads = transposed_num_heads
+        if cos_cache is None or sin_cache is None:
+            continue
+
+        rotary_input = split.input[0]
+        rotary_output = concat.output[0]
+        replacement_nodes = []
+        if use_transpose:
+            # ORT WebGPU's contrib RotaryEmbedding interprets rank-4 input as
+            # [batch, heads, sequence, head_dim]. The exported RoPE islands use
+            # [batch, sequence, heads, head_dim], so wrap the fused op with two
+            # GPU-supported transposes.
+            rotary_input = f"{split.input[0]}__rotary_bhsd"
+            rotary_output = f"{concat.output[0]}__rotary_bhsd"
+            replacement_nodes.append(
+                onnx.helper.make_node(
+                    "Transpose",
+                    [split.input[0]],
+                    [rotary_input],
+                    name=f"{split.name}__rotary_to_bhsd",
+                    perm=[0, 2, 1, 3],
+                )
+            )
+
+        replacement_nodes.append(
+            onnx.helper.make_node(
+            "RotaryEmbedding",
+            [rotary_input, position_ids_name, cos_cache, sin_cache],
+            [rotary_output],
+            name=f"{concat.name or concat.output[0]}__rotary_embedding",
+            domain="com.microsoft",
+            interleaved=0,
+            num_heads=num_heads,
+            rotary_embedding_dim=0,
+            scale=1.0,
+            )
+        )
+        if use_transpose:
+            replacement_nodes.append(
+                onnx.helper.make_node(
+                    "Transpose",
+                    [rotary_output],
+                    [concat.output[0]],
+                    name=f"{concat.name or concat.output[0]}__rotary_from_bhsd",
+                    perm=[0, 2, 1, 3],
+                )
+            )
+        replacements[split.name] = replacement_nodes
+        matched_nodes = {
+            split.name,
+            concat.name,
+            sub_node.name,
+            add_node.name,
+            *(node.name for node in left_muls.values()),
+            *(node.name for node in right_muls.values()),
+        }
+        skip_nodes.update(matched_nodes - {split.name})
+        removed_value_info.update(split.output)
+        removed_value_info.update(node.output[0] for node in left_muls.values())
+        removed_value_info.update(node.output[0] for node in right_muls.values())
+        removed_value_info.update(sub_node.output)
+        removed_value_info.update(add_node.output)
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "split": split.name,
+                    "output": concat.output[0],
+                    "input_shape": list(input_shape),
+                    "layout": "bshd" if use_transpose else "bhsd",
+                    "num_heads": num_heads,
+                    "sequence_length": sequence_length,
+                    "cos_cache": cos_cache,
+                    "sin_cache": sin_cache,
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_rotary_embedding_rewrite",
+            "reason": "No supported RoPE Split/Mul/Sub/Add/Concat islands found.",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": 0,
+            "rewrite_examples": [],
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        if node.name in replacements:
+            rewritten_nodes.extend(replacements[node.name])
+        elif node.name not in skip_nodes:
+            rewritten_nodes.append(node)
+
+    retained_value_info = [
+        value_info
+        for value_info in model.graph.value_info
+        if value_info.name not in removed_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(retained_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    tracked_ops = ("RotaryEmbedding", "Split", "Mul", "Sub", "Add", "Concat")
+    return {
+        "enabled": True,
+        "tool": "custom_rotary_embedding_rewrite",
+        "reason": (
+            "Replace non-interleaved RoPE Split/Mul/Sub/Add/Concat islands with "
+            "ORT WebGPU's contrib RotaryEmbedding op."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrites": len(replacements),
         "rewrite_examples": examples,
     }
 
@@ -2451,9 +3014,13 @@ def main() -> None:
         gqa_repeat_rewrite = {
             name: rewrite_gqa_repeats_for_webgpu(path) for name, path in exported_paths.items()
         }
+        head_projection_rewriter = (
+            rewrite_head_projection_reshapes_with_layout_ops_for_webgpu
+            if args.head_projection_rewrite == "layout"
+            else rewrite_head_projection_reshapes_for_webgpu
+        )
         head_projection_rewrite = {
-            name: rewrite_head_projection_reshapes_for_webgpu(path)
-            for name, path in exported_paths.items()
+            name: head_projection_rewriter(path) for name, path in exported_paths.items()
         }
     else:
         gqa_repeat_rewrite = {
@@ -2486,6 +3053,15 @@ def main() -> None:
     gather_index_rewrite = {
         name: rewrite_gather_int64_casts_for_webgpu(path) for name, path in exported_paths.items()
     }
+    rotary_embedding_rewrite = {
+        name: {"enabled": False, "reason": "--rotary_embedding_rewrite not set"}
+        for name in exported_paths
+    }
+    if args.rotary_embedding_rewrite:
+        rotary_embedding_rewrite = {
+            name: rewrite_rotary_embedding_for_webgpu(path)
+            for name, path in exported_paths.items()
+        }
     validation = {
         TOKENIZER_DECODER_NAME: {"skipped": not args.validate},
         DYNAMICS_UNCACHED_NAME: {"skipped": not args.validate},
@@ -3442,6 +4018,7 @@ def main() -> None:
         entry["skip_simplified_layer_norm_rewrite"] = skip_simplified_layer_norm_rewrite[
             entry["name"]
         ]
+        entry["rotary_embedding_rewrite"] = rotary_embedding_rewrite[entry["name"]]
 
     manifest = {
         "schema_version": 1,
