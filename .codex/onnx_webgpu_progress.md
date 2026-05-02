@@ -495,3 +495,53 @@ Conclusion:
 - The layer-cache ABI removes some internal slice/stack work, but the many cache inputs/outputs add enough ORT/browser overhead that end-to-end streaming is not better.
 - Keep the layer-cache artifacts as experimental exports, but default the benchmark/demo back to the monolithic steady-state graph for now.
 - Generated ONNX files are too large/noisy for normal commits; `.gitignore` now ignores generated ONNX assets and benchmark JSONs. Already tracked ONNX files must be excluded by explicit path staging or moved to a large-artifact mechanism later.
+
+### 2026-05-02 Entry-Cache Artifact And Browser-Side Cache Update
+
+Goal:
+- Avoid returning/copying the full `[6,1,36,64,2,64]` K/V cache every generated frame.
+- Export a steady-state artifact that returns only the new per-frame K/V entries and update the persistent full cache in-place in WebGPU.
+
+Implementation:
+- Added `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4`.
+- Entry graph inputs: `sample_noise, context_noise, actions, k_cache, v_cache`.
+- Entry graph outputs: `final_z, pred_z, candidate_k_entry, candidate_v_entry`.
+- Added browser WebGPU compute shader for in-place cache slide:
+  - V cache: shift left and write new entry at slot 63.
+  - K cache: shift left, apply one-step RoPE rebase, and write new entry at slot 63.
+- Added `scripts/webgpu/verify_entry_cache_update.py` to compare:
+  - full-cache artifact output
+  - entry artifact output + the same slide/rebase update in NumPy
+
+Accuracy:
+- Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+- Entry-cache reconstruction vs full-cache artifact passed:
+  - `final_z`: exact
+  - `pred_z`: exact
+  - `candidate_v_cache_from_entry`: exact
+  - `candidate_k_cache_from_entry`: max abs error `2.3841858e-7`
+
+Graph cleanup:
+- First entry export still had one final `Reshape` on `candidate_v_entry`, shape `[36,128] -> [1,1,36,1,2,64]`.
+- Extended `rewrite_head_projection_reshapes_for_webgpu()` to rank-6 head outputs.
+- Regenerated graph has:
+  - `Reshape=0`
+  - `Less=0`
+  - `Cast=0`
+
+Benchmark, normal mode:
+- Selected step artifact: `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4`.
+- Dynamics mean/median/p95: `105.29 / 102.55 / 116.26 ms`.
+- Streaming mean/median/p95: `109.26 / 106.42 / 120.36 ms`.
+- Result: not faster than the full-cache specialized graph.
+
+Benchmark, graph capture, 64 timed frames:
+- Graph capture now succeeds after removing the final `Reshape`.
+- Dynamics mean/median/p95: `80.19 / 89.36 / 90.27 ms`.
+- Streaming mean/median/p95: `86.73 / 96.54 / 97.59 ms`.
+- Result: essentially unchanged from full-cache graph capture. Full-cache output/copy was not the dominant bottleneck.
+
+Conclusion:
+- Entry-cache artifact is numerically valid and graph-capture compatible.
+- It should be kept as a useful runtime ABI, but it does not move us toward the 50 ms target by itself.
+- Remaining bottleneck is dynamics graph compute/dispatch: hundreds of `Einsum`, `SimplifiedLayerNormalization`, `Softmax`, and pointwise ops inside the fused sample+append graph.

@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import itertools
 import json
+import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -25,6 +26,8 @@ from visionary.export.onnx_wrappers import (
     apply_dynamics_cached_prefill_layer_cache,
     apply_dynamics_cached_sample_step,
     apply_dynamics_cached_sample_step_append_context,
+    apply_dynamics_cached_sample_step_append_context_full_cache,
+    apply_dynamics_cached_sample_step_append_context_full_cache_entries,
     apply_dynamics_cached_sample_step_append_context_layer_cache,
     apply_dynamics_cached_step,
     apply_dynamics_uncached,
@@ -48,6 +51,12 @@ DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME = "breakout_dynamics_sample_append_co
 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME = (
     "breakout_dynamics_sample_append_context_slide_b1_t1_s4"
 )
+DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME = (
+    "breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s4"
+)
+DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME = (
+    "breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4"
+)
 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME = (
     "breakout_dynamics_sample_append_context_slide_layer_b1_t1_s4"
 )
@@ -67,6 +76,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dynamics_dir", required=True)
     parser.add_argument("--dynamics_step", type=int, default=None)
     parser.add_argument("--out_dir", type=Path, default=Path("webgpu_app/assets"))
+    parser.add_argument(
+        "--raw_out_dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional directory where the freshly exported ONNX files are copied before "
+            "any simplification, ORT optimization, precision conversion, or WebGPU graph "
+            "rewrites. Use this with scripts/webgpu/compare_onnx_artifacts.py as a "
+            "behavior-preserving optimization gate."
+        ),
+    )
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--seq_len", type=int, default=64)
     parser.add_argument("--opset", type=int, default=23)
@@ -190,7 +210,9 @@ def require_static_phase1_args(args: argparse.Namespace) -> None:
     if args.seq_len != 64:
         raise ValueError("Phase 1 ONNX export supports only --seq_len 64.")
     if args.sample_steps <= 0 or args.sample_steps & (args.sample_steps - 1):
-        raise ValueError(f"--sample_steps must be a positive power of two, got {args.sample_steps}.")
+        raise ValueError(
+            f"--sample_steps must be a positive power of two, got {args.sample_steps}."
+        )
     if args.native_attention and args.grouped_gqa_attention:
         raise ValueError("--native_attention and --grouped_gqa_attention are mutually exclusive.")
     if args.float16 and args.float16_decoder_only:
@@ -291,6 +313,63 @@ def export_to_onnx(
         output_names=output_names,
     )
     onnx.checker.check_model(output_path.as_posix())
+
+
+def copy_onnx_artifact(src: Path, dst: Path, *, overwrite: bool) -> dict[str, Any]:
+    ensure_output(dst, overwrite=overwrite)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if overwrite:
+        dst.unlink(missing_ok=True)
+        external_data_path(dst).unlink(missing_ok=True)
+    shutil.copy2(src, dst)
+
+    copied = [{"path": dst.name, "sha256": sha256_file(dst), "size_bytes": dst.stat().st_size}]
+    src_sidecar = external_data_path(src)
+    if src_sidecar.exists():
+        dst_sidecar = external_data_path(dst)
+        ensure_output(dst_sidecar, overwrite=overwrite)
+        if overwrite:
+            dst_sidecar.unlink(missing_ok=True)
+        shutil.copy2(src_sidecar, dst_sidecar)
+        copied.append(
+            {
+                "path": dst_sidecar.name,
+                "sha256": sha256_file(dst_sidecar),
+                "size_bytes": dst_sidecar.stat().st_size,
+            }
+        )
+    return {"path": dst.name, "files": copied}
+
+
+def snapshot_raw_artifacts(
+    exported_paths: dict[str, Path],
+    raw_out_dir: Path,
+    *,
+    overwrite: bool,
+) -> dict[str, Any]:
+    raw_out_dir.mkdir(parents=True, exist_ok=True)
+    copied = {
+        name: copy_onnx_artifact(path, raw_out_dir / path.name, overwrite=overwrite)
+        for name, path in exported_paths.items()
+    }
+    manifest = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "description": (
+            "Raw jax2onnx exports captured before ONNX simplification, ORT optimization, "
+            "precision conversion, or WebGPU-specific graph rewrites."
+        ),
+        "artifacts": copied,
+    }
+    raw_manifest_path = raw_out_dir / "raw_onnx_artifacts_manifest.json"
+    ensure_output(raw_manifest_path, overwrite=overwrite)
+    raw_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return {
+        "enabled": True,
+        "path": raw_out_dir.as_posix(),
+        "manifest": raw_manifest_path.name,
+        "artifacts": copied,
+    }
 
 
 def op_counts(path: Path) -> Counter[str]:
@@ -402,7 +481,9 @@ def repair_cast_output_types(path: Path) -> dict[str, Any]:
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
     annotated_types: dict[str, int] = {}
-    for value_info in itertools.chain(model.graph.input, model.graph.output, model.graph.value_info):
+    for value_info in itertools.chain(
+        model.graph.input, model.graph.output, model.graph.value_info
+    ):
         tensor_type = value_info.type.tensor_type
         if tensor_type.elem_type:
             annotated_types[value_info.name] = tensor_type.elem_type
@@ -560,7 +641,9 @@ def decompose_quickgelu_for_fp16_webgpu(path: Path) -> dict[str, Any]:
         }
 
     value_types: dict[str, int] = {}
-    for value_info in itertools.chain(model.graph.input, model.graph.output, model.graph.value_info):
+    for value_info in itertools.chain(
+        model.graph.input, model.graph.output, model.graph.value_info
+    ):
         tensor_type = value_info.type.tensor_type
         if tensor_type.elem_type:
             value_types[value_info.name] = tensor_type.elem_type
@@ -581,7 +664,9 @@ def decompose_quickgelu_for_fp16_webgpu(path: Path) -> dict[str, Any]:
 
         input_name = node.input[0]
         output_name = node.output[0]
-        input_type = value_types.get(input_name, value_types.get(output_name, onnx.TensorProto.FLOAT))
+        input_type = value_types.get(
+            input_name, value_types.get(output_name, onnx.TensorProto.FLOAT)
+        )
         if input_type == onnx.TensorProto.FLOAT16:
             alpha_initializer = onnx.numpy_helper.from_array(
                 np.asarray(alpha, dtype=np.float16),
@@ -663,7 +748,9 @@ def rewrite_slide_static_cache_ops_for_webgpu(path: Path) -> dict[str, Any]:
     model = onnx.load(path.as_posix(), load_external_data=True)
 
     value_shapes: dict[str, tuple[int, ...]] = {}
-    for value_info in itertools.chain(model.graph.input, model.graph.output, model.graph.value_info):
+    for value_info in itertools.chain(
+        model.graph.input, model.graph.output, model.graph.value_info
+    ):
         tensor_type = value_info.type.tensor_type
         if tensor_type.HasField("shape"):
             dims = []
@@ -855,10 +942,12 @@ def rewrite_slide_static_cache_ops_for_webgpu(path: Path) -> dict[str, Any]:
         "rewrites": len(rewrites),
         "rewrite_examples": rewrites[:12],
         "tracked_ops_before": {
-            op: int(before.get(op, 0)) for op in ("Min", "Reshape", "Unsqueeze", "Split", "Concat", "Cast")
+            op: int(before.get(op, 0))
+            for op in ("Min", "Reshape", "Unsqueeze", "Split", "Concat", "Cast")
         },
         "tracked_ops_after": {
-            op: int(after.get(op, 0)) for op in ("Min", "Reshape", "Unsqueeze", "Split", "Concat", "Cast")
+            op: int(after.get(op, 0))
+            for op in ("Min", "Reshape", "Unsqueeze", "Split", "Concat", "Cast")
         },
     }
 
@@ -941,27 +1030,25 @@ def _singleton_layout_plan(
         return ([], [])
 
     if len(output_shape) > len(input_shape):
-        candidate_axes = [
-            axis
-            for axis, dim in enumerate(output_shape)
-            if dim == 1
-        ]
+        candidate_axes = [axis for axis, dim in enumerate(output_shape) if dim == 1]
         for remove_count in range(len(output_shape) - len(input_shape), len(candidate_axes) + 1):
             for axes_tuple in itertools.combinations(candidate_axes, remove_count):
                 axes = list(axes_tuple)
-                if tuple(dim for axis, dim in enumerate(output_shape) if axis not in axes) == input_shape:
+                if (
+                    tuple(dim for axis, dim in enumerate(output_shape) if axis not in axes)
+                    == input_shape
+                ):
                     return ([], axes)
 
     if len(input_shape) > len(output_shape):
-        candidate_axes = [
-            axis
-            for axis, dim in enumerate(input_shape)
-            if dim == 1
-        ]
+        candidate_axes = [axis for axis, dim in enumerate(input_shape) if dim == 1]
         for remove_count in range(len(input_shape) - len(output_shape), len(candidate_axes) + 1):
             for axes_tuple in itertools.combinations(candidate_axes, remove_count):
                 axes = list(axes_tuple)
-                if tuple(dim for axis, dim in enumerate(input_shape) if axis not in axes) == output_shape:
+                if (
+                    tuple(dim for axis, dim in enumerate(input_shape) if axis not in axes)
+                    == output_shape
+                ):
                     return (axes, [])
 
     if [dim for dim in input_shape if dim != 1] != [dim for dim in output_shape if dim != 1]:
@@ -1077,7 +1164,16 @@ def rewrite_singleton_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
     onnx.save_model(model, path.as_posix(), save_as_external_data=False)
 
     after = op_counts(path)
-    tracked_ops = ("Reshape", "Squeeze", "Unsqueeze", "Concat", "Expand", "Transpose", "Einsum", "Gemm")
+    tracked_ops = (
+        "Reshape",
+        "Squeeze",
+        "Unsqueeze",
+        "Concat",
+        "Expand",
+        "Transpose",
+        "Einsum",
+        "Gemm",
+    )
     return {
         "enabled": True,
         "tool": "custom_singleton_reshape_rewrite",
@@ -1107,11 +1203,7 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
         )
     }
 
-    producer = {
-        output: node
-        for node in model.graph.node
-        for output in node.output
-    }
+    producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = {}
     for node in model.graph.node:
         for input_name in node.input:
@@ -1151,7 +1243,11 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
         replacement_nodes: list[onnx.NodeProto] = []
 
         if source_producer.op_type == "Unsqueeze":
-            if source_shape is None or source_shape[:-2] != output_shape[:-2] or source_shape[-2:] != (2, 64):
+            if (
+                source_shape is None
+                or source_shape[:-2] != output_shape[:-2]
+                or source_shape[-2:] != (2, 64)
+            ):
                 continue
             skip_nodes.add(source_producer.name)
             rewrites["from_unsqueeze"] += 1
@@ -1164,7 +1260,9 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
             compact_shape_name = f"{source_producer.name or node.name}__gqa_compact_shape"
             compact_output = f"{source_producer.output[0]}__gqa_compact"
             new_initializers.append(
-                onnx.numpy_helper.from_array(np.asarray(compact_shape, dtype=np.int64), compact_shape_name)
+                onnx.numpy_helper.from_array(
+                    np.asarray(compact_shape, dtype=np.int64), compact_shape_name
+                )
             )
             replacement_nodes.append(
                 onnx.helper.make_node(
@@ -1182,7 +1280,9 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
 
         indices_name = f"{node.name or node.output[0]}__gqa_indices"
         new_initializers.append(
-            onnx.numpy_helper.from_array(np.asarray([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int64), indices_name)
+            onnx.numpy_helper.from_array(
+                np.asarray([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int64), indices_name
+            )
         )
         replacement_nodes.append(
             onnx.helper.make_node(
@@ -1306,16 +1406,20 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
         if input_shape is None or output_shape is None:
             continue
 
-        # Pattern 1: Gemm([N,K], W[K,H*D]) -> Reshape([1,N,H,D] or [N,1,H,D]).
+        # Pattern 1: Gemm([N,K], W[K,H*D]) -> head-shaped output with
+        # optional singleton wrappers, e.g. [1,N,H,D], [N,1,H,D],
+        # or [1,N,1,H,D].
         gemm = producer.get(reshape.input[0])
+        prefix_shape = output_shape[:-2]
         if (
             gemm is not None
             and can_rewrite_gemm(gemm)
             and len(input_shape) == 2
-            and len(output_shape) == 4
+            and len(output_shape) in (4, 5, 6)
             and output_shape[-1] == 64
             and output_shape[-2] in (2, 8)
-            and output_shape[0:2].count(1) == 1
+            and prefix_shape.count(input_shape[0]) == 1
+            and all(dim in (1, input_shape[0]) for dim in prefix_shape)
         ):
             source_shape = value_shapes.get(gemm.input[0])
             weight = initializers.get(gemm.input[1])
@@ -1324,7 +1428,7 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
                 and len(source_shape) == 2
                 and weight is not None
                 and weight.shape == (source_shape[-1], output_shape[-2] * output_shape[-1])
-                and source_shape[0] in output_shape[:2]
+                and source_shape[0] in prefix_shape
             ):
                 squeezed_shape = tuple(dim for dim in output_shape if dim != 1)
                 if squeezed_shape == (source_shape[0], output_shape[-2], output_shape[-1]):
@@ -1353,7 +1457,9 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
                         axes = [axis for axis, dim in enumerate(output_shape) if dim == 1]
                         axes_name = f"{reshape.name or reshape.output[0]}__head_unsqueeze_axes"
                         new_initializers.append(
-                            onnx.numpy_helper.from_array(np.asarray(axes, dtype=np.int64), axes_name)
+                            onnx.numpy_helper.from_array(
+                                np.asarray(axes, dtype=np.int64), axes_name
+                            )
                         )
                         replacement_nodes.append(
                             onnx.helper.make_node(
@@ -1387,7 +1493,8 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
             and len(output_shape) == 2
             and input_shape[:2].count(1) == 1
             and input_shape[-2:] == (8, 64)
-            and output_shape == (max(input_shape[0], input_shape[1]), input_shape[2] * input_shape[3])
+            and output_shape
+            == (max(input_shape[0], input_shape[1]), input_shape[2] * input_shape[3])
         ):
             weight = initializers.get(gemm_consumer.input[1])
             if weight is not None and weight.shape[0] == output_shape[-1]:
@@ -1512,7 +1619,9 @@ def rewrite_rmsnorm_for_webgpu(path: Path) -> dict[str, Any]:
             candidate = producer.get(input_name)
             if candidate is not None and candidate.op_type == "Div":
                 div = candidate
-                scale_input = scale_mul.input[1] if input_name == scale_mul.input[0] else scale_mul.input[0]
+                scale_input = (
+                    scale_mul.input[1] if input_name == scale_mul.input[0] else scale_mul.input[0]
+                )
                 break
         if div is None or scale_input is None or scale_input not in initializers:
             continue
@@ -1674,11 +1783,7 @@ def rewrite_cached_temporal_attention_to_gqa(path: Path) -> dict[str, Any]:
         )
     }
 
-    producer = {
-        output: node
-        for node in model.graph.node
-        for output in node.output
-    }
+    producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = {}
     for node in model.graph.node:
         for input_name in node.input:
@@ -1726,11 +1831,19 @@ def rewrite_cached_temporal_attention_to_gqa(path: Path) -> dict[str, Any]:
         if key_concat.op_type != "Concat" or value_concat.op_type != "Concat":
             continue
         key_concat_axis = next(
-            (onnx.helper.get_attribute_value(attr) for attr in key_concat.attribute if attr.name == "axis"),
+            (
+                onnx.helper.get_attribute_value(attr)
+                for attr in key_concat.attribute
+                if attr.name == "axis"
+            ),
             None,
         )
         value_concat_axis = next(
-            (onnx.helper.get_attribute_value(attr) for attr in value_concat.attribute if attr.name == "axis"),
+            (
+                onnx.helper.get_attribute_value(attr)
+                for attr in value_concat.attribute
+                if attr.name == "axis"
+            ),
             None,
         )
         if key_concat_axis != 1 or value_concat_axis != 1:
@@ -1764,12 +1877,22 @@ def rewrite_cached_temporal_attention_to_gqa(path: Path) -> dict[str, Any]:
         output_flat = f"{base}__gqa_output_flat"
         new_initializers.extend(
             [
-                onnx.numpy_helper.from_array(np.asarray([36, 1, 512], dtype=np.int64), query_shape_name),
-                onnx.numpy_helper.from_array(np.asarray([36, 1, 128], dtype=np.int64), current_key_shape_name),
-                onnx.numpy_helper.from_array(np.asarray([36, 1, 128], dtype=np.int64), current_value_shape_name),
-                onnx.numpy_helper.from_array(np.asarray([36, 1, 8, 64], dtype=np.int64), output_shape_name),
+                onnx.numpy_helper.from_array(
+                    np.asarray([36, 1, 512], dtype=np.int64), query_shape_name
+                ),
+                onnx.numpy_helper.from_array(
+                    np.asarray([36, 1, 128], dtype=np.int64), current_key_shape_name
+                ),
+                onnx.numpy_helper.from_array(
+                    np.asarray([36, 1, 128], dtype=np.int64), current_value_shape_name
+                ),
+                onnx.numpy_helper.from_array(
+                    np.asarray([36, 1, 8, 64], dtype=np.int64), output_shape_name
+                ),
                 onnx.numpy_helper.from_array(np.full((36,), 64, dtype=np.int32), seq_lens_name),
-                onnx.numpy_helper.from_array(np.asarray([65], dtype=np.int32), total_sequence_length_name),
+                onnx.numpy_helper.from_array(
+                    np.asarray([65], dtype=np.int32), total_sequence_length_name
+                ),
             ]
         )
         replacements[value_einsum.name] = [
@@ -1879,9 +2002,7 @@ def rewrite_cached_temporal_attention_to_gqa(path: Path) -> dict[str, Any]:
     fused_outputs = {node.output[0] for nodes in replacements.values() for node in nodes}
     fused_outputs -= {nodes[-1].output[0] for nodes in replacements.values()}
     retained_value_info = [
-        value_info
-        for value_info in model.graph.value_info
-        if value_info.name not in fused_outputs
+        value_info for value_info in model.graph.value_info if value_info.name not in fused_outputs
     ]
     del model.graph.value_info[:]
     model.graph.value_info.extend(retained_value_info)
@@ -2103,12 +2224,20 @@ def main() -> None:
     dynamics_prefill_layer_path = args.out_dir / f"{DYNAMICS_CACHED_PREFILL_LAYER_NAME}.onnx"
     dynamics_step_path = args.out_dir / f"{DYNAMICS_CACHED_STEP_NAME}.onnx"
     dynamics_sample_step_path = args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_STEP_NAME}.onnx"
-    dynamics_sample_step_slide_path = args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME}.onnx"
+    dynamics_sample_step_slide_path = (
+        args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME}.onnx"
+    )
     dynamics_sample_append_context_path = (
         args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME}.onnx"
     )
     dynamics_sample_append_context_slide_path = (
         args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME}.onnx"
+    )
+    dynamics_sample_append_context_slide_full_cache_path = (
+        args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME}.onnx"
+    )
+    dynamics_sample_append_context_slide_entry_path = (
+        args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME}.onnx"
     )
     dynamics_sample_append_context_slide_layer_path = (
         args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME}.onnx"
@@ -2314,6 +2443,48 @@ def main() -> None:
             native_attention=args.native_attention,
             grouped_gqa=args.grouped_gqa_attention,
             cache_update="slide",
+        )
+
+    def dynamics_sample_append_context_slide_full_cache_fn(
+        sample_noise: jax.Array,
+        context_noise: jax.Array,
+        actions: jax.Array,
+        k_cache: jax.Array,
+        v_cache: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        return apply_dynamics_cached_sample_step_append_context_full_cache(
+            dynamics_variables,
+            dynamics_cfg,
+            sample_noise,
+            context_noise,
+            actions,
+            k_cache,
+            v_cache,
+            context_tau=args.context_tau,
+            sample_steps=args.sample_steps,
+            native_attention=args.native_attention,
+            grouped_gqa=args.grouped_gqa_attention,
+        )
+
+    def dynamics_sample_append_context_slide_entry_fn(
+        sample_noise: jax.Array,
+        context_noise: jax.Array,
+        actions: jax.Array,
+        k_cache: jax.Array,
+        v_cache: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        return apply_dynamics_cached_sample_step_append_context_full_cache_entries(
+            dynamics_variables,
+            dynamics_cfg,
+            sample_noise,
+            context_noise,
+            actions,
+            k_cache,
+            v_cache,
+            context_tau=args.context_tau,
+            sample_steps=args.sample_steps,
+            native_attention=args.native_attention,
+            grouped_gqa=args.grouped_gqa_attention,
         )
 
     def dynamics_sample_append_context_slide_layer_fn(
@@ -2616,6 +2787,60 @@ def main() -> None:
             overwrite=args.overwrite,
         )
         export_to_onnx(
+            fn=dynamics_sample_append_context_slide_full_cache_fn,
+            inputs=(
+                cached_inputs["z_step"],
+                cached_inputs["z_step"],
+                cached_inputs["actions_step"],
+                cached_inputs["k_cache"],
+                cached_inputs["v_cache"],
+            ),
+            output_path=dynamics_sample_append_context_slide_full_cache_path,
+            model_name=DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME,
+            opset=args.opset,
+            input_names=(
+                "sample_noise",
+                "context_noise",
+                "actions",
+                "k_cache",
+                "v_cache",
+            ),
+            output_names=(
+                "final_z",
+                "pred_z",
+                "candidate_k_cache",
+                "candidate_v_cache",
+            ),
+            overwrite=args.overwrite,
+        )
+        export_to_onnx(
+            fn=dynamics_sample_append_context_slide_entry_fn,
+            inputs=(
+                cached_inputs["z_step"],
+                cached_inputs["z_step"],
+                cached_inputs["actions_step"],
+                cached_inputs["k_cache"],
+                cached_inputs["v_cache"],
+            ),
+            output_path=dynamics_sample_append_context_slide_entry_path,
+            model_name=DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
+            opset=args.opset,
+            input_names=(
+                "sample_noise",
+                "context_noise",
+                "actions",
+                "k_cache",
+                "v_cache",
+            ),
+            output_names=(
+                "final_z",
+                "pred_z",
+                "candidate_k_entry",
+                "candidate_v_entry",
+            ),
+            overwrite=args.overwrite,
+        )
+        export_to_onnx(
             fn=dynamics_sample_append_context_slide_layer_fn,
             inputs=(
                 cached_inputs["z_step"],
@@ -2666,15 +2891,30 @@ def main() -> None:
                 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME: (
                     dynamics_sample_append_context_slide_path
                 ),
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME: (
+                    dynamics_sample_append_context_slide_full_cache_path
+                ),
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME: (
+                    dynamics_sample_append_context_slide_entry_path
+                ),
                 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME: (
                     dynamics_sample_append_context_slide_layer_path
                 ),
             }
         )
 
+    raw_artifacts = (
+        snapshot_raw_artifacts(
+            exported_paths,
+            args.raw_out_dir,
+            overwrite=args.overwrite,
+        )
+        if args.raw_out_dir is not None
+        else {"enabled": False, "reason": "--raw_out_dir not set"}
+    )
+
     simplification = {
-        name: {"enabled": False, "reason": "--simplify_onnx not set"}
-        for name in exported_paths
+        name: {"enabled": False, "reason": "--simplify_onnx not set"} for name in exported_paths
     }
     if args.simplify_onnx:
         demo_simplification_names = {
@@ -2685,6 +2925,8 @@ def main() -> None:
             DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME,
             DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
             DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME,
+            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME,
+            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
             DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME,
         }
         simplification = {
@@ -2699,13 +2941,11 @@ def main() -> None:
         }
 
     optimization = {
-        name: {"enabled": False, "reason": "--skip_onnx_optimization"}
-        for name in exported_paths
+        name: {"enabled": False, "reason": "--skip_onnx_optimization"} for name in exported_paths
     }
     if not args.skip_onnx_optimization:
         optimization = {
-            name: optimize_onnx_for_webgpu(path)
-            for name, path in exported_paths.items()
+            name: optimize_onnx_for_webgpu(path) for name, path in exported_paths.items()
         }
 
     layout_rewrite = {
@@ -2718,8 +2958,7 @@ def main() -> None:
             for name, path in exported_paths.items()
         }
         gqa_repeat_rewrite = {
-            name: rewrite_gqa_repeats_for_webgpu(path)
-            for name, path in exported_paths.items()
+            name: rewrite_gqa_repeats_for_webgpu(path) for name, path in exported_paths.items()
         }
         head_projection_rewrite = {
             name: rewrite_head_projection_reshapes_for_webgpu(path)
@@ -2757,10 +2996,7 @@ def main() -> None:
         } & set(exported_paths)
     float16_keep_io_types = bool(args.float16_decoder_only)
 
-    precision = {
-        name: {"float16": False, "reason": "--float16 not set"}
-        for name in exported_paths
-    }
+    precision = {name: {"float16": False, "reason": "--float16 not set"} for name in exported_paths}
     if float16_export_names:
         precision = {
             name: convert_onnx_to_float16_for_webgpu(
@@ -2773,23 +3009,22 @@ def main() -> None:
         }
 
     rmsnorm_rewrite = {
-        name: rewrite_rmsnorm_for_webgpu(path)
-        for name, path in exported_paths.items()
+        name: rewrite_rmsnorm_for_webgpu(path) for name, path in exported_paths.items()
     }
     gather_index_rewrite = {
-        name: rewrite_gather_int64_casts_for_webgpu(path)
-        for name, path in exported_paths.items()
+        name: rewrite_gather_int64_casts_for_webgpu(path) for name, path in exported_paths.items()
     }
     cast_type_repair = {
-        name: repair_cast_output_types(path)
-        for name, path in exported_paths.items()
+        name: repair_cast_output_types(path) for name, path in exported_paths.items()
     }
     quickgelu_decomposition = {
         name: decompose_quickgelu_for_fp16_webgpu(path)
         if name in float16_export_names and not args.keep_quickgelu
         else {
             "enabled": False,
-            "reason": "--keep_quickgelu set" if name in float16_export_names else "--float16 not set",
+            "reason": "--keep_quickgelu set"
+            if name in float16_export_names
+            else "--float16 not set",
         }
         for name, path in exported_paths.items()
     }
@@ -2812,16 +3047,22 @@ def main() -> None:
         TOKENIZER_DECODER_STEP_NAME: {"skipped": not (args.validate and args.export_cached)},
         TOKENIZER_DECODE_Z_STEP_NAME: {"skipped": not (args.validate and args.export_cached)},
         DYNAMICS_CACHED_PREFILL_NAME: {"skipped": not (args.validate and args.export_cached)},
-        DYNAMICS_CACHED_PREFILL_LAYER_NAME: {
-            "skipped": not (args.validate and args.export_cached)
-        },
+        DYNAMICS_CACHED_PREFILL_LAYER_NAME: {"skipped": not (args.validate and args.export_cached)},
         DYNAMICS_CACHED_STEP_NAME: {"skipped": not (args.validate and args.export_cached)},
         DYNAMICS_CACHED_SAMPLE_STEP_NAME: {"skipped": not (args.validate and args.export_cached)},
-        DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME: {"skipped": not (args.validate and args.export_cached)},
+        DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME: {
+            "skipped": not (args.validate and args.export_cached)
+        },
         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME: {
             "skipped": not (args.validate and args.export_cached)
         },
         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME: {
+            "skipped": not (args.validate and args.export_cached)
+        },
+        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME: {
+            "skipped": not (args.validate and args.export_cached)
+        },
+        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME: {
             "skipped": not (args.validate and args.export_cached)
         },
         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME: {
@@ -2912,14 +3153,8 @@ def main() -> None:
                 },
                 expected={
                     "pred_z": prefill_layer_expected[0],
-                    **{
-                        name: prefill_layer_expected[1][i]
-                        for i, name in enumerate(k_layer_names)
-                    },
-                    **{
-                        name: prefill_layer_expected[2][i]
-                        for i, name in enumerate(v_layer_names)
-                    },
+                    **{name: prefill_layer_expected[1][i] for i, name in enumerate(k_layer_names)},
+                    **{name: prefill_layer_expected[2][i] for i, name in enumerate(v_layer_names)},
                     "cache_length": prefill_layer_expected[3],
                 },
                 atol=args.atol,
@@ -3072,6 +3307,62 @@ def main() -> None:
                 atol=args.atol,
                 rtol=args.rtol,
             )
+            sample_append_context_slide_full_cache_expected = (
+                dynamics_sample_append_context_slide_full_cache_fn(
+                    cached_inputs["z_step"],
+                    cached_inputs["z_step"],
+                    cached_inputs["actions_step"],
+                    cached_inputs["k_cache"],
+                    cached_inputs["v_cache"],
+                )
+            )
+            validation[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME] = (
+                validate_outputs(
+                    path=dynamics_sample_append_context_slide_full_cache_path,
+                    feeds={
+                        "sample_noise": cached_inputs["z_step"],
+                        "context_noise": cached_inputs["z_step"],
+                        "actions": cached_inputs["actions_step"],
+                        "k_cache": cached_inputs["k_cache"],
+                        "v_cache": cached_inputs["v_cache"],
+                    },
+                    expected={
+                        "final_z": sample_append_context_slide_full_cache_expected[0],
+                        "pred_z": sample_append_context_slide_full_cache_expected[1],
+                        "candidate_k_cache": sample_append_context_slide_full_cache_expected[2],
+                        "candidate_v_cache": sample_append_context_slide_full_cache_expected[3],
+                    },
+                    atol=args.atol,
+                    rtol=args.rtol,
+                )
+            )
+            sample_append_context_slide_entry_expected = (
+                dynamics_sample_append_context_slide_entry_fn(
+                    cached_inputs["z_step"],
+                    cached_inputs["z_step"],
+                    cached_inputs["actions_step"],
+                    cached_inputs["k_cache"],
+                    cached_inputs["v_cache"],
+                )
+            )
+            validation[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME] = validate_outputs(
+                path=dynamics_sample_append_context_slide_entry_path,
+                feeds={
+                    "sample_noise": cached_inputs["z_step"],
+                    "context_noise": cached_inputs["z_step"],
+                    "actions": cached_inputs["actions_step"],
+                    "k_cache": cached_inputs["k_cache"],
+                    "v_cache": cached_inputs["v_cache"],
+                },
+                expected={
+                    "final_z": sample_append_context_slide_entry_expected[0],
+                    "pred_z": sample_append_context_slide_entry_expected[1],
+                    "candidate_k_entry": sample_append_context_slide_entry_expected[2],
+                    "candidate_v_entry": sample_append_context_slide_entry_expected[3],
+                },
+                atol=args.atol,
+                rtol=args.rtol,
+            )
             sample_append_context_slide_layer_expected = (
                 dynamics_sample_append_context_slide_layer_fn(
                     cached_inputs["z_step"],
@@ -3133,6 +3424,12 @@ def main() -> None:
                 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME: (
                     dynamics_sample_append_context_slide_path
                 ),
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME: (
+                    dynamics_sample_append_context_slide_full_cache_path
+                ),
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME: (
+                    dynamics_sample_append_context_slide_entry_path
+                ),
             }
         fused_temporal_gqa.update(
             {
@@ -3171,7 +3468,19 @@ def main() -> None:
         export_file_metadata(dynamics_sample_append_context_path) if args.export_cached else None
     )
     dynamics_sample_append_context_slide_files = (
-        export_file_metadata(dynamics_sample_append_context_slide_path) if args.export_cached else None
+        export_file_metadata(dynamics_sample_append_context_slide_path)
+        if args.export_cached
+        else None
+    )
+    dynamics_sample_append_context_slide_full_cache_files = (
+        export_file_metadata(dynamics_sample_append_context_slide_full_cache_path)
+        if args.export_cached
+        else None
+    )
+    dynamics_sample_append_context_slide_entry_files = (
+        export_file_metadata(dynamics_sample_append_context_slide_entry_path)
+        if args.export_cached
+        else None
     )
     dynamics_sample_append_context_slide_layer_files = (
         export_file_metadata(dynamics_sample_append_context_slide_layer_path)
@@ -3224,8 +3533,18 @@ def main() -> None:
                 {
                     "name": TOKENIZER_DECODER_STEP_NAME,
                     **decoder_step_files,
-                    "inputs": {"latent": tensor_spec("float32", (args.batch_size, 1, tok_shapes.num_latents, tok_shapes.channel_dim))},
-                    "outputs": {"patches": tensor_spec("float32", (args.batch_size, 1, tok_shapes.patch_count, tok_shapes.patch_dim))},
+                    "inputs": {
+                        "latent": tensor_spec(
+                            "float32",
+                            (args.batch_size, 1, tok_shapes.num_latents, tok_shapes.channel_dim),
+                        )
+                    },
+                    "outputs": {
+                        "patches": tensor_spec(
+                            "float32",
+                            (args.batch_size, 1, tok_shapes.patch_count, tok_shapes.patch_dim),
+                        )
+                    },
                     "validation": validation[TOKENIZER_DECODER_STEP_NAME],
                     "simplification": simplification[TOKENIZER_DECODER_STEP_NAME],
                     "optimization": optimization[TOKENIZER_DECODER_STEP_NAME],
@@ -3242,13 +3561,20 @@ def main() -> None:
                     "name": TOKENIZER_DECODE_Z_STEP_NAME,
                     **decoder_z_step_files,
                     "inputs": {"z": tensor_spec("float32", dyn_shapes.step_z)},
-                    "outputs": {"patches": tensor_spec("float32", (args.batch_size, 1, tok_shapes.patch_count, tok_shapes.patch_dim))},
+                    "outputs": {
+                        "patches": tensor_spec(
+                            "float32",
+                            (args.batch_size, 1, tok_shapes.patch_count, tok_shapes.patch_dim),
+                        )
+                    },
                     "validation": validation[TOKENIZER_DECODE_Z_STEP_NAME],
                     "simplification": simplification[TOKENIZER_DECODE_Z_STEP_NAME],
                     "optimization": optimization[TOKENIZER_DECODE_Z_STEP_NAME],
                     "layout_rewrite": layout_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
                     "gqa_repeat_rewrite": gqa_repeat_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
-                    "head_projection_rewrite": head_projection_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
+                    "head_projection_rewrite": head_projection_rewrite[
+                        TOKENIZER_DECODE_Z_STEP_NAME
+                    ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
                     "fused_temporal_gqa": fused_temporal_gqa[TOKENIZER_DECODE_Z_STEP_NAME],
@@ -3257,7 +3583,12 @@ def main() -> None:
                     "decode_z": {
                         "source": "final_z_after_velocity_update",
                         "dynamics_shape": list(dyn_shapes.step_z),
-                        "decoder_latent_shape": [args.batch_size, 1, tok_shapes.num_latents, tok_shapes.channel_dim],
+                        "decoder_latent_shape": [
+                            args.batch_size,
+                            1,
+                            tok_shapes.num_latents,
+                            tok_shapes.channel_dim,
+                        ],
                     },
                 },
                 {
@@ -3280,7 +3611,9 @@ def main() -> None:
                     "optimization": optimization[DYNAMICS_CACHED_PREFILL_NAME],
                     "layout_rewrite": layout_rewrite[DYNAMICS_CACHED_PREFILL_NAME],
                     "gqa_repeat_rewrite": gqa_repeat_rewrite[DYNAMICS_CACHED_PREFILL_NAME],
-                    "head_projection_rewrite": head_projection_rewrite[DYNAMICS_CACHED_PREFILL_NAME],
+                    "head_projection_rewrite": head_projection_rewrite[
+                        DYNAMICS_CACHED_PREFILL_NAME
+                    ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_PREFILL_NAME],
                     "gather_index_rewrite": gather_index_rewrite[DYNAMICS_CACHED_PREFILL_NAME],
                     "fused_temporal_gqa": fused_temporal_gqa[DYNAMICS_CACHED_PREFILL_NAME],
@@ -3379,7 +3712,9 @@ def main() -> None:
                     "optimization": optimization[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
                     "layout_rewrite": layout_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
                     "gqa_repeat_rewrite": gqa_repeat_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
-                    "head_projection_rewrite": head_projection_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
+                    "head_projection_rewrite": head_projection_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_STEP_NAME
+                    ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
                     "fused_temporal_gqa": fused_temporal_gqa[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
@@ -3413,11 +3748,19 @@ def main() -> None:
                     "simplification": simplification[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
                     "optimization": optimization[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
                     "layout_rewrite": layout_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
-                    "gqa_repeat_rewrite": gqa_repeat_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
-                    "head_projection_rewrite": head_projection_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
+                    "gqa_repeat_rewrite": gqa_repeat_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME
+                    ],
+                    "head_projection_rewrite": head_projection_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME
+                    ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
-                    "gather_index_rewrite": gather_index_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
-                    "fused_temporal_gqa": fused_temporal_gqa[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
+                    "gather_index_rewrite": gather_index_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME
+                    ],
+                    "fused_temporal_gqa": fused_temporal_gqa[
+                        DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME
+                    ],
                     "precision": precision[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
@@ -3454,9 +3797,7 @@ def main() -> None:
                     "head_projection_rewrite": head_projection_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME
                     ],
-                    "rmsnorm_rewrite": rmsnorm_rewrite[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME
-                    ],
+                    "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME],
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME
                     ],
@@ -3521,6 +3862,135 @@ def main() -> None:
                     "sample_cache_policy": "sample_then_append_generated_context",
                     "fallback": DYNAMICS_CACHED_STEP_NAME,
                     "cache_update": "slide",
+                    "full_cache_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME,
+                },
+                {
+                    "name": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME,
+                    **dynamics_sample_append_context_slide_full_cache_files,
+                    "inputs": {
+                        "sample_noise": tensor_spec("float32", dyn_shapes.step_z),
+                        "context_noise": tensor_spec("float32", dyn_shapes.step_z),
+                        "actions": tensor_spec("int32", dyn_shapes.step_levels),
+                        "k_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "v_cache": tensor_spec("float32", dyn_shapes.cache),
+                    },
+                    "outputs": {
+                        "final_z": tensor_spec("float32", dyn_shapes.step_z),
+                        "pred_z": tensor_spec("float32", dyn_shapes.step_z),
+                        "candidate_k_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "candidate_v_cache": tensor_spec("float32", dyn_shapes.cache),
+                    },
+                    "validation": validation[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "simplification": simplification[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "optimization": optimization[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "layout_rewrite": layout_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "gqa_repeat_rewrite": gqa_repeat_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "head_projection_rewrite": head_projection_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "rmsnorm_rewrite": rmsnorm_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "gather_index_rewrite": gather_index_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "fused_temporal_gqa": fused_temporal_gqa[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "precision": precision[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                    ],
+                    "production_browser_ready": True,
+                    "sample_steps": args.sample_steps,
+                    "context_tau": args.context_tau,
+                    "sample_cache_policy": "sample_then_append_generated_context",
+                    "fallback": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME,
+                    "cache_update": "slide",
+                    "steady_state_full_cache_specialized": True,
+                    "entry_cache_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
+                },
+                {
+                    "name": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
+                    **dynamics_sample_append_context_slide_entry_files,
+                    "inputs": {
+                        "sample_noise": tensor_spec("float32", dyn_shapes.step_z),
+                        "context_noise": tensor_spec("float32", dyn_shapes.step_z),
+                        "actions": tensor_spec("int32", dyn_shapes.step_levels),
+                        "k_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "v_cache": tensor_spec("float32", dyn_shapes.cache),
+                    },
+                    "outputs": {
+                        "final_z": tensor_spec("float32", dyn_shapes.step_z),
+                        "pred_z": tensor_spec("float32", dyn_shapes.step_z),
+                        "candidate_k_entry": tensor_spec(
+                            "float32",
+                            (
+                                dyn_shapes.cache[0],
+                                dyn_shapes.cache[1],
+                                dyn_shapes.cache[2],
+                                1,
+                                dyn_shapes.cache[4],
+                                dyn_shapes.cache[5],
+                            ),
+                        ),
+                        "candidate_v_entry": tensor_spec(
+                            "float32",
+                            (
+                                dyn_shapes.cache[0],
+                                dyn_shapes.cache[1],
+                                dyn_shapes.cache[2],
+                                1,
+                                dyn_shapes.cache[4],
+                                dyn_shapes.cache[5],
+                            ),
+                        ),
+                    },
+                    "validation": validation[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                    ],
+                    "simplification": simplification[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                    ],
+                    "optimization": optimization[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                    ],
+                    "layout_rewrite": layout_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                    ],
+                    "gqa_repeat_rewrite": gqa_repeat_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                    ],
+                    "head_projection_rewrite": head_projection_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                    ],
+                    "rmsnorm_rewrite": rmsnorm_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                    ],
+                    "gather_index_rewrite": gather_index_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                    ],
+                    "fused_temporal_gqa": fused_temporal_gqa[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                    ],
+                    "precision": precision[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME],
+                    "production_browser_ready": True,
+                    "sample_steps": args.sample_steps,
+                    "context_tau": args.context_tau,
+                    "sample_cache_policy": "sample_then_append_generated_context",
+                    "fallback": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME,
+                    "cache_update": "slide",
+                    "cache_update_contract": "webgpu_inplace_slide_rebase_entry",
+                    "steady_state_full_cache_specialized": True,
                 },
                 {
                     "name": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME,
@@ -3553,7 +4023,9 @@ def main() -> None:
                         },
                         "candidate_cache_length": tensor_spec("int32", (1,)),
                     },
-                    "validation": validation[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME],
+                    "validation": validation[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
+                    ],
                     "simplification": simplification[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
                     ],
@@ -3649,6 +4121,7 @@ def main() -> None:
             "dynamics_step": dynamics_step,
         },
         "context_latents": context_artifact,
+        "raw_artifacts": raw_artifacts,
         "tokenizer": {
             "num_latents": tok_shapes.num_latents,
             "channel_dim": tok_shapes.channel_dim,
@@ -3667,6 +4140,9 @@ def main() -> None:
             "num_registers": int(dynamics_cfg.num_registers),
             "temporal_blocks": dyn_shapes.temporal_blocks,
             "total_tokens": dyn_shapes.total_tokens,
+            "rope_base": float(dynamics_cfg.base),
+            "num_kv_heads": dyn_shapes.num_kv_heads,
+            "head_dim": dyn_shapes.head_dim,
         },
         "exports": exports,
         "cache_contract": cache_contract(
@@ -3680,7 +4156,12 @@ def main() -> None:
             "sample_cache_policy": "sample_then_append_generated_context",
             "preferred_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
             "preferred_prefill_export": DYNAMICS_CACHED_PREFILL_NAME,
-            "preferred_steady_state_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME,
+            "preferred_steady_state_step_export": (
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+            ),
+            "fallback_steady_state_step_export": (
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+            ),
             "experimental_layer_prefill_export": DYNAMICS_CACHED_PREFILL_LAYER_NAME,
             "experimental_layer_steady_state_step_export": (
                 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
@@ -3691,7 +4172,12 @@ def main() -> None:
             "decode_z": {
                 "source": "final_z_after_velocity_update",
                 "dynamics_shape": list(dyn_shapes.step_z),
-                "decoder_latent_shape": [args.batch_size, 1, tok_shapes.num_latents, tok_shapes.channel_dim],
+                "decoder_latent_shape": [
+                    args.batch_size,
+                    1,
+                    tok_shapes.num_latents,
+                    tok_shapes.channel_dim,
+                ],
             },
         },
     }
@@ -3710,6 +4196,8 @@ def main() -> None:
         print(f"Wrote {dynamics_sample_step_slide_path}")
         print(f"Wrote {dynamics_sample_append_context_path}")
         print(f"Wrote {dynamics_sample_append_context_slide_path}")
+        print(f"Wrote {dynamics_sample_append_context_slide_full_cache_path}")
+        print(f"Wrote {dynamics_sample_append_context_slide_entry_path}")
         print(f"Wrote {dynamics_sample_append_context_slide_layer_path}")
     print(f"Wrote {manifest_path}")
 

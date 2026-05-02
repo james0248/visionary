@@ -26,6 +26,8 @@ const DEFAULT_CONFIG = {
 const REQUIRED_ARTIFACTS = {
   prefill: ['breakout_dynamics_prefill_cached_b1_t64', 'breakout_dynamics_prefill_layer_cached_b1_t64'],
   step: [
+    'breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4',
+    'breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s4',
     'breakout_dynamics_sample_append_context_slide_b1_t1_s4',
     'breakout_dynamics_sample_append_context_slide_layer_b1_t1_s4',
     'breakout_dynamics_sample_append_context_b1_t1_s4',
@@ -676,6 +678,8 @@ function validateDemoSpecs(specs, manifest) {
   const layerCacheCount = manifest.cache_contract?.tensors?.layer_cache?.layers ?? 0;
   const hasLayerPrefill = layerCacheCount > 0 && Boolean(specs.prefill.outputs?.k_cache_0);
   const hasLayerStep = layerCacheCount > 0 && Boolean(specs.step.inputs?.k_cache_0);
+  const hasEntryStep = Boolean(specs.step.outputs?.candidate_k_entry);
+  const entryShape = cacheShape ? [...cacheShape.slice(0, 3), 1, ...cacheShape.slice(4)] : null;
   if (!hasLayerPrefill) {
     requireTensorSpec('prefill.outputs.k_cache', specs.prefill.outputs?.k_cache, cacheShape);
     requireTensorSpec('prefill.outputs.v_cache', specs.prefill.outputs?.v_cache, cacheShape);
@@ -691,8 +695,13 @@ function validateDemoSpecs(specs, manifest) {
   } else {
     requireTensorSpec('step.inputs.k_cache', specs.step.inputs?.k_cache, cacheShape);
     requireTensorSpec('step.inputs.v_cache', specs.step.inputs?.v_cache, cacheShape);
-    requireTensorSpec('step.outputs.candidate_k_cache', specs.step.outputs?.candidate_k_cache, cacheShape);
-    requireTensorSpec('step.outputs.candidate_v_cache', specs.step.outputs?.candidate_v_cache, cacheShape);
+    if (hasEntryStep) {
+      requireTensorSpec('step.outputs.candidate_k_entry', specs.step.outputs?.candidate_k_entry, entryShape);
+      requireTensorSpec('step.outputs.candidate_v_entry', specs.step.outputs?.candidate_v_entry, entryShape);
+    } else {
+      requireTensorSpec('step.outputs.candidate_k_cache', specs.step.outputs?.candidate_k_cache, cacheShape);
+      requireTensorSpec('step.outputs.candidate_v_cache', specs.step.outputs?.candidate_v_cache, cacheShape);
+    }
   }
   if (specs.step.inputs?.cache_length) {
     requireTensorSpec('step.inputs.cache_length', specs.step.inputs.cache_length, cacheLengthShape);
@@ -721,6 +730,10 @@ function validateDemoSpecs(specs, manifest) {
       Boolean(specs.step.inputs?.v_cache) &&
       Boolean(specs.step.outputs?.candidate_k_cache) &&
       Boolean(specs.step.outputs?.candidate_v_cache)) ||
+    (Boolean(specs.step.inputs?.k_cache) &&
+      Boolean(specs.step.inputs?.v_cache) &&
+      Boolean(specs.step.outputs?.candidate_k_entry) &&
+      Boolean(specs.step.outputs?.candidate_v_entry)) ||
     (Boolean(specs.step.inputs?.k_cache_0) &&
       Boolean(specs.step.inputs?.v_cache_0) &&
       Boolean(specs.step.outputs?.candidate_k_cache_0) &&
@@ -847,6 +860,8 @@ function cacheOutputNames(spec) {
   return {
     k: candidateKLayers.length ? candidateKLayers : kLayers.length ? kLayers : outputs.find((name) => name === 'k_cache' || name.endsWith('_k_cache')),
     v: candidateVLayers.length ? candidateVLayers : vLayers.length ? vLayers : outputs.find((name) => name === 'v_cache' || name.endsWith('_v_cache')),
+    entryK: outputs.find((name) => name === 'candidate_k_entry' || name.endsWith('_k_entry')),
+    entryV: outputs.find((name) => name === 'candidate_v_entry' || name.endsWith('_v_entry')),
     length: outputs.find((name) => name === 'cache_length' || name.endsWith('_cache_length')),
   };
 }
@@ -1004,7 +1019,177 @@ function copyCacheIntoFixedGpu(device, sourceCache, fixedCache) {
   };
 }
 
+function createEntryCacheUpdater(device, spec, manifest) {
+  const cacheSpec = spec.inputs?.k_cache;
+  const entrySpec = spec.outputs?.candidate_k_entry;
+  if (!cacheSpec || !entrySpec) {
+    throw new Error('Entry-cache update requires k_cache input and candidate_k_entry output specs.');
+  }
+  if (cacheSpec.dtype !== 'float32' || entrySpec.dtype !== 'float32') {
+    throw new Error(
+      `Entry-cache update currently supports float32 caches only, got ${cacheSpec.dtype}/${entrySpec.dtype}.`,
+    );
+  }
+  const [layers, batch, tokens, contextLength, heads, headDim] = cacheSpec.shape;
+  const halfHeadDim = headDim / 2;
+  if (!Number.isInteger(halfHeadDim)) {
+    throw new Error(`Entry-cache update requires an even head_dim, got ${headDim}.`);
+  }
+  const ropeBase = Number(manifest.dynamics?.rope_base ?? manifest.dynamics?.base ?? 10000);
+  const workgroupSize = 64;
+  const shader = device.createShaderModule({
+    label: 'visionary-entry-cache-slide-rebase',
+    code: `
+const LAYERS: u32 = ${layers}u;
+const BATCH: u32 = ${batch}u;
+const TOKENS: u32 = ${tokens}u;
+const CONTEXT: u32 = ${contextLength}u;
+const CONTEXT_MINUS_ONE: u32 = ${contextLength - 1}u;
+const HEADS: u32 = ${heads}u;
+const HEAD_DIM: u32 = ${headDim}u;
+const HALF_HEAD_DIM: u32 = ${halfHeadDim}u;
+const ROPE_BASE: f32 = ${ropeBase.toFixed(1)};
+
+@group(0) @binding(0) var<storage, read_write> k_cache: array<f32>;
+@group(0) @binding(1) var<storage, read_write> v_cache: array<f32>;
+@group(0) @binding(2) var<storage, read> k_entry: array<f32>;
+@group(0) @binding(3) var<storage, read> v_entry: array<f32>;
+
+fn cache_index(layer: u32, batch: u32, token: u32, time: u32, head: u32, dim: u32) -> u32 {
+  return (((((layer * BATCH + batch) * TOKENS + token) * CONTEXT + time) * HEADS + head) * HEAD_DIM + dim);
+}
+
+fn entry_index(layer: u32, batch: u32, token: u32, head: u32, dim: u32) -> u32 {
+  return ((((layer * BATCH + batch) * TOKENS + token) * HEADS + head) * HEAD_DIM + dim);
+}
+
+@compute @workgroup_size(${workgroupSize})
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+  let idx = global_id.x;
+  let key_total = LAYERS * BATCH * TOKENS * HEADS * HALF_HEAD_DIM;
+  let value_total = LAYERS * BATCH * TOKENS * HEADS * HEAD_DIM;
+
+  if (idx < key_total) {
+    let half_dim = idx % HALF_HEAD_DIM;
+    var remaining = idx / HALF_HEAD_DIM;
+    let head = remaining % HEADS;
+    remaining = remaining / HEADS;
+    let token = remaining % TOKENS;
+    remaining = remaining / TOKENS;
+    let batch = remaining % BATCH;
+    let layer = remaining / BATCH;
+
+    let theta = 1.0 / pow(ROPE_BASE, f32(half_dim) / f32(HALF_HEAD_DIM));
+    let cos_theta = cos(theta);
+    let sin_theta = sin(theta);
+    for (var time = 0u; time < CONTEXT_MINUS_ONE; time = time + 1u) {
+      let src_left = cache_index(layer, batch, token, time + 1u, head, half_dim);
+      let src_right = cache_index(layer, batch, token, time + 1u, head, HALF_HEAD_DIM + half_dim);
+      let dst_left = cache_index(layer, batch, token, time, head, half_dim);
+      let dst_right = cache_index(layer, batch, token, time, head, HALF_HEAD_DIM + half_dim);
+      let left = k_cache[src_left];
+      let right = k_cache[src_right];
+      k_cache[dst_left] = left * cos_theta + right * sin_theta;
+      k_cache[dst_right] = right * cos_theta - left * sin_theta;
+    }
+
+    let src_entry_left = entry_index(layer, batch, token, head, half_dim);
+    let src_entry_right = entry_index(layer, batch, token, head, HALF_HEAD_DIM + half_dim);
+    let dst_entry_left = cache_index(layer, batch, token, CONTEXT_MINUS_ONE, head, half_dim);
+    let dst_entry_right = cache_index(layer, batch, token, CONTEXT_MINUS_ONE, head, HALF_HEAD_DIM + half_dim);
+    k_cache[dst_entry_left] = k_entry[src_entry_left];
+    k_cache[dst_entry_right] = k_entry[src_entry_right];
+  }
+
+  if (idx < value_total) {
+    let dim = idx % HEAD_DIM;
+    var remaining = idx / HEAD_DIM;
+    let head = remaining % HEADS;
+    remaining = remaining / HEADS;
+    let token = remaining % TOKENS;
+    remaining = remaining / TOKENS;
+    let batch = remaining % BATCH;
+    let layer = remaining / BATCH;
+
+    for (var time = 0u; time < CONTEXT_MINUS_ONE; time = time + 1u) {
+      let src = cache_index(layer, batch, token, time + 1u, head, dim);
+      let dst = cache_index(layer, batch, token, time, head, dim);
+      v_cache[dst] = v_cache[src];
+    }
+    let src_entry = entry_index(layer, batch, token, head, dim);
+    let dst_entry = cache_index(layer, batch, token, CONTEXT_MINUS_ONE, head, dim);
+    v_cache[dst_entry] = v_entry[src_entry];
+  }
+}
+`,
+  });
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: 'visionary-entry-cache-slide-rebase-bindings',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+    ],
+  });
+  const pipeline = device.createComputePipeline({
+    label: 'visionary-entry-cache-slide-rebase',
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+    compute: { module: shader, entryPoint: 'main' },
+  });
+  const dispatchCount = Math.ceil(
+    Math.max(
+      layers * batch * tokens * heads * halfHeadDim,
+      layers * batch * tokens * heads * headDim,
+    ) / workgroupSize,
+  );
+  return {
+    kind: 'webgpu_inplace_slide_rebase_entry',
+    rope_base: ropeBase,
+    cache_shape: cacheSpec.shape,
+    entry_shape: entrySpec.shape,
+    update(cache, kEntry, vEntry) {
+      const bindGroup = device.createBindGroup({
+        label: 'visionary-entry-cache-slide-rebase-bind-group',
+        layout: bindGroupLayout,
+        entries: [
+          { binding: 0, resource: { buffer: cache.k.gpuBuffer } },
+          { binding: 1, resource: { buffer: cache.v.gpuBuffer } },
+          { binding: 2, resource: { buffer: kEntry.gpuBuffer } },
+          { binding: 3, resource: { buffer: vEntry.gpuBuffer } },
+        ],
+      });
+      const encoder = device.createCommandEncoder({ label: 'visionary-entry-cache-update' });
+      const pass = encoder.beginComputePass({ label: 'visionary-entry-cache-slide-rebase' });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(dispatchCount);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+      return cache;
+    },
+  };
+}
+
+function updateCacheFromEntries(updater, cache, outputs, names) {
+  const kEntry = outputs[names.entryK];
+  const vEntry = outputs[names.entryV];
+  if (!kEntry || !vEntry) {
+    throw new Error('Entry-cache step did not return candidate_k_entry/candidate_v_entry.');
+  }
+  if (kEntry.location !== 'gpu-buffer' || vEntry.location !== 'gpu-buffer') {
+    throw new Error(
+      `Entry-cache update requires GPU entry tensors, got ${kEntry.location}/${vEntry.location}.`,
+    );
+  }
+  updater.update(cache, kEntry, vEntry);
+  disposeTensorIfOwned(kEntry);
+  disposeTensorIfOwned(vEntry);
+  return cache;
+}
+
 function cacheFetches(names) {
+  if (names.entryK && names.entryV) return [names.entryK, names.entryV];
   return [names.k, names.v, names.length].flat().filter(Boolean);
 }
 
@@ -1101,6 +1286,7 @@ function preferredOutputLocationFor(role, spec, config) {
       [predName]: usesFusedSampleStep && !config.debugStats ? 'gpu-buffer' : 'cpu',
     };
     for (const name of [names.k, names.v].flat().filter(Boolean)) locations[name] = 'gpu-buffer';
+    for (const name of [names.entryK, names.entryV].filter(Boolean)) locations[name] = 'gpu-buffer';
     if (names.length && !config.graphCapture) locations[names.length] = 'cpu';
     if (usesFusedSampleStep) {
       locations[finalName] = 'gpu-buffer';
@@ -1148,7 +1334,7 @@ async function createBenchSession(role, spec, config) {
   };
 }
 
-async function runDemoBenchmark({ config, specs, profiler }) {
+async function runDemoBenchmark({ config, specs, manifest, profiler }) {
   const prefill = await createBenchSession('cached_prefill', specs.prefill, config);
   const step = await createBenchSession('cached_step', specs.step, config);
   const decoder = await createBenchSession('single_frame_decoder', specs.decoder, config);
@@ -1157,13 +1343,14 @@ async function runDemoBenchmark({ config, specs, profiler }) {
   const decoderBaseFeeds = makeFeedsFromSpec(specs.decoder, 3000);
   const prefillCacheNames = cacheOutputNames(specs.prefill);
   const stepCacheNames = cacheOutputNames(specs.step);
+  const usesEntryCacheStep = Boolean(stepCacheNames.entryK && stepCacheNames.entryV);
   const predName = stepPredOutputName(specs.step);
   const finalZName = stepFinalZOutputName(specs.step);
   const usesFusedSampleStep = finalZName !== predName;
   const decoderName = decoderOutputName(specs.decoder);
   const prefillFetches = cacheFetches(prefillCacheNames);
   const stepCacheFetches =
-    config.graphCapture && step.graph_capture
+    config.graphCapture && step.graph_capture && !usesEntryCacheStep
       ? [stepCacheNames.k, stepCacheNames.v].flat().filter(Boolean)
       : cacheFetches(stepCacheNames);
   const stepPredFetches = [...new Set([predName, finalZName])];
@@ -1174,6 +1361,11 @@ async function runDemoBenchmark({ config, specs, profiler }) {
   const actionTensor = makeIntTensor([1, 1], 4000, 4);
   const zDtype = stepZInputDtype(specs.step);
   const gpuDevice = config.provider === 'webgpu' ? (ort.env.webgpu?.device ?? null) : null;
+  const entryCacheUpdater =
+    usesEntryCacheStep && gpuDevice ? createEntryCacheUpdater(gpuDevice, specs.step, manifest) : null;
+  if (usesEntryCacheStep && !entryCacheUpdater) {
+    throw new Error('Entry-cache artifact requires provider=webgpu and an ORT WebGPU device.');
+  }
   const graphCaptureStepInputs =
     config.graphCapture && step.graph_capture && gpuDevice
       ? {
@@ -1240,8 +1432,17 @@ async function runDemoBenchmark({ config, specs, profiler }) {
       const outputs = await step.session.run(feeds, fetches);
       predZ = outputs[predName] ?? null;
       if (sample === sampleCount - 1) {
-        candidateCache = cacheFromOutputs(outputs, stepCacheNames, persistentCache.length);
-        if (graphCaptureFixedCache) {
+        if (usesEntryCacheStep) {
+          candidateCache = updateCacheFromEntries(
+            entryCacheUpdater,
+            persistentCache,
+            outputs,
+            stepCacheNames,
+          );
+        } else {
+          candidateCache = cacheFromOutputs(outputs, stepCacheNames, persistentCache.length);
+        }
+        if (!usesEntryCacheStep && graphCaptureFixedCache) {
           const outputCache = candidateCache;
           candidateCache = copyCacheIntoFixedGpu(gpuDevice, outputCache, graphCaptureFixedCache);
           disposeCache(outputCache, graphCapturePinnedTensors);
@@ -1346,8 +1547,17 @@ async function runDemoBenchmark({ config, specs, profiler }) {
         throw new Error(`Cached step did not return output ${predName}`);
       }
       if (sample === sampleCount - 1) {
-        candidateCache = cacheFromOutputs(timed.value, stepCacheNames, persistentCache.length);
-        if (graphCaptureFixedCache) {
+        if (usesEntryCacheStep) {
+          candidateCache = updateCacheFromEntries(
+            entryCacheUpdater,
+            persistentCache,
+            timed.value,
+            stepCacheNames,
+          );
+        } else {
+          candidateCache = cacheFromOutputs(timed.value, stepCacheNames, persistentCache.length);
+        }
+        if (!usesEntryCacheStep && graphCaptureFixedCache) {
           const outputCache = candidateCache;
           candidateCache = copyCacheIntoFixedGpu(gpuDevice, outputCache, graphCaptureFixedCache);
           disposeCache(outputCache, graphCapturePinnedTensors);
@@ -1453,6 +1663,7 @@ async function runDemoBenchmark({ config, specs, profiler }) {
       },
       cache: {
         outputs: stepCacheNames,
+        entry_cache_update: usesEntryCacheStep ? entryCacheUpdater : null,
         commit_policy: usesFusedSampleStep
           ? 'fused graph reads committed cache for all samples and returns final candidate cache once per frame'
           : 'discard sample forwards 1-3; commit sample forward 4 once per frame',
@@ -1494,7 +1705,9 @@ async function runDemoBenchmark({ config, specs, profiler }) {
       },
       cache: {
         commit_policy: usesFusedSampleStep
-          ? 'cache_length advances once per generated frame from fused final candidate cache'
+          ? usesEntryCacheStep
+            ? 'cache is updated in-place from per-frame K/V entry outputs; cache_length stays fixed at full context'
+            : 'cache_length advances once per generated frame from fused final candidate cache'
           : 'cache_length advances once per generated frame',
       },
       output: latestFrameStats,
@@ -1521,7 +1734,7 @@ async function runBenchmark() {
   }
   validateDemoSpecs(specs, manifest);
 
-  const results = await runDemoBenchmark({ config, specs, profiler });
+  const results = await runDemoBenchmark({ config, specs, manifest, profiler });
   return {
     schema_version: 2,
     status: 'passed',
