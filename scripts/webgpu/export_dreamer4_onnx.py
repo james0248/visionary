@@ -176,15 +176,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--fused_temporal_gqa",
-        action="store_true",
-        help=(
-            "Experimental: after CPU ORT validation, replace cached temporal attention "
-            "islands with com.microsoft::GroupQueryAttention for ORT WebGPU. This pass "
-            "is browser-targeted and is not CPU-ORT validated."
-        ),
-    )
-    parser.add_argument(
         "--context_latents",
         type=Path,
         default=None,
@@ -1741,33 +1732,7 @@ def rewrite_rmsnorm_for_webgpu(path: Path) -> dict[str, Any]:
     }
 
 
-def _single_consumer(
-    consumers: dict[str, list[onnx.NodeProto]],
-    value_name: str,
-    op_type: str | None = None,
-) -> onnx.NodeProto | None:
-    value_consumers = consumers.get(value_name, [])
-    if len(value_consumers) != 1:
-        return None
-    node = value_consumers[0]
-    if op_type is not None and node.op_type != op_type:
-        return None
-    return node
-
-
-def _producer_input_by_op(
-    producer: dict[str, onnx.NodeProto],
-    node: onnx.NodeProto,
-    op_type: str,
-) -> onnx.NodeProto | None:
-    for input_name in node.input:
-        candidate = producer.get(input_name)
-        if candidate is not None and candidate.op_type == op_type:
-            return candidate
-    return None
-
-
-def rewrite_cached_temporal_attention_to_gqa(path: Path) -> dict[str, Any]:
+def fuse_skip_simplified_layer_norm_for_webgpu(path: Path) -> dict[str, Any]:
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
     try:
@@ -1782,203 +1747,86 @@ def rewrite_cached_temporal_attention_to_gqa(path: Path) -> dict[str, Any]:
             + list(inferred.graph.output)
         )
     }
-
+    initializers = {initializer.name: initializer for initializer in model.graph.initializer}
     producer = {output: node for node in model.graph.node for output in node.output}
-    consumers: dict[str, list[onnx.NodeProto]] = {}
-    for node in model.graph.node:
-        for input_name in node.input:
-            consumers.setdefault(input_name, []).append(node)
 
-    replacements: dict[str, list[onnx.NodeProto]] = {}
+    gamma_aliases: dict[str, str] = {}
     new_initializers: list[onnx.TensorProto] = []
+    replacements: dict[str, onnx.NodeProto] = {}
+    skip_nodes: set[str] = set()
     examples: list[dict[str, Any]] = []
 
-    for softmax in model.graph.node:
-        if softmax.op_type != "Softmax" or not softmax.output:
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def one_dim_gamma_name(name: str, width: int) -> str | None:
+        if name in gamma_aliases:
+            return gamma_aliases[name]
+        initializer = initializers.get(name)
+        if initializer is None:
+            return None
+        value = onnx.numpy_helper.to_array(initializer)
+        if value.size != width:
+            return None
+        if value.ndim == 1:
+            gamma_aliases[name] = name
+            return name
+        alias = f"{name}__skip_sln_1d"
+        if alias not in initializers and alias not in gamma_aliases.values():
+            new_initializers.append(
+                onnx.numpy_helper.from_array(value.reshape((width,)).astype(value.dtype), alias)
+            )
+        gamma_aliases[name] = alias
+        return alias
+
+    for sln in model.graph.node:
+        if sln.op_type != "SimplifiedLayerNormalization" or len(sln.input) < 2:
             continue
-        softmax_shape = value_shapes.get(softmax.output[0])
-        if softmax_shape is not None and softmax_shape != (36, 8, 1, 65):
+        add = producer.get(sln.input[0])
+        if add is None or add.op_type != "Add" or len(add.input) != 2 or len(add.output) != 1:
             continue
 
-        value_einsum = _single_consumer(consumers, softmax.output[0], "Einsum")
-        if value_einsum is None or len(value_einsum.input) < 2:
+        input_shape = value_shapes.get(sln.input[0])
+        if input_shape is None or len(input_shape) not in {2, 3}:
             continue
-        logits_add = producer.get(softmax.input[0])
-        if logits_add is None or logits_add.op_type != "Add":
+        axis = int(attr_value(sln, "axis", -1))
+        if axis < 0:
+            axis += len(input_shape)
+        if axis < 0 or axis >= len(input_shape):
             continue
-        logits_scale = _producer_input_by_op(producer, logits_add, "Div")
-        if logits_scale is None:
-            logits_scale = _producer_input_by_op(producer, logits_add, "Mul")
-        if logits_scale is None:
-            continue
-        query_key_einsum = _producer_input_by_op(producer, logits_scale, "Einsum")
-        if query_key_einsum is None or len(query_key_einsum.input) < 2:
+        width = int(np.prod(input_shape[axis:]))
+        gamma_name = one_dim_gamma_name(sln.input[1], width)
+        if gamma_name is None:
             continue
 
-        query_name = query_key_einsum.input[0]
-        key_gather = producer.get(query_key_einsum.input[1])
-        value_gather = producer.get(value_einsum.input[1])
-        if key_gather is None or value_gather is None:
-            continue
-        if key_gather.op_type != "Gather" or value_gather.op_type != "Gather":
-            continue
-        key_name = key_gather.input[0]
-        value_name = value_gather.input[0]
-        key_concat = producer.get(key_name)
-        value_concat = producer.get(value_name)
-        if key_concat is None or value_concat is None:
-            continue
-        if key_concat.op_type != "Concat" or value_concat.op_type != "Concat":
-            continue
-        key_concat_axis = next(
-            (
-                onnx.helper.get_attribute_value(attr)
-                for attr in key_concat.attribute
-                if attr.name == "axis"
-            ),
-            None,
+        epsilon = float(attr_value(sln, "epsilon", 1.0e-6))
+        replacements[sln.name] = onnx.helper.make_node(
+            "SkipSimplifiedLayerNormalization",
+            [add.input[0], add.input[1], gamma_name],
+            [sln.output[0], "", "", add.output[0]],
+            name=f"{sln.name or sln.output[0]}__skip_sln",
+            domain="com.microsoft",
+            epsilon=epsilon,
         )
-        value_concat_axis = next(
-            (
-                onnx.helper.get_attribute_value(attr)
-                for attr in value_concat.attribute
-                if attr.name == "axis"
-            ),
-            None,
-        )
-        if key_concat_axis != 1 or value_concat_axis != 1:
-            continue
-        if len(key_concat.input) != 2 or len(value_concat.input) != 2:
-            continue
-        past_key_name, current_key_name = key_concat.input
-        past_value_name, current_value_name = value_concat.input
-        query_shape = value_shapes.get(query_name)
-        key_shape = value_shapes.get(key_name)
-        value_shape = value_shapes.get(value_name)
-        if query_shape is not None and query_shape != (36, 1, 8, 64):
-            continue
-        if key_shape is not None and key_shape != (36, 65, 2, 64):
-            continue
-        if value_shape is not None and value_shape != (36, 65, 2, 64):
-            continue
-
-        base = value_einsum.name or value_einsum.output[0]
-        query_shape_name = f"{base}__gqa_query_shape"
-        current_key_shape_name = f"{base}__gqa_current_key_shape"
-        current_value_shape_name = f"{base}__gqa_current_value_shape"
-        output_shape_name = f"{base}__gqa_output_shape"
-        seq_lens_name = f"{base}__gqa_seq_lens"
-        total_sequence_length_name = f"{base}__gqa_total_sequence_length"
-        query_flat = f"{base}__gqa_query_flat"
-        current_key_flat = f"{base}__gqa_current_key_flat"
-        current_value_flat = f"{base}__gqa_current_value_flat"
-        past_key_bnsh = f"{base}__gqa_past_key_bnsh"
-        past_value_bnsh = f"{base}__gqa_past_value_bnsh"
-        output_flat = f"{base}__gqa_output_flat"
-        new_initializers.extend(
-            [
-                onnx.numpy_helper.from_array(
-                    np.asarray([36, 1, 512], dtype=np.int64), query_shape_name
-                ),
-                onnx.numpy_helper.from_array(
-                    np.asarray([36, 1, 128], dtype=np.int64), current_key_shape_name
-                ),
-                onnx.numpy_helper.from_array(
-                    np.asarray([36, 1, 128], dtype=np.int64), current_value_shape_name
-                ),
-                onnx.numpy_helper.from_array(
-                    np.asarray([36, 1, 8, 64], dtype=np.int64), output_shape_name
-                ),
-                onnx.numpy_helper.from_array(np.full((36,), 64, dtype=np.int32), seq_lens_name),
-                onnx.numpy_helper.from_array(
-                    np.asarray([65], dtype=np.int32), total_sequence_length_name
-                ),
-            ]
-        )
-        replacements[value_einsum.name] = [
-            onnx.helper.make_node(
-                "Reshape",
-                [query_name, query_shape_name],
-                [query_flat],
-                name=f"{base}__gqa_query_flat",
-            ),
-            onnx.helper.make_node(
-                "Reshape",
-                [current_key_name, current_key_shape_name],
-                [current_key_flat],
-                name=f"{base}__gqa_key_flat",
-            ),
-            onnx.helper.make_node(
-                "Reshape",
-                [current_value_name, current_value_shape_name],
-                [current_value_flat],
-                name=f"{base}__gqa_value_flat",
-            ),
-            onnx.helper.make_node(
-                "Transpose",
-                [past_key_name],
-                [past_key_bnsh],
-                name=f"{base}__gqa_past_key_bnsh",
-                perm=[0, 2, 1, 3],
-            ),
-            onnx.helper.make_node(
-                "Transpose",
-                [past_value_name],
-                [past_value_bnsh],
-                name=f"{base}__gqa_past_value_bnsh",
-                perm=[0, 2, 1, 3],
-            ),
-            onnx.helper.make_node(
-                "GroupQueryAttention",
-                [
-                    query_flat,
-                    current_key_flat,
-                    current_value_flat,
-                    past_key_bnsh,
-                    past_value_bnsh,
-                    seq_lens_name,
-                    total_sequence_length_name,
-                ],
-                [
-                    output_flat,
-                    f"{base}__gqa_present_key",
-                    f"{base}__gqa_present_value",
-                ],
-                name=f"{base}__group_query_attention",
-                domain="com.microsoft",
-                num_heads=8,
-                kv_num_heads=2,
-                scale=0.125,
-                softcap=0.0,
-                do_rotary=0,
-                rotary_interleaved=0,
-                smooth_softmax=0,
-                local_window_size=-1,
-            ),
-            onnx.helper.make_node(
-                "Reshape",
-                [output_flat, output_shape_name],
-                [value_einsum.output[0]],
-                name=f"{base}__gqa_output_restore",
-            ),
-        ]
+        skip_nodes.add(add.name)
         if len(examples) < 12:
             examples.append(
                 {
-                    "softmax": softmax.name,
-                    "value_einsum": value_einsum.name,
-                    "query": query_name,
-                    "current_key": current_key_name,
-                    "current_value": current_value_name,
-                    "past_key": past_key_name,
-                    "past_value": past_value_name,
+                    "add": add.name,
+                    "simplified_layer_norm": sln.name,
+                    "axis": axis,
+                    "width": width,
+                    "gamma": gamma_name,
                 }
             )
 
     if not replacements:
         return {
             "enabled": True,
-            "tool": "custom_cached_temporal_gqa_fusion",
+            "tool": "custom_skip_simplified_layer_norm_rewrite",
             "rewrites": 0,
             "node_count_before": int(sum(before.values())),
             "node_count_after": int(sum(before.values())),
@@ -1989,37 +1837,28 @@ def rewrite_cached_temporal_attention_to_gqa(path: Path) -> dict[str, Any]:
 
     rewritten_nodes: list[onnx.NodeProto] = []
     for node in model.graph.node:
-        if node.name in replacements:
-            rewritten_nodes.extend(replacements[node.name])
-        else:
-            rewritten_nodes.append(node)
+        if node.name in skip_nodes:
+            continue
+        rewritten_nodes.append(replacements.get(node.name, node))
 
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     model.graph.initializer.extend(new_initializers)
-    # Remove stale value_info for intermediate fused attention outputs. The
-    # public replacement output keeps the original [36, 1, 8, 64] contract.
-    fused_outputs = {node.output[0] for nodes in replacements.values() for node in nodes}
-    fused_outputs -= {nodes[-1].output[0] for nodes in replacements.values()}
-    retained_value_info = [
-        value_info for value_info in model.graph.value_info if value_info.name not in fused_outputs
-    ]
-    del model.graph.value_info[:]
-    model.graph.value_info.extend(retained_value_info)
-    # onnx.checker does not know ORT contrib ops such as
-    # SimplifiedLayerNormalization, so browser/ORT smoke tests are the
-    # authoritative validation for this post-export rewrite.
     external_data_path(path).unlink(missing_ok=True)
     onnx.save_model(model, path.as_posix(), save_as_external_data=False)
 
     after = op_counts(path)
-    tracked_ops = ("GroupQueryAttention", "Einsum", "Softmax", "Gather", "Reshape", "Gemm")
+    tracked_ops = (
+        "Add",
+        "SimplifiedLayerNormalization",
+        "SkipSimplifiedLayerNormalization",
+    )
     return {
         "enabled": True,
-        "tool": "custom_cached_temporal_gqa_fusion",
+        "tool": "custom_skip_simplified_layer_norm_rewrite",
         "reason": (
-            "Replace cached temporal attention softmax/einsum islands with "
-            "com.microsoft::GroupQueryAttention for ORT WebGPU."
+            "Fuse residual Add followed by SimplifiedLayerNormalization into "
+            "ORT WebGPU's SkipSimplifiedLayerNormalization."
         ),
         "rewrites": len(replacements),
         "node_count_before": int(sum(before.values())),
@@ -2028,6 +1867,20 @@ def rewrite_cached_temporal_attention_to_gqa(path: Path) -> dict[str, Any]:
         "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
         "rewrite_examples": examples,
     }
+
+
+def _single_consumer(
+    consumers: dict[str, list[onnx.NodeProto]],
+    value_name: str,
+    op_type: str | None = None,
+) -> onnx.NodeProto | None:
+    value_consumers = consumers.get(value_name, [])
+    if len(value_consumers) != 1:
+        return None
+    node = value_consumers[0]
+    if op_type is not None and node.op_type != op_type:
+        return None
+    return node
 
 
 def run_ort(path: Path, feeds: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -3011,6 +2864,10 @@ def main() -> None:
     rmsnorm_rewrite = {
         name: rewrite_rmsnorm_for_webgpu(path) for name, path in exported_paths.items()
     }
+    skip_simplified_layer_norm_rewrite = {
+        name: fuse_skip_simplified_layer_norm_for_webgpu(path)
+        for name, path in exported_paths.items()
+    }
     gather_index_rewrite = {
         name: rewrite_gather_int64_casts_for_webgpu(path) for name, path in exported_paths.items()
     }
@@ -3410,34 +3267,6 @@ def main() -> None:
         if failed:
             raise AssertionError(f"ONNX validation failed for: {failed}")
 
-    fused_temporal_gqa = {
-        name: {"enabled": False, "reason": "--fused_temporal_gqa not set"}
-        for name in exported_paths
-    }
-    if args.fused_temporal_gqa:
-        fused_targets = {}
-        if args.export_cached:
-            fused_targets = {
-                DYNAMICS_CACHED_STEP_NAME: dynamics_step_path,
-                DYNAMICS_CACHED_SAMPLE_STEP_NAME: dynamics_sample_step_path,
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME: dynamics_sample_append_context_path,
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME: (
-                    dynamics_sample_append_context_slide_path
-                ),
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME: (
-                    dynamics_sample_append_context_slide_full_cache_path
-                ),
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME: (
-                    dynamics_sample_append_context_slide_entry_path
-                ),
-            }
-        fused_temporal_gqa.update(
-            {
-                name: rewrite_cached_temporal_attention_to_gqa(path)
-                for name, path in fused_targets.items()
-            }
-        )
-
     context_artifact = None
     if args.context_latents is not None:
         context_artifact = {
@@ -3501,7 +3330,6 @@ def main() -> None:
             "head_projection_rewrite": head_projection_rewrite[TOKENIZER_DECODER_NAME],
             "rmsnorm_rewrite": rmsnorm_rewrite[TOKENIZER_DECODER_NAME],
             "gather_index_rewrite": gather_index_rewrite[TOKENIZER_DECODER_NAME],
-            "fused_temporal_gqa": fused_temporal_gqa[TOKENIZER_DECODER_NAME],
             "precision": precision[TOKENIZER_DECODER_NAME],
         },
         {
@@ -3522,7 +3350,6 @@ def main() -> None:
             "head_projection_rewrite": head_projection_rewrite[DYNAMICS_UNCACHED_NAME],
             "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_UNCACHED_NAME],
             "gather_index_rewrite": gather_index_rewrite[DYNAMICS_UNCACHED_NAME],
-            "fused_temporal_gqa": fused_temporal_gqa[DYNAMICS_UNCACHED_NAME],
             "precision": precision[DYNAMICS_UNCACHED_NAME],
             "production_browser_ready": False,
         },
@@ -3553,7 +3380,6 @@ def main() -> None:
                     "head_projection_rewrite": head_projection_rewrite[TOKENIZER_DECODER_STEP_NAME],
                     "rmsnorm_rewrite": rmsnorm_rewrite[TOKENIZER_DECODER_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[TOKENIZER_DECODER_STEP_NAME],
-                    "fused_temporal_gqa": fused_temporal_gqa[TOKENIZER_DECODER_STEP_NAME],
                     "precision": precision[TOKENIZER_DECODER_STEP_NAME],
                     "production_browser_ready": True,
                 },
@@ -3577,7 +3403,6 @@ def main() -> None:
                     ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
-                    "fused_temporal_gqa": fused_temporal_gqa[TOKENIZER_DECODE_Z_STEP_NAME],
                     "precision": precision[TOKENIZER_DECODE_Z_STEP_NAME],
                     "production_browser_ready": True,
                     "decode_z": {
@@ -3616,7 +3441,6 @@ def main() -> None:
                     ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_PREFILL_NAME],
                     "gather_index_rewrite": gather_index_rewrite[DYNAMICS_CACHED_PREFILL_NAME],
-                    "fused_temporal_gqa": fused_temporal_gqa[DYNAMICS_CACHED_PREFILL_NAME],
                     "precision": precision[DYNAMICS_CACHED_PREFILL_NAME],
                     "production_browser_ready": True,
                 },
@@ -3653,7 +3477,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_PREFILL_LAYER_NAME
                     ],
-                    "fused_temporal_gqa": fused_temporal_gqa[DYNAMICS_CACHED_PREFILL_LAYER_NAME],
                     "precision": precision[DYNAMICS_CACHED_PREFILL_LAYER_NAME],
                     "production_browser_ready": True,
                     "cache_layout": "per_temporal_layer",
@@ -3685,7 +3508,6 @@ def main() -> None:
                     "head_projection_rewrite": head_projection_rewrite[DYNAMICS_CACHED_STEP_NAME],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[DYNAMICS_CACHED_STEP_NAME],
-                    "fused_temporal_gqa": fused_temporal_gqa[DYNAMICS_CACHED_STEP_NAME],
                     "precision": precision[DYNAMICS_CACHED_STEP_NAME],
                     "production_browser_ready": True,
                 },
@@ -3717,7 +3539,6 @@ def main() -> None:
                     ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
-                    "fused_temporal_gqa": fused_temporal_gqa[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
                     "precision": precision[DYNAMICS_CACHED_SAMPLE_STEP_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
@@ -3758,9 +3579,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME
                     ],
-                    "fused_temporal_gqa": fused_temporal_gqa[
-                        DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME
-                    ],
                     "precision": precision[DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
@@ -3799,9 +3617,6 @@ def main() -> None:
                     ],
                     "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME],
                     "gather_index_rewrite": gather_index_rewrite[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME
-                    ],
-                    "fused_temporal_gqa": fused_temporal_gqa[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME
                     ],
                     "precision": precision[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME],
@@ -3852,9 +3667,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME
                     ],
-                    "fused_temporal_gqa": fused_temporal_gqa[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME
-                    ],
                     "precision": precision[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
@@ -3902,9 +3714,6 @@ def main() -> None:
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
                     ],
                     "gather_index_rewrite": gather_index_rewrite[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
-                    ],
-                    "fused_temporal_gqa": fused_temporal_gqa[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
                     ],
                     "precision": precision[
@@ -3979,9 +3788,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
                     ],
-                    "fused_temporal_gqa": fused_temporal_gqa[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-                    ],
                     "precision": precision[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
@@ -4047,9 +3853,6 @@ def main() -> None:
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
                     ],
-                    "fused_temporal_gqa": fused_temporal_gqa[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
-                    ],
                     "precision": precision[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME],
                     "production_browser_ready": True,
                     "sample_steps": args.sample_steps,
@@ -4064,6 +3867,9 @@ def main() -> None:
 
     for entry in exports:
         entry["slide_static_cache_rewrite"] = slide_static_cache_rewrite[entry["name"]]
+        entry["skip_simplified_layer_norm_rewrite"] = skip_simplified_layer_norm_rewrite[
+            entry["name"]
+        ]
         entry["cast_type_repair"] = cast_type_repair[entry["name"]]
         entry["quickgelu_decomposition"] = quickgelu_decomposition[entry["name"]]
         entry["value_info_strip"] = value_info_strip[entry["name"]]
@@ -4112,7 +3918,6 @@ def main() -> None:
             "singleton_reshape_to_squeeze_unsqueeze": not args.skip_singleton_reshape_rewrite,
             "gqa_repeat_to_gather": not args.skip_singleton_reshape_rewrite,
             "head_projection_reshape_to_einsum": not args.skip_singleton_reshape_rewrite,
-            "cached_temporal_gqa_fusion": bool(args.fused_temporal_gqa),
         },
         "checkpoints": {
             "tokenizer_dir": str(args.tokenizer_dir),

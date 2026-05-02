@@ -432,7 +432,7 @@ class _ExportAttention(nn.Module):
             grouped_gqa=self.grouped_gqa,
         )
         out = rearrange(out, "b t h d -> b t (h d)")
-        out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
+        out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype, name="Dense_3")(out)
         return out
 
 
@@ -584,7 +584,7 @@ class _CachedTemporalAttention(nn.Module):
             grouped_gqa=self.grouped_gqa,
         )
         out = rearrange(out, "b t h d -> b t (h d)")
-        out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
+        out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype, name="Dense_3")(out)
         return out, k, v
 
 
@@ -635,7 +635,7 @@ class _CachedTemporalStepAttention(nn.Module):
             grouped_gqa=self.grouped_gqa,
         )
         out = rearrange(out, "b t h d -> b t (h d)")
-        out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
+        out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype, name="Dense_3")(out)
         return out, k, v
 
 
@@ -1959,7 +1959,11 @@ class _CachedDynamicsModel(nn.Module):
 
 
 @contextmanager
-def export_overrides(*, native_attention: bool = False, grouped_gqa: bool = False):
+def export_overrides(
+    *,
+    native_attention: bool = False,
+    grouped_gqa: bool = False,
+):
     original = jax.nn.dot_product_attention
     original_transformer_spatiotemporal = transformer_module.SpatioTemporalTransformer
     original_transformer_temporal_rope = transformer_module.create_temporal_rope
@@ -2075,7 +2079,10 @@ def apply_dynamics_uncached(
     grouped_gqa: bool = False,
 ) -> jnp.ndarray:
     model = create_dynamics(cfg, dtype=dtype)
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             z,
@@ -2103,7 +2110,10 @@ def apply_dynamics_cached_prefill(
         dtype=dtype or jnp.float32,
         grouped_gqa=grouped_gqa,
     )
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             z,
@@ -2127,7 +2137,10 @@ def apply_dynamics_cached_prefill_layer_cache(
     grouped_gqa: bool = False,
 ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
     model = _CachedDynamicsModel(cfg, dtype=dtype or jnp.float32, grouped_gqa=grouped_gqa)
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             z,
@@ -2161,7 +2174,10 @@ def apply_dynamics_cached_step(
         grouped_gqa=grouped_gqa,
         cache_update=cache_update,
     )
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             z,
@@ -2198,7 +2214,10 @@ def apply_dynamics_cached_sample_step(
         grouped_gqa=grouped_gqa,
         cache_update=cache_update,
     )
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             z,
@@ -2236,7 +2255,10 @@ def apply_dynamics_cached_sample_step_append_context(
         grouped_gqa=grouped_gqa,
         cache_update=cache_update,
     )
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             sample_noise,
@@ -2276,7 +2298,10 @@ def apply_dynamics_cached_sample_step_append_context_layer_cache(
         grouped_gqa=grouped_gqa,
         cache_update=cache_update,
     )
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             sample_noise,
@@ -2313,7 +2338,10 @@ def apply_dynamics_cached_sample_step_append_context_full_cache(
         grouped_gqa=grouped_gqa,
         cache_update="slide",
     )
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             sample_noise,
@@ -2348,7 +2376,10 @@ def apply_dynamics_cached_sample_step_append_context_full_cache_entries(
         grouped_gqa=grouped_gqa,
         cache_update="slide",
     )
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             sample_noise,
@@ -2380,7 +2411,10 @@ def apply_dynamics_cached_sample_step_full_cache(
         dtype=dtype or jnp.float32,
         grouped_gqa=grouped_gqa,
     )
-    with export_overrides(native_attention=native_attention, grouped_gqa=grouped_gqa):
+    with export_overrides(
+        native_attention=native_attention,
+        grouped_gqa=grouped_gqa,
+    ):
         return model.apply(
             variables,
             z,

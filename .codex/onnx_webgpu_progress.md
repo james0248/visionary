@@ -545,3 +545,42 @@ Conclusion:
 - Entry-cache artifact is numerically valid and graph-capture compatible.
 - It should be kept as a useful runtime ABI, but it does not move us toward the 50 ms target by itself.
 - Remaining bottleneck is dynamics graph compute/dispatch: hundreds of `Einsum`, `SimplifiedLayerNormalization`, `Softmax`, and pointwise ops inside the fused sample+append graph.
+
+### 2026-05-03 Export Cleanup And Skip-SimplifiedLayerNorm Fusion
+
+Cleanup:
+- Removed failed packed QKV / packed SwiGLU export branches from `visionary/export/onnx_wrappers.py` and the corresponding exporter flags.
+- Removed the stale post-export `com.microsoft::GroupQueryAttention` fusion path from `scripts/webgpu/export_dreamer4_onnx.py`; local ORT WebGPU support is for contrib attention ops only, and the GQA trial was accurate but slower.
+- Kept the live fp32 entry-cache demo path unchanged.
+
+Reproducible optimization:
+- Added `fuse_skip_simplified_layer_norm_for_webgpu()` to the exporter.
+- It fuses residual `Add` followed by `SimplifiedLayerNormalization` into ORT WebGPU's `SkipSimplifiedLayerNormalization`.
+- Hot entry graph after regeneration:
+  - nodes: `5771`
+  - `SkipSimplifiedLayerNormalization`: `179`
+  - `SimplifiedLayerNormalization`: `299`
+  - `Add`: `304`
+  - `Reshape`: `0`
+
+Accuracy:
+- Full raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+- Entry-cache reconstruction still passed at `atol=5e-4`, `rtol=5e-4`.
+- Hot artifact max abs errors:
+  - `final_z`: `1.4305e-6`
+  - `pred_z`: `1.4305e-6`
+  - `candidate_k_entry`: `7.6294e-6`
+  - `candidate_v_entry`: `4.8280e-6`
+
+Benchmark:
+- Normal browser mode:
+  - Dynamics median: `96.34 ms`
+  - Streaming median: `102.31 ms`
+- Graph capture, 64 timed frames:
+  - Dynamics median: `84.17 ms`, p95 `84.67 ms`
+  - Streaming median: `94.88 ms`, p95 `95.50 ms`
+
+Conclusion:
+- The skip-layernorm fusion is valid and reproducible, and graph-capture dynamics improved from roughly `88-89 ms` to roughly `84 ms`.
+- Overall streaming remains about `95 ms` because decoder time is still around `10 ms` in this graph-capture run.
+- This is useful cleanup/optimization, but still not enough for the 50 ms target.
