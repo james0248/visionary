@@ -44,8 +44,14 @@ async function runBenchmark(page, mode, options = {}) {
   if (options.profilingRequired) {
     params.set('profilingRequired', 'true');
   }
-  if (process.env.WEBGPU_BENCHMARK_GRAPH_CAPTURE === '1') {
+  if (process.env.WEBGPU_BENCHMARK_GRAPH_CAPTURE === '1' || options.graphCapture) {
     params.set('graphCapture', 'true');
+  }
+  if (process.env.WEBGPU_BENCHMARK_PREFERRED_LAYOUT) {
+    params.set('preferredLayout', process.env.WEBGPU_BENCHMARK_PREFERRED_LAYOUT);
+  }
+  if (process.env.WEBGPU_BENCHMARK_PREFILL_ARTIFACT) {
+    params.set('prefillArtifact', process.env.WEBGPU_BENCHMARK_PREFILL_ARTIFACT);
   }
   if (process.env.WEBGPU_BENCHMARK_STEP_ARTIFACT) {
     params.set('stepArtifact', process.env.WEBGPU_BENCHMARK_STEP_ARTIFACT);
@@ -109,6 +115,21 @@ test('webgpu demo streaming benchmark', async ({ page }) => {
   ]);
   expect(result.results.find((entry) => entry.mode === 'streaming_frame').timing.steady_state_fps)
     .toBeGreaterThan(0);
+});
+
+test('webgpu demo streaming benchmark graph capture @graph-capture', async ({ page }) => {
+  const result = await runBenchmark(page, 'streaming', { graphCapture: true });
+  await writeResult(result);
+  expect(['passed', 'blocked'], result.message ?? '').toContain(result.status);
+  expect(result.schema_version).toBe(2);
+
+  if (result.status === 'blocked') return;
+
+  expect(result.results.find((entry) => entry.mode === 'cached_step').graph_capture).toBe(true);
+  expect(
+    result.results.find((entry) => entry.mode === 'streaming_frame').timing
+      .steady_state_after_graph_capture_warmup_fps,
+  ).toBeGreaterThan(0);
 });
 
 test('webgpu demo profiling benchmark @profile', async ({ page }) => {

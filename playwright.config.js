@@ -1,6 +1,17 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const headless = process.env.PLAYWRIGHT_HEADLESS === '1';
+const browserChannel = process.env.PLAYWRIGHT_CHANNEL;
+const crashpadArgs =
+  process.env.PLAYWRIGHT_CRASHPAD_ARGS === '1'
+    ? [
+        '--disable-crash-reporter',
+        '--disable-crashpad',
+        '--disable-crashpad-handler-for-testing',
+        '--disable-crashpad-for-testing',
+        '--crash-dumps-dir=/private/tmp/visionary-chrome-crashpad',
+      ]
+    : [];
 
 export default defineConfig({
   testDir: '.',
@@ -11,7 +22,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4173',
     browserName: 'chromium',
-    channel: 'chrome',
+    ...(browserChannel === 'bundled' ? {} : { channel: browserChannel ?? 'chrome' }),
     headless,
     launchOptions: {
       args: [
@@ -20,6 +31,7 @@ export default defineConfig({
         '--ignore-gpu-blocklist',
         '--enable-gpu-rasterization',
         '--disable-gpu-sandbox',
+        ...crashpadArgs,
       ],
     },
     trace: 'retain-on-failure',

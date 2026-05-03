@@ -217,6 +217,24 @@ def _export_dot_product_attention(
         return jnp.einsum("bhqk,bkhd->bqhd", weights, value)
 
     repeat = num_heads // num_kv_heads
+    if _ATTENTION_EXPORT_LOWERING == "split_gqa":
+        outputs = []
+        for kv_idx in range(num_kv_heads):
+            group_start = kv_idx * repeat
+            q_group = query[..., group_start : group_start + repeat, :]
+            k_head = key[..., kv_idx, :]
+            v_head = value[..., kv_idx, :]
+
+            logits = (jnp.einsum("bqhd,bkd->bhqk", q_group, k_head) * scale).astype(
+                jnp.float32
+            )
+            if mask is not None:
+                mask = mask.astype(logits.dtype)
+                logits = logits + (1.0 - mask) * jnp.asarray(-1.0e9, dtype=logits.dtype)
+            weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+            outputs.append(jnp.einsum("bhqk,bkd->bqhd", weights, v_head))
+        return jnp.concatenate(outputs, axis=-2)
+
     key = jnp.repeat(key, repeat, axis=-2)
     value = jnp.repeat(value, repeat, axis=-2)
 
@@ -318,25 +336,44 @@ class _ExportAttention(nn.Module):
         k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
         v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
 
-        q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
-        k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
-        v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
+        if _ATTENTION_EXPORT_LAYOUT == "bnsh":
+            q = rearrange(q, "b t (h d) -> b h t d", h=self.num_heads)
+            k = rearrange(k, "b t (h d) -> b h t d", h=self.num_kv_heads)
+            v = rearrange(v, "b t (h d) -> b h t d", h=self.num_kv_heads)
+        else:
+            q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
+            k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
+            v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
 
         q = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(q)
         k = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_1")(k)
 
         if rope_emb is not None:
-            q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
-            k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
+            if _ATTENTION_EXPORT_LAYOUT == "bnsh":
+                q = _apply_rotary_embedding_bnsh(q, rope_emb[0], rope_emb[1])
+                k = _apply_rotary_embedding_bnsh(k, rope_emb[0], rope_emb[1])
+            else:
+                q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
+                k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
 
-        out = _attention_for_export(
-            q,
-            k,
-            v,
-            mask=mask,
-            scale=1.0 / math.sqrt(self.head_dim),
-        )
-        out = rearrange(out, "b t h d -> b t (h d)")
+        if _ATTENTION_EXPORT_LAYOUT == "bnsh":
+            out = _attention_for_export_bnsh(
+                q,
+                k,
+                v,
+                mask=mask,
+                scale=1.0 / math.sqrt(self.head_dim),
+            )
+            out = rearrange(out, "b h t d -> b t (h d)")
+        else:
+            out = _attention_for_export(
+                q,
+                k,
+                v,
+                mask=mask,
+                scale=1.0 / math.sqrt(self.head_dim),
+            )
+            out = rearrange(out, "b t h d -> b t (h d)")
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype, name="Dense_3")(out)
         return out
 
@@ -446,6 +483,92 @@ _ExportSpatioTemporalTransformer.__name__ = "SpatioTemporalTransformer"
 _ExportSpatioTemporalTransformer.__qualname__ = "SpatioTemporalTransformer"
 
 
+_ATTENTION_EXPORT_LOWERING = "manual"
+_ATTENTION_EXPORT_LAYOUT = "bshd"
+
+
+def set_attention_export_lowering(mode: str) -> None:
+    if mode not in {"manual", "native", "split_gqa"}:
+        raise ValueError(f"Unsupported attention export lowering: {mode}")
+    global _ATTENTION_EXPORT_LOWERING
+    _ATTENTION_EXPORT_LOWERING = mode
+
+
+def set_attention_export_layout(mode: str) -> None:
+    if mode not in {"bshd", "bnsh"}:
+        raise ValueError(f"Unsupported attention export layout: {mode}")
+    global _ATTENTION_EXPORT_LAYOUT
+    _ATTENTION_EXPORT_LAYOUT = mode
+
+
+def _apply_rotary_embedding_bnsh(
+    x: jnp.ndarray,
+    cos: jnp.ndarray,
+    sin: jnp.ndarray,
+) -> jnp.ndarray:
+    x_left, x_right = jnp.split(x, 2, axis=-1)
+    cos = cos.astype(x.dtype)[None, None, :, :]
+    sin = sin.astype(x.dtype)[None, None, :, :]
+    rotated_left = x_left * cos - x_right * sin
+    rotated_right = x_right * cos + x_left * sin
+    return jnp.concatenate([rotated_left, rotated_right], axis=-1)
+
+
+def _attention_for_export_bnsh(
+    query: jnp.ndarray,
+    key: jnp.ndarray,
+    value: jnp.ndarray,
+    *,
+    mask: jnp.ndarray | None = None,
+    scale: float | jnp.ndarray | None = None,
+) -> jnp.ndarray:
+    num_heads = int(query.shape[1])
+    num_kv_heads = int(key.shape[1])
+    if num_heads % num_kv_heads != 0:
+        raise ValueError(
+            f"num_heads must be divisible by num_kv_heads, got {num_heads=} {num_kv_heads=}."
+        )
+    if scale is None:
+        scale = jnp.asarray(1.0 / (query.shape[-1] ** 0.5), dtype=query.dtype)
+    else:
+        scale = jnp.asarray(scale, dtype=query.dtype)
+
+    repeat = num_heads // num_kv_heads
+    if repeat == 1:
+        logits = (jnp.einsum("bhqd,bhkd->bhqk", query, key) * scale).astype(jnp.float32)
+        if mask is not None:
+            mask = mask.astype(logits.dtype)
+            logits = logits + (1.0 - mask) * jnp.asarray(-1.0e9, dtype=logits.dtype)
+        weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+        return jnp.einsum("bhqk,bhkd->bhqd", weights, value)
+
+    if _ATTENTION_EXPORT_LOWERING == "split_gqa":
+        outputs = []
+        for kv_idx in range(num_kv_heads):
+            group_start = kv_idx * repeat
+            q_group = query[:, group_start : group_start + repeat, :, :]
+            k_head = key[:, kv_idx, :, :]
+            v_head = value[:, kv_idx, :, :]
+            logits = (jnp.einsum("bhqd,bkd->bhqk", q_group, k_head) * scale).astype(
+                jnp.float32
+            )
+            if mask is not None:
+                mask = mask.astype(logits.dtype)
+                logits = logits + (1.0 - mask) * jnp.asarray(-1.0e9, dtype=logits.dtype)
+            weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+            outputs.append(jnp.einsum("bhqk,bkd->bhqd", weights, v_head))
+        return jnp.concatenate(outputs, axis=1)
+
+    key = jnp.repeat(key, repeat, axis=1)
+    value = jnp.repeat(value, repeat, axis=1)
+    logits = (jnp.einsum("bhqd,bhkd->bhqk", query, key) * scale).astype(jnp.float32)
+    if mask is not None:
+        mask = mask.astype(logits.dtype)
+        logits = logits + (1.0 - mask) * jnp.asarray(-1.0e9, dtype=logits.dtype)
+    weights = jax.nn.softmax(logits, axis=-1).astype(value.dtype)
+    return jnp.einsum("bhqk,bhkd->bhqd", weights, value)
+
+
 class _CachedTemporalAttention(nn.Module):
     model_dim: int
     num_heads: int
@@ -464,26 +587,49 @@ class _CachedTemporalAttention(nn.Module):
         k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
         v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
 
-        q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
-        k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
-        v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
+        if _ATTENTION_EXPORT_LAYOUT == "bnsh":
+            q = rearrange(q, "b t (h d) -> b h t d", h=self.num_heads)
+            k = rearrange(k, "b t (h d) -> b h t d", h=self.num_kv_heads)
+            v = rearrange(v, "b t (h d) -> b h t d", h=self.num_kv_heads)
+        else:
+            q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
+            k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
+            v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
 
         q = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(q)
         k = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_1")(k)
 
-        q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
-        k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
+        if _ATTENTION_EXPORT_LAYOUT == "bnsh":
+            q = _apply_rotary_embedding_bnsh(q, rope_emb[0], rope_emb[1])
+            k = _apply_rotary_embedding_bnsh(k, rope_emb[0], rope_emb[1])
+        else:
+            q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
+            k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
 
-        out = _attention_for_export(
-            q,
-            k,
-            v,
-            mask=mask,
-            scale=1.0 / math.sqrt(self.head_dim),
-        )
-        out = rearrange(out, "b t h d -> b t (h d)")
+        if _ATTENTION_EXPORT_LAYOUT == "bnsh":
+            out = _attention_for_export_bnsh(
+                q,
+                k,
+                v,
+                mask=mask,
+                scale=1.0 / math.sqrt(self.head_dim),
+            )
+            out = rearrange(out, "b h t d -> b t (h d)")
+            k_out = rearrange(k, "b h t d -> b t h d")
+            v_out = rearrange(v, "b h t d -> b t h d")
+        else:
+            out = _attention_for_export(
+                q,
+                k,
+                v,
+                mask=mask,
+                scale=1.0 / math.sqrt(self.head_dim),
+            )
+            out = rearrange(out, "b t h d -> b t (h d)")
+            k_out = k
+            v_out = v
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype, name="Dense_3")(out)
-        return out, k, v
+        return out, k_out, v_out
 
 
 class _CachedTemporalStepAttention(nn.Module):
@@ -507,32 +653,62 @@ class _CachedTemporalStepAttention(nn.Module):
         k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
         v = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
 
-        q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
-        k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
-        v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
+        if _ATTENTION_EXPORT_LAYOUT == "bnsh":
+            q = rearrange(q, "b t (h d) -> b h t d", h=self.num_heads)
+            k = rearrange(k, "b t (h d) -> b h t d", h=self.num_kv_heads)
+            v = rearrange(v, "b t (h d) -> b h t d", h=self.num_kv_heads)
+        else:
+            q = rearrange(q, "b t (h d) -> b t h d", h=self.num_heads)
+            k = rearrange(k, "b t (h d) -> b t h d", h=self.num_kv_heads)
+            v = rearrange(v, "b t (h d) -> b t h d", h=self.num_kv_heads)
 
         q = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(q)
         k = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_1")(k)
 
-        q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
-        k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
-
-        keys = jnp.concatenate([k_cache.astype(k.dtype), k], axis=1)
-        values = jnp.concatenate([v_cache.astype(v.dtype), v], axis=1)
+        if _ATTENTION_EXPORT_LAYOUT == "bnsh":
+            q = _apply_rotary_embedding_bnsh(q, rope_emb[0], rope_emb[1])
+            k = _apply_rotary_embedding_bnsh(k, rope_emb[0], rope_emb[1])
+            keys = jnp.concatenate(
+                [rearrange(k_cache, "b t h d -> b h t d").astype(k.dtype), k],
+                axis=2,
+            )
+            values = jnp.concatenate(
+                [rearrange(v_cache, "b t h d -> b h t d").astype(v.dtype), v],
+                axis=2,
+            )
+        else:
+            q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
+            k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
+            keys = jnp.concatenate([k_cache.astype(k.dtype), k], axis=1)
+            values = jnp.concatenate([v_cache.astype(v.dtype), v], axis=1)
         cache_positions = jnp.arange(self.context_length + 1, dtype=jnp.int32)
         valid = cache_positions < (cache_length[0] + 1)
         mask = valid[None, None, None, :]
 
-        out = _attention_for_export(
-            q,
-            keys,
-            values,
-            mask=mask,
-            scale=1.0 / math.sqrt(self.head_dim),
-        )
-        out = rearrange(out, "b t h d -> b t (h d)")
+        if _ATTENTION_EXPORT_LAYOUT == "bnsh":
+            out = _attention_for_export_bnsh(
+                q,
+                keys,
+                values,
+                mask=mask,
+                scale=1.0 / math.sqrt(self.head_dim),
+            )
+            out = rearrange(out, "b h t d -> b t (h d)")
+            k_out = rearrange(k, "b h t d -> b t h d")
+            v_out = rearrange(v, "b h t d -> b t h d")
+        else:
+            out = _attention_for_export(
+                q,
+                keys,
+                values,
+                mask=mask,
+                scale=1.0 / math.sqrt(self.head_dim),
+            )
+            out = rearrange(out, "b t h d -> b t (h d)")
+            k_out = k
+            v_out = v
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype, name="Dense_3")(out)
-        return out, k, v
+        return out, k_out, v_out
 
 
 class _CachedPrefillTransformerBlock(nn.Module):
@@ -1821,10 +1997,13 @@ def export_overrides():
     original_tokenizer_temporal_rope = tokenizer_module.create_temporal_rope
     original_tokenizer_spatial_rope = tokenizer_module.create_spatial_rope
     original_tokenizer_temporal_mask = tokenizer_module.create_temporal_mask
+    original_dynamics_spatiotemporal = dynamics_module.SpatioTemporalTransformer
     original_dynamics_temporal_rope = dynamics_module.create_temporal_rope
-    jax.nn.dot_product_attention = _export_dot_product_attention
+    if _ATTENTION_EXPORT_LOWERING in {"manual", "split_gqa"}:
+        jax.nn.dot_product_attention = _export_dot_product_attention
     transformer_module.SpatioTemporalTransformer = _ExportSpatioTemporalTransformer
     tokenizer_module.SpatioTemporalTransformer = _ExportSpatioTemporalTransformer
+    dynamics_module.SpatioTemporalTransformer = _ExportSpatioTemporalTransformer
     transformer_module.create_temporal_rope = _export_create_temporal_rope
     transformer_module.create_spatial_rope = _export_create_spatial_rope
     tokenizer_module.create_temporal_rope = _export_create_temporal_rope
@@ -1842,6 +2021,7 @@ def export_overrides():
         tokenizer_module.create_temporal_rope = original_tokenizer_temporal_rope
         tokenizer_module.create_spatial_rope = original_tokenizer_spatial_rope
         tokenizer_module.create_temporal_mask = original_tokenizer_temporal_mask
+        dynamics_module.SpatioTemporalTransformer = original_dynamics_spatiotemporal
         dynamics_module.create_temporal_rope = original_dynamics_temporal_rope
 
 

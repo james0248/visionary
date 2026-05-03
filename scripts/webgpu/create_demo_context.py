@@ -108,6 +108,7 @@ def main() -> None:
         dtype=np.float32,
     )
     z[:, prefix_offset:] = noised_prefix_z
+    display_z = prefix_z.astype(np.float32, copy=False)
     context_actions = np.zeros((1, args.context_length), dtype=np.int32)
     context_actions[:, prefix_offset:] = prefix_actions[None]
     step_levels = np.full(
@@ -148,6 +149,7 @@ def main() -> None:
         },
         "arrays": {
             "z": write_array(prefix.with_suffix(".z.f32.bin"), z),
+            "display_z": write_array(prefix.with_suffix(".display_z.f32.bin"), display_z),
             "actions": write_array(prefix.with_suffix(".actions.i32.bin"), context_actions),
             "step_levels": write_array(prefix.with_suffix(".step_levels.i32.bin"), step_levels),
             "signal_levels": write_array(prefix.with_suffix(".signal_levels.i32.bin"), signal_levels),
@@ -166,6 +168,7 @@ def main() -> None:
             "The tokenizer encoder is intentionally offline-only for the web demo.",
             "The artifact pads the first context slots with zeros and places the real prefix at the end.",
             "Unless clean_context is true, stored prefix latents are noised using the same tau convention as dynamics rollout.",
+            "display_z stores the clean prefix latents for the initial browser preview only.",
             "Dynamics context z is packed from tokenizer latents with shape [1,64,32,32].",
         ],
     }

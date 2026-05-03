@@ -60,7 +60,7 @@ async function writeJson(file, value) {
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-test('webgpu profiling diagnostic import matrix @profile-diagnostic', async ({ browser }) => {
+test('webgpu profiling diagnostic import matrix @profile-diagnostic', async ({ page }) => {
   const baseline_path = await archiveLatestProfileBaseline();
   const importKinds = (process.env.WEBGPU_PROFILE_DIAGNOSTIC_IMPORTS ?? 'dist_bundle,dist_external_wasm,dist_unminified')
     .split(',')
@@ -68,13 +68,14 @@ test('webgpu profiling diagnostic import matrix @profile-diagnostic', async ({ b
     .filter(Boolean);
 
   const results = [];
-  for (const importKind of importKinds) {
-    const page = await browser.newPage();
+  const context = page.context();
+  for (const [index, importKind] of importKinds.entries()) {
+    const diagnosticPage = index === 0 ? page : await context.newPage();
     try {
-      const result = await runDiagnostic(page, importKind);
+      const result = await runDiagnostic(diagnosticPage, importKind);
       results.push(result);
     } finally {
-      await page.close();
+      if (diagnosticPage !== page) await diagnosticPage.close();
     }
   }
 

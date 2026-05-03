@@ -148,6 +148,14 @@ function findExport(manifest, name) {
   return entry;
 }
 
+function findFirstExport(manifest, names) {
+  for (const name of names) {
+    const entry = manifest.exports.find((item) => item.name === name);
+    if (entry) return entry;
+  }
+  throw new Error(`Missing exports ${names.join(', ')}`);
+}
+
 function outputName(spec, preferred) {
   if (spec.outputs?.[preferred]) return preferred;
   return Object.keys(spec.outputs ?? {})[0];
@@ -332,15 +340,18 @@ async function loadRuntime() {
   ]);
   const prefixStepSpec = findExport(manifest, 'breakout_dynamics_step_cached_b1_t1');
   const sampleStepSpec = findExport(manifest, 'breakout_dynamics_sample_append_context_b1_t1_s4');
-  const sampleStepSlideSpec = findExport(
-    manifest,
+  const sampleStepSlideSpec = findFirstExport(manifest, [
+    'breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s4',
     'breakout_dynamics_sample_append_context_slide_b1_t1_s4',
-  );
+  ]);
   const decoderSpec = findExport(manifest, 'breakout_tokenizer_decode_z_b1_t1');
 
   setStatus('Loading context');
-  const [contextZ, contextActions, stepLevels, signalLevels] = await Promise.all([
+  const [contextZ, displayZ, contextActions, stepLevels, signalLevels] = await Promise.all([
     fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.z),
+    contextManifest.arrays.display_z
+      ? fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.display_z)
+      : Promise.resolve(null),
     fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.actions),
     fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.step_levels),
     fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.signal_levels),
@@ -367,13 +378,16 @@ async function loadRuntime() {
     },
   });
   setStatus('Creating steady sampling session');
+  const sampleSlideOutputLocation = {
+    final_z: 'gpu-buffer',
+    candidate_k_cache: 'gpu-buffer',
+    candidate_v_cache: 'gpu-buffer',
+  };
+  if (sampleStepSlideSpec.outputs?.candidate_cache_length) {
+    sampleSlideOutputLocation.candidate_cache_length = 'cpu';
+  }
   const sampleStepSlideSession = await createSession(sampleStepSlideSpec, {
-    preferredOutputLocation: {
-      final_z: 'gpu-buffer',
-      candidate_k_cache: 'gpu-buffer',
-      candidate_v_cache: 'gpu-buffer',
-      candidate_cache_length: 'cpu',
-    },
+    preferredOutputLocation: sampleSlideOutputLocation,
   });
   setStatus('Creating decoder session');
   const decoderSession = await createSession(decoderSpec, {
@@ -412,6 +426,7 @@ async function loadRuntime() {
     },
     context: {
       z: contextZ,
+      displayZ,
       actions: contextActions,
       stepLevels,
       signalLevels,
@@ -426,7 +441,11 @@ async function loadRuntime() {
 }
 
 async function prefill() {
-  setStatus('Prefilling 4 prefix frames');
+  const prefixFrames = runtime.contextManifest.prefix_frames ?? runtime.contextManifest.context_length;
+  const prefixSlotStart =
+    runtime.contextManifest.prefix_slot_start ??
+    Math.max(0, runtime.contextManifest.context_length - prefixFrames);
+  setStatus(`Prefilling ${prefixFrames} prefix frames`);
   disposeGpuTensor(runtime.cache?.k);
   disposeGpuTensor(runtime.cache?.v);
   runtime.cache = {
@@ -434,7 +453,8 @@ async function prefill() {
     v: zeroTensor(runtime.dtypes.cache, CACHE_SHAPE),
     length: scalarTensor(0, [1]),
   };
-  for (let index = 0; index < runtime.contextManifest.context_length; index += 1) {
+  for (let offset = 0; offset < prefixFrames; offset += 1) {
+    const index = prefixSlotStart + offset;
     const outputs = await runtime.sessions.prefixStep.run(
       {
         z: contextFrameTensor(runtime.context.z, index, runtime.dtypes.prefixZ),
@@ -460,13 +480,10 @@ async function prefill() {
   frameCount = 0;
   noiseGenerator = new NormalNoiseGenerator(runtime.contextManifest.noise_seed ?? 0);
   elements.frameCount.textContent = '0';
-  const preview = await renderLatent(
-    contextFrameTensor(
-      runtime.context.z,
-      runtime.contextManifest.context_length - 1,
-      runtime.dtypes.prefixZ,
-    ),
-  );
+  const previewTensor = runtime.context.displayZ
+    ? contextFrameTensor(runtime.context.displayZ, prefixFrames - 1, runtime.dtypes.prefixZ)
+    : contextFrameTensor(runtime.context.z, prefixSlotStart + prefixFrames - 1, runtime.dtypes.prefixZ);
+  const preview = await renderLatent(previewTensor);
   runtime.lastPreviewStats = preview;
   setStatus(`Ready with cache length ${runtime.cache.length.data[0]}`);
 }
@@ -494,18 +511,20 @@ async function generateFrame() {
         };
   const fetches = [runtime.names.finalZ, sampleNames.k, sampleNames.v];
   if (sampleNames.length) fetches.push(sampleNames.length);
-  const outputs = await sampleSession.run(
-    {
-      sample_noise: sampleNoise,
-      context_noise: contextNoise,
-      actions: action,
-      position_index: runtime.cache.length,
-      k_cache: runtime.cache.k,
-      v_cache: runtime.cache.v,
-      cache_length: runtime.cache.length,
-    },
-    fetches,
-  );
+  const sampleSpec =
+    sampleSession === runtime.sessions.sampleStepSlide
+      ? runtime.specs.sampleStepSlide
+      : runtime.specs.sampleStep;
+  const feeds = {
+    sample_noise: sampleNoise,
+    context_noise: contextNoise,
+    actions: action,
+    k_cache: runtime.cache.k,
+    v_cache: runtime.cache.v,
+  };
+  if (sampleSpec.inputs?.position_index) feeds.position_index = runtime.cache.length;
+  if (sampleSpec.inputs?.cache_length) feeds.cache_length = runtime.cache.length;
+  const outputs = await sampleSession.run(feeds, fetches);
   const oldCache = runtime.cache;
   runtime.cache = {
     k: outputs[sampleNames.k],
