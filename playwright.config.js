@@ -1,17 +1,18 @@
 import { defineConfig, devices } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
 
 const headless = process.env.PLAYWRIGHT_HEADLESS === '1';
 const browserChannel = process.env.PLAYWRIGHT_CHANNEL;
-const crashpadArgs =
-  process.env.PLAYWRIGHT_CRASHPAD_ARGS === '1'
-    ? [
-        '--disable-crash-reporter',
-        '--disable-crashpad',
-        '--disable-crashpad-handler-for-testing',
-        '--disable-crashpad-for-testing',
-        '--crash-dumps-dir=/private/tmp/visionary-chrome-crashpad',
-      ]
-    : [];
+const chromeHome = process.env.PLAYWRIGHT_CHROME_HOME ?? '/private/tmp/visionary-chrome-home';
+mkdirSync(`${chromeHome}/Library/Application Support/Google/Chrome/Crashpad`, { recursive: true });
+
+const crashpadArgs = [
+  '--disable-crash-reporter',
+  '--disable-crashpad',
+  '--disable-crashpad-handler-for-testing',
+  '--disable-crashpad-for-testing',
+  '--crash-dumps-dir=/private/tmp/visionary-chrome-crashpad',
+];
 
 export default defineConfig({
   testDir: '.',
@@ -22,9 +23,13 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4173',
     browserName: 'chromium',
-    ...(browserChannel === 'bundled' ? {} : { channel: browserChannel ?? 'chrome' }),
+    ...(browserChannel && browserChannel !== 'bundled' ? { channel: browserChannel } : {}),
     headless,
     launchOptions: {
+      env: {
+        ...process.env,
+        HOME: chromeHome,
+      },
       args: [
         '--enable-unsafe-webgpu',
         '--disable-dawn-features=disallow_unsafe_apis',

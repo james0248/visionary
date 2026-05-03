@@ -79,6 +79,35 @@ def make_feed(
     raise ValueError(f"Unsupported input dtype for {name}: {dtype!r}")
 
 
+def adapt_feeds_for_spec(
+    feeds: dict[str, np.ndarray],
+    target_inputs: dict[str, dict[str, Any]],
+) -> dict[str, np.ndarray]:
+    adapted: dict[str, np.ndarray] = {}
+    for name, value in feeds.items():
+        target = target_inputs.get(name)
+        if target is None:
+            continue
+        shape = tuple(int(dim) for dim in target.get("shape", []))
+        if value.shape == shape:
+            adapted[name] = value
+            continue
+        if (
+            value.ndim == 6
+            and len(shape) == 6
+            and value.shape[:3] == shape[:3]
+            and value.shape[3] == shape[4]
+            and value.shape[4] == shape[3]
+            and value.shape[5] == shape[5]
+        ):
+            adapted[name] = np.transpose(value, (0, 1, 2, 4, 3, 5)).copy()
+            continue
+        raise ValueError(
+            f"Cannot adapt input {name}: source shape {value.shape}, target shape {shape}."
+        )
+    return adapted
+
+
 def run_ort(path: Path, feeds: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     session = ort.InferenceSession(path.as_posix(), providers=["CPUExecutionProvider"])
     output_names = [output.name for output in session.get_outputs()]
@@ -144,10 +173,14 @@ def main() -> int:
     rng = np.random.default_rng(args.seed)
     feeds = {
         input_name: make_feed(input_name, input_spec, manifest, rng)
-        for input_name, input_spec in entry_spec.get("inputs", {}).items()
+        for input_name, input_spec in full_spec.get("inputs", {}).items()
     }
     full_outputs = run_ort(args.dir / full_spec["path"], feeds)
-    entry_outputs = run_ort(args.dir / entry_spec["path"], feeds)
+    entry_outputs = run_ort(
+        args.dir / entry_spec["path"],
+        adapt_feeds_for_spec(feeds, entry_spec.get("inputs", {})),
+    )
+    entry_pred_output = "final_z" if entry_spec.get("final_z_aliases_pred_z") else "pred_z"
 
     dynamics = manifest.get("dynamics", {})
     base = float(dynamics.get("rope_base", dynamics.get("base", 10000.0)))
@@ -169,7 +202,7 @@ def main() -> int:
         ),
         "pred_z": compare_arrays(
             full_outputs["pred_z"],
-            entry_outputs["pred_z"],
+            entry_outputs[entry_pred_output],
             atol=args.atol,
             rtol=args.rtol,
         ),

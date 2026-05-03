@@ -233,6 +233,17 @@ function copyGpuTensor(device, source, target) {
   device.queue.submit([encoder.finish()]);
 }
 
+function copyGpuTensorToTargets(device, source, targets) {
+  const copies = targets.filter((target) => target && source !== target);
+  if (!copies.length) return;
+  const byteLength = tensorByteLength(source.type, source.dims);
+  const encoder = device.createCommandEncoder();
+  for (const target of copies) {
+    encoder.copyBufferToBuffer(source.gpuBuffer, 0, target.gpuBuffer, 0, byteLength);
+  }
+  device.queue.submit([encoder.finish()]);
+}
+
 function copyTensorToGpu(device, source, target) {
   if (source?.location === 'gpu-buffer') {
     copyGpuTensor(device, source, target);
@@ -385,7 +396,7 @@ async function createSession(modelUrl, externalData = [], sessionOptions = {}) {
     ort.InferenceSession.create(modelUrl, {
       executionProviders: [executionProvider],
       externalData,
-      graphOptimizationLevel: 'all',
+      graphOptimizationLevel: 'basic',
       ...ortSessionOptions,
     }),
   );
@@ -723,13 +734,19 @@ function requireTensorSpec(label, spec, expectedShape) {
 function validateDemoSpecs(specs, manifest) {
   const tensors = manifest.cache_contract?.tensors ?? {};
   const cacheShape = tensors.k_cache?.shape;
+  const cacheLayout = tensors.k_cache?.layout ?? 'layer_batch_token_time_head_dim';
   const cacheLengthShape = tensors.cache_length?.shape;
   const layerCacheShape = manifest.cache_contract?.tensors?.layer_cache?.shape;
   const layerCacheCount = manifest.cache_contract?.tensors?.layer_cache?.layers ?? 0;
   const hasLayerPrefill = layerCacheCount > 0 && Boolean(specs.prefill.outputs?.k_cache_0);
   const hasLayerStep = layerCacheCount > 0 && Boolean(specs.step.inputs?.k_cache_0);
   const hasEntryStep = Boolean(specs.step.outputs?.candidate_k_entry);
-  const entryShape = cacheShape ? [...cacheShape.slice(0, 3), 1, ...cacheShape.slice(4)] : null;
+  const entryShape =
+    cacheShape && cacheLayout === 'layer_batch_token_head_time_dim'
+      ? [cacheShape[0], cacheShape[1], cacheShape[2], 1, cacheShape[3], cacheShape[5]]
+      : cacheShape
+        ? [...cacheShape.slice(0, 3), 1, ...cacheShape.slice(4)]
+        : null;
   if (!hasLayerPrefill) {
     requireTensorSpec('prefill.outputs.k_cache', specs.prefill.outputs?.k_cache, cacheShape);
     requireTensorSpec('prefill.outputs.v_cache', specs.prefill.outputs?.v_cache, cacheShape);
@@ -763,7 +780,8 @@ function validateDemoSpecs(specs, manifest) {
       cacheLengthShape,
     );
   }
-  requireTensorSpec('step.outputs.pred_z', specs.step.outputs?.pred_z, [1, 1, 32, 32]);
+  const stepPredOrFinal = specs.step.outputs?.pred_z ?? specs.step.outputs?.final_z;
+  requireTensorSpec('step.outputs.pred_z_or_final_z', stepPredOrFinal, [1, 1, 32, 32]);
   if (specs.step.outputs?.final_z) {
     requireTensorSpec('step.outputs.final_z', specs.step.outputs.final_z, [1, 1, 32, 32]);
   }
@@ -868,7 +886,7 @@ function blockedResult({ config, manifest, gpu, missing, profiler }) {
             : {}),
         },
       ],
-      graphOptimizationLevel: 'all',
+      graphOptimizationLevel: 'basic',
     },
     gpu,
     profiling: profiler.result(),
@@ -928,6 +946,7 @@ function stepPredOutputName(spec) {
   return (
     outputs.find((name) => name === 'pred_z') ??
     outputs.find((name) => name.endsWith('pred_z')) ??
+    outputs.find((name) => name === 'final_z') ??
     outputs[0]
   );
 }
@@ -937,9 +956,31 @@ function stepFinalZOutputName(spec) {
   return outputs.find((name) => name === 'final_z') ?? stepPredOutputName(spec);
 }
 
+function stepUsesFusedSampleStep(spec, predName, finalName) {
+  return Boolean(
+    finalName &&
+      (finalName !== predName ||
+        spec.final_z_aliases_pred_z ||
+        (spec.sample_steps > 1 && specsHasFinalWithoutPred(spec))),
+  );
+}
+
+function specsHasFinalWithoutPred(spec) {
+  return Boolean(spec.outputs?.final_z && !spec.outputs?.pred_z);
+}
+
 function decoderOutputName(spec) {
   const outputs = Object.keys(spec.outputs ?? {});
   return outputs.find((name) => name === 'patches') ?? outputs[0];
+}
+
+function decoderInputName(spec) {
+  const inputs = Object.keys(spec.inputs ?? {});
+  return (
+    inputs.find((name) => name === 'z') ??
+    inputs.find((name) => name.includes('latent')) ??
+    inputs[0]
+  );
 }
 
 function applyCacheFeeds(feeds, cache) {
@@ -1061,6 +1102,28 @@ function fixedCachePinnedTensors(fixedCache) {
   return [fixedCache.k, fixedCache.v].flat().filter(Boolean);
 }
 
+function fixedInputPinnedTensors(fixedInputs, fixedScalars) {
+  return [
+    fixedInputs?.z,
+    fixedInputs?.contextNoise,
+    fixedInputs?.action,
+    fixedScalars?.cacheLength,
+    fixedScalars?.positionIndex,
+  ].filter(Boolean);
+}
+
+function createFixedGpuDecoderInput(device, spec) {
+  const name = decoderInputName(spec);
+  const inputSpec = spec.inputs?.[name];
+  if (!inputSpec) {
+    throw new Error('Decoder graph does not expose an input tensor.');
+  }
+  return {
+    name,
+    tensor: createGpuTensorFromCpu(device, makeZeroTensorFromSpec(inputSpec)),
+  };
+}
+
 function copyCacheIntoFixedGpu(device, sourceCache, fixedCache) {
   if (Array.isArray(fixedCache.k)) {
     fixedCache.k.forEach((target, index) => copyTensorToGpu(device, sourceCache.k[index], target));
@@ -1087,13 +1150,45 @@ function createEntryCacheUpdater(device, spec, manifest) {
       `Entry-cache update currently supports float32 caches only, got ${cacheSpec.dtype}/${entrySpec.dtype}.`,
     );
   }
-  const [layers, batch, tokens, contextLength, heads, headDim] = cacheSpec.shape;
+  const cacheLayout =
+    manifest.cache_contract?.tensors?.k_cache?.layout ?? 'layer_batch_token_time_head_dim';
+  let layers;
+  let batch;
+  let tokens;
+  let contextLength;
+  let heads;
+  let headDim;
+  if (cacheLayout === 'layer_batch_token_head_time_dim') {
+    [layers, batch, tokens, heads, contextLength, headDim] = cacheSpec.shape;
+  } else {
+    [layers, batch, tokens, contextLength, heads, headDim] = cacheSpec.shape;
+  }
   const halfHeadDim = headDim / 2;
   if (!Number.isInteger(halfHeadDim)) {
     throw new Error(`Entry-cache update requires an even head_dim, got ${headDim}.`);
   }
   const ropeBase = Number(manifest.dynamics?.rope_base ?? manifest.dynamics?.base ?? 10000);
   const workgroupSize = 64;
+  const makeReadonlyBuffer = (label, values) => {
+    const buffer = device.createBuffer({
+      label,
+      size: Math.max(16, values.byteLength),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    new Uint8Array(buffer.getMappedRange()).set(new Uint8Array(values.buffer));
+    buffer.unmap();
+    return buffer;
+  };
+  const cosValues = new Float32Array(halfHeadDim);
+  const sinValues = new Float32Array(halfHeadDim);
+  for (let dim = 0; dim < halfHeadDim; dim += 1) {
+    const theta = 1 / (ropeBase ** (dim / halfHeadDim));
+    cosValues[dim] = Math.cos(theta);
+    sinValues[dim] = Math.sin(theta);
+  }
+  const cosBuffer = makeReadonlyBuffer('visionary-entry-cache-cos', cosValues);
+  const sinBuffer = makeReadonlyBuffer('visionary-entry-cache-sin', sinValues);
   const shader = device.createShaderModule({
     label: 'visionary-entry-cache-slide-rebase',
     code: `
@@ -1105,15 +1200,20 @@ const CONTEXT_MINUS_ONE: u32 = ${contextLength - 1}u;
 const HEADS: u32 = ${heads}u;
 const HEAD_DIM: u32 = ${headDim}u;
 const HALF_HEAD_DIM: u32 = ${halfHeadDim}u;
-const ROPE_BASE: f32 = ${ropeBase.toFixed(1)};
 
 @group(0) @binding(0) var<storage, read_write> k_cache: array<f32>;
 @group(0) @binding(1) var<storage, read_write> v_cache: array<f32>;
 @group(0) @binding(2) var<storage, read> k_entry: array<f32>;
 @group(0) @binding(3) var<storage, read> v_entry: array<f32>;
+@group(0) @binding(4) var<storage, read> cos_cache: array<f32>;
+@group(0) @binding(5) var<storage, read> sin_cache: array<f32>;
 
 fn cache_index(layer: u32, batch: u32, token: u32, time: u32, head: u32, dim: u32) -> u32 {
-  return (((((layer * BATCH + batch) * TOKENS + token) * CONTEXT + time) * HEADS + head) * HEAD_DIM + dim);
+  ${
+    cacheLayout === 'layer_batch_token_head_time_dim'
+      ? 'return (((((layer * BATCH + batch) * TOKENS + token) * HEADS + head) * CONTEXT + time) * HEAD_DIM + dim);'
+      : 'return (((((layer * BATCH + batch) * TOKENS + token) * CONTEXT + time) * HEADS + head) * HEAD_DIM + dim);'
+  }
 }
 
 fn entry_index(layer: u32, batch: u32, token: u32, head: u32, dim: u32) -> u32 {
@@ -1136,9 +1236,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let batch = remaining % BATCH;
     let layer = remaining / BATCH;
 
-    let theta = 1.0 / pow(ROPE_BASE, f32(half_dim) / f32(HALF_HEAD_DIM));
-    let cos_theta = cos(theta);
-    let sin_theta = sin(theta);
+    let cos_theta = cos_cache[half_dim];
+    let sin_theta = sin_cache[half_dim];
     for (var time = 0u; time < CONTEXT_MINUS_ONE; time = time + 1u) {
       let src_left = cache_index(layer, batch, token, time + 1u, head, half_dim);
       let src_right = cache_index(layer, batch, token, time + 1u, head, HALF_HEAD_DIM + half_dim);
@@ -1187,6 +1286,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
       { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     ],
   });
   const pipeline = device.createComputePipeline({
@@ -1200,22 +1301,39 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
       layers * batch * tokens * heads * headDim,
     ) / workgroupSize,
   );
+  let cachedBindGroup = null;
+  let cachedBindGroupBuffers = null;
+  const bindGroupFor = (cache, kEntry, vEntry) => {
+    const buffers = [cache.k.gpuBuffer, cache.v.gpuBuffer, kEntry.gpuBuffer, vEntry.gpuBuffer];
+    if (
+      cachedBindGroup &&
+      cachedBindGroupBuffers?.every((buffer, index) => buffer === buffers[index])
+    ) {
+      return cachedBindGroup;
+    }
+    cachedBindGroup = device.createBindGroup({
+      label: 'visionary-entry-cache-slide-rebase-bind-group',
+      layout: bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cache.k.gpuBuffer } },
+        { binding: 1, resource: { buffer: cache.v.gpuBuffer } },
+        { binding: 2, resource: { buffer: kEntry.gpuBuffer } },
+        { binding: 3, resource: { buffer: vEntry.gpuBuffer } },
+        { binding: 4, resource: { buffer: cosBuffer } },
+        { binding: 5, resource: { buffer: sinBuffer } },
+      ],
+    });
+    cachedBindGroupBuffers = buffers;
+    return cachedBindGroup;
+  };
   return {
     kind: 'webgpu_inplace_slide_rebase_entry',
     rope_base: ropeBase,
+    cache_layout: cacheLayout,
     cache_shape: cacheSpec.shape,
     entry_shape: entrySpec.shape,
     update(cache, kEntry, vEntry) {
-      const bindGroup = device.createBindGroup({
-        label: 'visionary-entry-cache-slide-rebase-bind-group',
-        layout: bindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: cache.k.gpuBuffer } },
-          { binding: 1, resource: { buffer: cache.v.gpuBuffer } },
-          { binding: 2, resource: { buffer: kEntry.gpuBuffer } },
-          { binding: 3, resource: { buffer: vEntry.gpuBuffer } },
-        ],
-      });
+      const bindGroup = bindGroupFor(cache, kEntry, vEntry);
       const encoder = device.createCommandEncoder({ label: 'visionary-entry-cache-update' });
       const pass = encoder.beginComputePass({ label: 'visionary-entry-cache-slide-rebase' });
       pass.setPipeline(pipeline);
@@ -1328,10 +1446,7 @@ function decoderInputDtype(spec) {
 
 function replaceDecoderLatent(feeds, latent) {
   const next = { ...feeds };
-  const latentName =
-    Object.keys(next).find((name) => name === 'z') ??
-    Object.keys(next).find((name) => name.includes('latent')) ??
-    Object.keys(next)[0];
+  const latentName = decoderInputName({ inputs: next });
   next[latentName] = latent;
   return next;
 }
@@ -1354,7 +1469,7 @@ function preferredOutputLocationFor(role, spec, config) {
     const names = cacheOutputNames(spec);
     const predName = stepPredOutputName(spec);
     const finalName = stepFinalZOutputName(spec);
-    const usesFusedSampleStep = finalName !== predName;
+    const usesFusedSampleStep = stepUsesFusedSampleStep(spec, predName, finalName);
     const locations = {
       [predName]: usesFusedSampleStep && !config.debugStats ? 'gpu-buffer' : 'cpu',
     };
@@ -1382,7 +1497,7 @@ async function createBenchSession(role, spec, config) {
     config.provider === 'webgpu' &&
     config.graphCapture &&
     (role === 'cached_step' || role === 'single_frame_decoder');
-  const graphOptimizationLevel = 'all';
+  const graphOptimizationLevel = 'basic';
   const sessionCreate = await createSession(
     modelUrl,
     externalDataForSpec(spec),
@@ -1420,7 +1535,7 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
   const usesEntryCacheStep = Boolean(stepCacheNames.entryK && stepCacheNames.entryV);
   const predName = stepPredOutputName(specs.step);
   const finalZName = stepFinalZOutputName(specs.step);
-  const usesFusedSampleStep = finalZName !== predName;
+  const usesFusedSampleStep = stepUsesFusedSampleStep(specs.step, predName, finalZName);
   const decoderName = decoderOutputName(specs.decoder);
   const prefillFetches = cacheFetches(prefillCacheNames);
   const stepCacheFetches =
@@ -1473,14 +1588,23 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
     config.graphCapture && step.graph_capture && gpuDevice
       ? createFixedGpuScalarInputs(gpuDevice, specs.step)
       : null;
+  const graphCaptureDecoderInput =
+    config.graphCapture && decoder.graph_capture && gpuDevice && Boolean(specs.decoder.inputs?.z)
+      ? createFixedGpuDecoderInput(gpuDevice, specs.decoder)
+      : null;
   const graphCapturePinnedTensors = [
     ...fixedCachePinnedTensors(graphCaptureFixedCache),
+    ...fixedInputPinnedTensors(graphCaptureStepInputs, graphCaptureFixedScalars),
+    graphCaptureDecoderInput?.tensor,
     ...(entryCacheUpdater?.pinned_tensors ?? []),
     ...preallocatedPinnedTensors(stepCommitFetchArg),
     ...preallocatedPinnedTensors(decoderFetchArg),
     streamingInputZ,
   ];
   const stepLevelTensor = makeScalarFillTensor('int32', [1, 1], SAMPLE_STEP_LEVEL);
+  const stepInputs = specs.step.inputs ?? {};
+  const needsSignalLevelInput = Object.keys(stepInputs).some((name) => name.includes('signal_level'));
+  const needsPositionIndexInput = Object.keys(stepInputs).some((name) => name.includes('position_index'));
 
   setStatus('demo benchmark: first prefill');
   const prefillFirst = await timeAsync(() => prefill.session.run(prefillFeeds, prefillFetches));
@@ -1499,11 +1623,17 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
     let predZ = null;
     const sampleCount = usesFusedSampleStep ? 1 : SAMPLE_STEPS;
     for (let sample = 0; sample < sampleCount; sample += 1) {
-      const signalLevelTensor = makeScalarFillTensor('int32', [1, 1], sample);
-      const positionTensor = makeScalarFillTensor('int32', [1], persistentCache.length.data[0]);
+      const signalLevelTensor = needsSignalLevelInput
+        ? makeScalarFillTensor('int32', [1, 1], sample)
+        : null;
+      const positionTensor = needsPositionIndexInput
+        ? makeScalarFillTensor('int32', [1], persistentCache.length.data[0])
+        : null;
       if (graphCaptureStepInputs?.z && currentZ.location === 'gpu-buffer') {
-        copyGpuTensor(gpuDevice, currentZ, graphCaptureStepInputs.z);
-        copyGpuTensor(gpuDevice, currentZ, graphCaptureStepInputs.contextNoise);
+        copyGpuTensorToTargets(gpuDevice, currentZ, [
+          graphCaptureStepInputs.z,
+          graphCaptureStepInputs.contextNoise,
+        ]);
       } else if (graphCaptureStepInputs?.z) {
         writeCpuTensorToGpu(gpuDevice, graphCaptureStepInputs.z, currentZ);
         writeCpuTensorToGpu(gpuDevice, graphCaptureStepInputs.contextNoise, currentZ);
@@ -1548,7 +1678,14 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
     const oldCache = persistentCache;
     persistentCache = candidateCache;
     if (oldCache !== persistentCache) disposeCache(oldCache, graphCapturePinnedTensors);
-    const decoderInput = specs.decoder.inputs?.z ? currentZ : latentFromPredZ(currentZ);
+    const decoderInput = graphCaptureDecoderInput
+      ? timeSync(() => {
+          copyTensorToGpu(gpuDevice, currentZ, graphCaptureDecoderInput.tensor);
+          return graphCaptureDecoderInput.tensor;
+        }).value
+      : specs.decoder.inputs?.z
+        ? currentZ
+        : latentFromPredZ(currentZ);
     const decoderOutputs = await decoder.session.run(
       replaceDecoderLatent(decoderBaseFeeds, decoderInput),
       decoderFetchArg,
@@ -1606,11 +1743,17 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
     const sampleCount = usesFusedSampleStep ? 1 : SAMPLE_STEPS;
     for (let sample = 0; sample < sampleCount; sample += 1) {
       const committedLengthBefore = persistentCache.length.data[0];
-      const signalLevelTensor = makeScalarFillTensor('int32', [1, 1], sample);
-      const positionTensor = makeScalarFillTensor('int32', [1], committedLengthBefore);
+      const signalLevelTensor = needsSignalLevelInput
+        ? makeScalarFillTensor('int32', [1, 1], sample)
+        : null;
+      const positionTensor = needsPositionIndexInput
+        ? makeScalarFillTensor('int32', [1], committedLengthBefore)
+        : null;
       if (graphCaptureStepInputs?.z && currentZ.location === 'gpu-buffer') {
-        copyGpuTensor(gpuDevice, currentZ, graphCaptureStepInputs.z);
-        copyGpuTensor(gpuDevice, currentZ, graphCaptureStepInputs.contextNoise);
+        copyGpuTensorToTargets(gpuDevice, currentZ, [
+          graphCaptureStepInputs.z,
+          graphCaptureStepInputs.contextNoise,
+        ]);
       } else if (graphCaptureStepInputs?.z) {
         writeCpuTensorToGpu(gpuDevice, graphCaptureStepInputs.z, currentZ);
         writeCpuTensorToGpu(gpuDevice, graphCaptureStepInputs.contextNoise, currentZ);
@@ -1671,9 +1814,13 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
       targetForwardSamples.push(timed.elapsedMs);
     }
 
-    const packTimed = timeSync(() =>
-      specs.decoder.inputs?.z ? currentZ : latentFromPredZ(currentZ),
-    );
+    const packTimed = timeSync(() => {
+      if (graphCaptureDecoderInput) {
+        copyTensorToGpu(gpuDevice, currentZ, graphCaptureDecoderInput.tensor);
+        return graphCaptureDecoderInput.tensor;
+      }
+      return specs.decoder.inputs?.z ? currentZ : latentFromPredZ(currentZ);
+    });
     const decoderTimed = await profiler.profileScope(
       {
         role: 'single_frame_decoder',
@@ -1875,7 +2022,7 @@ async function runBenchmark() {
     ort_version: ort.version ?? null,
     provider_options: {
       executionProviders: [{ name: config.provider }],
-      graphOptimizationLevel: 'all',
+      graphOptimizationLevel: 'basic',
     },
     gpu,
     profiling: profiler.result(),

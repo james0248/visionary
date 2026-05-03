@@ -894,3 +894,743 @@ Conclusion:
 - Spatial `GroupQueryAttention` is not behavior-preserving for the decoder/dynamics spatial attention in the current ORT WebGPU schema.
 - Keep spatial attention on the manual `Einsum`/`Softmax` lowering for now.
 - The exporter now skips non-cached spatial GQA fusion even when the experimental flag is present, so the flag cannot produce an invalid or causally masked graph.
+
+## 2026-05-03 KST: Late BHSD and MatMul Trials
+
+Accepted baseline before these trials:
+- Active artifact: `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4.onnx`
+- Graph capture benchmark, plain `bun run benchmark:webgpu`:
+  - Streaming frame: `49.54 ms`
+  - Dynamics: `45.76 ms`
+  - Decoder: `3.40 ms`
+  - FPS: `20.18`
+
+BHSD spatial attention layout rewrite:
+- Rewrote spatial score attention to consume Q/K in the BHSD layout already produced by `RotaryEmbedding`.
+- Dynamics graph:
+  - Spatial attention sites rewritten: `90`
+  - Nodes: `6148 -> 5968`
+  - `Transpose`: `537 -> 357`
+- Decoder graph:
+  - Spatial attention sites rewritten: `6`
+  - Nodes: `433 -> 421`
+  - `Transpose`: `28 -> 16`
+- Numerical validation passed against the raw unoptimized ONNX artifacts:
+  - Entry step max abs error: about `6.14e-6`
+  - Decoder max abs error: about `8.05e-7`
+  - Prefill max abs error: about `1.01e-5`
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `49.54 ms`
+  - Dynamics: `45.76 ms`
+  - Decoder: `3.40 ms`
+  - FPS: `20.18`
+
+Conclusion:
+- Accepted.
+- This was the first trial in this round that produced a real latency reduction without changing behavior.
+- The win came from avoiding redundant `Transpose` nodes around spatial attention after RoPE.
+
+Temporal q-only BHSD attention trial:
+- Rewrote only the remaining temporal Q layout after RoPE.
+- Dynamics graph:
+  - Temporal sites rewritten: `29`
+  - Nodes: `5968 -> 5939`
+  - `Transpose`: `357 -> 328`
+- Numerical validation passed with the same tolerance as the accepted baseline.
+- Browser benchmark:
+  - Streaming frame: `49.55 ms`
+  - Dynamics: `45.58 ms`
+  - Decoder: `3.54 ms`
+  - FPS: `20.18`
+
+Conclusion:
+- Rejected as neutral.
+- The tiny dynamics improvement was erased by decoder/frame noise.
+- Keep the accepted BHSD spatial rewrite, but do not count q-only temporal as a useful optimization.
+
+Score-side `Einsum -> MatMul` trial:
+- Replaced attention score equations with `MatMul`:
+  - `bhqd,bhkd->bhqk`
+  - `bqhd,bkhd->bhqk`
+- Left value-side attention `Einsum` unchanged.
+- Dynamics graph:
+  - Score sites rewritten: `119`
+  - Nodes: `5968 -> 6116`
+  - `MatMul`: `0 -> 119`
+  - `Einsum`: `238 -> 119`
+  - `Transpose`: `357 -> 505`
+- Decoder graph:
+  - Score sites rewritten: `8`
+  - Nodes: `421 -> 431`
+  - `MatMul`: `0 -> 8`
+  - `Einsum`: `16 -> 8`
+  - `Transpose`: `16 -> 26`
+- Numerical validation passed:
+  - Entry step max abs error: about `5.90e-6`
+  - Decoder max abs error: about `8.05e-7`
+  - Prefill unchanged and passed.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `53.44 ms`
+  - Dynamics: `49.23 ms`
+  - Decoder: `3.76 ms`
+  - FPS: `18.71`
+
+Conclusion:
+- Rejected.
+- ORT WebGPU's `MatMul` did not offset the extra transpose work in this shape regime.
+- Future attention work should avoid local `MatMul` substitution unless it also removes surrounding layout kernels.
+
+Benchmark stability note:
+- A browser launch failure occurred while Google Chrome attempted to read the user's real Crashpad settings.
+- `playwright.config.js` now launches Chrome with an isolated `HOME` at `/private/tmp/visionary-chrome-home`.
+- This does not affect model math or measured model execution; it avoids benchmark startup failures in the sandboxed environment.
+
+Rank-preserving `MatMul` projection trial:
+- Tried replacing `Squeeze -> Gemm -> Unsqueeze` projection islands with rank-preserving `MatMul` plus optional bias `Add`.
+- Dynamics graph:
+  - Rewrites: `128`
+  - Nodes: `6023 -> 5776`
+  - `Gemm`: `487 -> 359`
+  - `MatMul`: `0 -> 128`
+  - `Squeeze`: `570 -> 442`
+  - `Unsqueeze`: `1988 -> 1860`
+- Decoder graph:
+  - Rewrites: `10`
+  - Nodes: `424 -> 406`
+  - `Gemm`: `34 -> 24`
+  - `MatMul`: `0 -> 10`
+- Numerical validation passed against raw ONNX:
+  - Entry step max abs error stayed about `6.14e-6` or lower.
+  - Decoder max abs error stayed about `8.05e-7`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark result:
+  - Rejected before timing because graph capture refused the session: not all nodes were partitioned to the WebGPU EP.
+
+Conclusion:
+- Rejected.
+- ONNX `MatMul` is WebGPU-supported in general, but this rank-preserving form is not graph-capture viable in the current ORT WebGPU partitioner.
+- Keep `Gemm`-based projection islands for the active demo graph.
+
+Attention output `Flatten(axis=2)` trial:
+- Tried replacing the value-attention head merge:
+  - `Split(axis=2) -> Concat(axis=3) -> Squeeze -> Gemm`
+  - with `Flatten(axis=2) -> Gemm`.
+- Dynamics graph:
+  - Rewrites: `119`
+  - Nodes: `6023 -> 5785`
+  - `Split`: `488 -> 369`
+  - `Concat`: `543 -> 424`
+  - `Squeeze`: `570 -> 451`
+  - `Flatten`: `0 -> 119`
+- Decoder graph:
+  - Rewrites: `8`
+  - Nodes: `424 -> 408`
+  - `Split`: `37 -> 29`
+  - `Concat`: `38 -> 30`
+  - `Squeeze`: `38 -> 30`
+  - `Flatten`: `0 -> 8`
+- Numerical validation passed:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark result:
+  - Rejected before timing because graph capture again refused the session: not all nodes were partitioned to WebGPU.
+
+Conclusion:
+- Rejected.
+- Although ORT WebGPU documents `Flatten` as supported, this graph-capture configuration does not accept the resulting graph.
+- Do not replace existing `Squeeze/Concat` merge ladders with `Flatten` in the active graph.
+
+Rank-2 SwiGLU activation trial:
+- Tried keeping packed SwiGLU activation in rank-2 form:
+  - Before: `Split -> Unsqueeze -> QuickGelu`, another `Unsqueeze`, `Mul -> Squeeze -> Gemm`.
+  - After: `Split -> QuickGelu`, `Mul -> Gemm`.
+- Dynamics graph:
+  - Rewrites: `119`
+  - Nodes: `6023 -> 5666`
+  - `Unsqueeze`: `1988 -> 1750`
+  - `Squeeze`: `570 -> 451`
+  - `QuickGelu`, `Mul`, and `Gemm` counts unchanged.
+- Decoder graph:
+  - Rewrites: `8`
+  - Nodes: `424 -> 400`
+  - `Unsqueeze`: `134 -> 118`
+  - `Squeeze`: `38 -> 30`
+- Numerical validation passed:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `50.01 ms`
+  - Dynamics: `47.70 ms`
+  - Decoder: `1.87 ms`
+  - FPS: `20.00`
+
+Conclusion:
+- Rejected.
+- The graph-capture path accepted the rewrite, but removing these rank adapters did not reduce the steady-state critical path.
+- This confirms that small shape-node count reductions are not enough; the next trials should target repeated attention/projection work or cache update cost.
+
+Spatial attention `Einsum` to `MatMul` trial:
+- Rewrote spatial attention score/value pairs:
+  - Score: `Einsum("bhqd,bhkd->bhqk")` to `Transpose(K) -> MatMul`.
+  - Value: `Einsum("bhqk,bkhd->bqhd")` to `Transpose(V) -> MatMul -> Transpose`.
+- Dynamics graph:
+  - Spatial attention sites rewritten: `90`
+  - Nodes: `6023 -> 6293`
+  - `Einsum`: `238 -> 58`
+  - `MatMul`: `0 -> 180`
+  - `Transpose`: `302 -> 572`
+- Numerical validation passed:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `51.21 ms`
+  - Dynamics: `47.63 ms`
+  - Decoder: `3.18 ms`
+  - FPS: `19.53`
+
+Conclusion:
+- Rejected.
+- Replacing generic attention `Einsum` with `MatMul` does not help when it adds this much transpose traffic.
+- Keep the accepted BHSD spatial `Einsum` layout; future attention work must remove layout kernels, not just swap the core multiply op.
+
+Packed QKV head projection trial:
+- Replayed the current raw-to-WebGPU optimization pipeline with `--pack_qkv_head_projection` plus the existing packed QKV/SwiGLU Gemm passes.
+- Dynamics graph:
+  - Nodes: `6023 -> 5157`
+  - `Gemm`: `487 -> 397`
+  - `Einsum`: `238 -> 328`
+  - `Unsqueeze`: `1988 -> 1127`
+  - `Concat`: `543 -> 273`
+  - `Transpose`: `302 -> 537`
+  - `Reshape`: `0`
+- Numerical validation passed:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `56.74 ms`
+  - Dynamics: `52.62 ms`
+  - Decoder: `3.61 ms`
+  - FPS: `17.63`
+
+Conclusion:
+- Rejected.
+- The pass removes many layout nodes, but it breaks the accepted low-transpose BHSD attention layout and adds generic `Einsum` projection work.
+- Do not enable `--pack_qkv_head_projection` for the current demo graph.
+
+Spatial Q/K direct BHSD layout trial:
+- Rewrote spatial Q/K head construction before `RotaryEmbedding`.
+  - Before: per-head tensors were concatenated as `B,S,H,D`, then transposed to `B,H,S,D` for RoPE.
+  - After: per-head tensors are unsqueezed/concatenated directly as `B,H,S,D`, so RoPE consumes the tensor without a wrapper transpose.
+- Dynamics graph:
+  - Spatial Q/K sites rewritten: `180`
+  - Nodes: `6023 -> 5843`
+  - `Transpose`: `302 -> 122`
+  - `RotaryEmbedding`: unchanged at `239`
+  - `Reshape`: `0`
+- Decoder graph:
+  - Spatial Q/K sites rewritten: `12`
+  - Nodes: `424 -> 412`
+  - `Transpose`: `13 -> 1`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Largest observed cache error stayed around `1.01e-5`; generated latents and decoded patches stayed around `1e-6` or lower.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `48.34 ms`
+  - Dynamics: `44.73 ms`
+  - Decoder: `3.15 ms`
+  - FPS: `20.69`
+  - Graph capture: passed.
+
+Conclusion:
+- Accepted.
+- This is the current best graph. It is a real but modest win because it removes layout traffic around RoPE without changing attention math.
+- The accepted graph depends on the `bnsh` attention export layout; older `bshd` raw artifacts still require RoPE transposes back to `B,S,H,D`.
+
+Temporal `GroupQueryAttention` fusion trial:
+- Applied the existing post-export GQA fusion to the current accepted graph.
+- Dynamics graph:
+  - Temporal GQA sites rewritten: `29`
+  - `GroupQueryAttention`: `0 -> 29`
+  - `Einsum`: `238 -> 180`
+  - `Softmax`: `119 -> 90`
+  - `Split`: `488 -> 546`
+  - `Squeeze`: `570 -> 918`
+  - `Concat`: `543 -> 601`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+- Browser benchmark:
+  - Rejected because graph capture fails in ORT WebGPU:
+    `GroupQueryAttention ... Invalid dispatch group size (0, 1, 1)`.
+
+Conclusion:
+- Rejected for the demo path.
+- ORT WebGPU has a `GroupQueryAttention` resolver, but this particular generated temporal/cache shape is not graph-capture viable.
+- The fusion also adds substantial layout glue, so even if the dispatch bug were avoided, it would need a fresh benchmark before being considered.
+
+Graph-capture preallocated-output trial:
+- Tried enabling preallocated GPU output tensors for graph-capture benchmark runs.
+- This does not change ONNX math; it only attempts to avoid per-frame output tensor allocation.
+- Browser benchmark:
+  - Rejected because ORT WebGPU graph capture fails with:
+    `Cannot set properties of undefined (setting 'Symbol(gpuBufferMetadata)')`.
+
+Conclusion:
+- Rejected.
+- Keep the existing benchmark behavior: preallocated hot outputs are used for non-graph-capture runs only.
+
+Cache-update precomputed RoPE constants trial:
+- Moved the entry-cache slide/rebase shader's one-step RoPE `cos/sin` values from per-work-item `pow/cos/sin` calls into precomputed GPU buffers.
+- ONNX graph validation still passed because the model graph was unchanged.
+- Browser benchmark:
+  - Streaming frame: `48.05 ms`
+  - Dynamics: `44.46 ms`
+  - Decoder: `3.13 ms`
+  - FPS: `20.81`
+
+Conclusion:
+- Accepted as a small runtime improvement.
+- The effect is modest, which suggests the cache-update shader is not the dominant cost.
+
+ORT graph optimization level trial:
+- Changed browser session creation from `graphOptimizationLevel: "all"` to `"extended"`.
+- Browser benchmark:
+  - Streaming frame: `49.25 ms`
+  - Dynamics: `45.53 ms`
+  - Decoder: `3.26 ms`
+  - FPS: `20.30`
+
+Conclusion:
+- Rejected.
+- Keep `graphOptimizationLevel: "all"`.
+
+Spatial attention value plus output projection fusion trial:
+- Fused the spatial value-attention output projection:
+  - Before: `Einsum("bhqk,bkhd->bqhd") -> Split -> Concat -> Squeeze -> Gemm -> Unsqueeze`.
+  - After: `Einsum("bhqk,bkhd,hdm->bqm")` with the output projection weight reshaped from `(512,256)` to `(8,64,256)`.
+- Applied only to spatial sites first.
+- Dynamics graph:
+  - Rewrites: `90`
+  - `Gemm`: `487 -> 397`
+  - `Split`: `488 -> 398`
+  - `Concat`: `543 -> 453`
+  - `Squeeze`: `570 -> 480`
+  - `Unsqueeze`: `1988 -> 1898`
+  - `Einsum`: unchanged at `238`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `179.44 ms`
+  - Dynamics: `159.94 ms`
+  - Decoder: `15.03 ms`
+  - FPS: `5.57`
+
+Conclusion:
+- Rejected.
+- ORT WebGPU's 3-input `Einsum` lowering is far slower than the separate value `Einsum` plus `Gemm` path, despite removing many layout nodes.
+- Do not fuse output projection into n-ary `Einsum`.
+
+MLP down-projection rank-3 `MatMul` trial:
+- Replaced MLP down-projection ladders:
+  - Before: rank-3 `Mul -> Squeeze -> Gemm(768,256) -> Unsqueeze`.
+  - After: rank-3 `MatMul` with the original `(768,256)` weight.
+- Dynamics graph:
+  - Rewrites: `119`
+  - `MatMul`: `0 -> 119`
+  - `Gemm`: `487 -> 368`
+  - `Squeeze`: `570 -> 451`
+  - `Unsqueeze`: `1988 -> 1869`
+  - `Reshape`: `0`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `48.44 ms`
+  - Dynamics: `44.81 ms`
+  - Decoder: `3.13 ms`
+  - FPS: `20.65`
+
+Conclusion:
+- Rejected.
+- Rank-3 `MatMul` is graph-capture safe here, but it does not beat ORT WebGPU's `Squeeze/Gemm/Unsqueeze` path.
+
+SwiGLU input-projection rank-3 `MatMul` trial:
+- Replaced packed SwiGLU input projection ladders:
+  - Before: rank-3 input `Squeeze -> packed Gemm(256,1536) -> Split(axis=1) -> Unsqueeze x2`.
+  - After: rank-3 `MatMul -> Split(axis=2)`, feeding the original rank-3 QuickGELU/Mul path.
+- Dynamics graph:
+  - Rewrites: `119`
+  - `MatMul`: `0 -> 119`
+  - `Gemm`: `487 -> 368`
+  - `Squeeze`: `570 -> 451`
+  - `Unsqueeze`: `1988 -> 1750`
+  - `Split`: unchanged at `488`
+  - `Reshape`: `0`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `49.91 ms`
+  - Dynamics: `46.20 ms`
+  - Decoder: `3.23 ms`
+  - FPS: `20.04`
+
+Conclusion:
+- Rejected.
+- Rank-3 `MatMul` is graph-capture safe but slower than the current packed `Gemm` plus layout adapters.
+
+Temporal `MultiHeadAttention` fusion trial:
+- Applied the existing `com.microsoft::MultiHeadAttention` rewrite to the hot entry-cache dynamics artifact only.
+- The matcher fused the cached temporal attention sites:
+  - `MultiHeadAttention`: `0 -> 29`
+  - `Einsum`: `238 -> 180`
+  - `Softmax`: `119 -> 90`
+  - `Transpose`: `122 -> 180`
+  - `Squeeze`: `570 -> 599`
+  - Nodes: `5843 -> 5872`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `58.13 ms`
+  - Dynamics: `53.50 ms`
+  - Decoder: `3.66 ms`
+  - FPS: `17.20`
+
+Conclusion:
+- Rejected.
+- The fused MHA kernel itself is browser-compatible and graph-capture-safe, but this post-export rewrite only hits temporal sites and adds enough K/V layout transposes and output squeezes to lose about `9.3 ms/frame`.
+- Do not enable the current `--fuse_mha_attention` pass for the live entry-cache graph.
+
+Spatial `MultiHeadAttention` plus output `Gemm` trial:
+- Built a temporary post-export rewrite for spatial attention sites:
+  - Replaced `Einsum("bhqd,bhkd->bhqk") -> Softmax -> Einsum("bhqk,bkhd->bqhd")`.
+  - Removed the following head merge ladder and reused the output projection as `Gemm`.
+  - Fed `com.microsoft::MultiHeadAttention` with flat query and BNSH K/V layout.
+- Dynamics graph:
+  - Rewrites: `90`
+  - `MultiHeadAttention`: `0 -> 90`
+  - `Einsum`: `238 -> 58`
+  - `Softmax`: `119 -> 29`
+  - `Transpose`: `122 -> 302`
+  - `Squeeze`: `570 -> 660`
+  - Nodes: `5843 -> 5933`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Streaming frame: `70.91 ms`
+  - Dynamics: `64.88 ms`
+  - Decoder: `4.58 ms`
+  - FPS: `14.10`
+
+Conclusion:
+- Rejected.
+- The fused MHA op is graph-capture-safe, but for the fixed spatial shape `[B=1, H=8, S=36, D=64]` the required layout adapters and MHA kernel are much slower than the current manual attention plus `Gemm` path.
+- Do not pursue MHA fusion unless the graph can emit MHA-native layouts directly from export without post-export transposes.
+
+Attention `Einsum` to explicit `MatMul` trial:
+- Built a temporary post-export rewrite over the hot entry-cache dynamics artifact:
+  - `bhqd,bhkd->bhqk`: `90` sites replaced by `Transpose(K) -> MatMul`.
+  - `bqhd,bkhd->bhqk`: `29` sites replaced by `Transpose(Q) -> Transpose(K) -> MatMul`.
+  - `bhqk,bkhd->bqhd`: `119` sites replaced by `Transpose(V) -> MatMul -> Transpose(output)`.
+- Dynamics graph:
+  - `Einsum`: `238 -> 0`
+  - `MatMul`: `0 -> 238`
+  - `Transpose`: `122 -> 508`
+  - Nodes: `5843 -> 6229`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Browser benchmark with `bun run benchmark:webgpu`:
+  - Streaming frame: `59.02 ms`
+  - Dynamics: `54.95 ms`
+  - Decoder: `3.74 ms`
+  - FPS: `16.94`
+
+Conclusion:
+- Rejected.
+- ORT WebGPU's `MatMul` kernels are not enough to offset the extra static transposes. The existing `Einsum` attention path is faster for this graph.
+- This reinforces that post-export attention layout adapters are usually worse than the current accepted manual attention graph.
+
+Export-native flat B=1/T=1 step-layout trial:
+- Added a temporary export-only branch that squeezed the cached single-step spatial path from `[B=1, T=1, N, D]` to `[N, D]` before spatial transformer blocks, then restored the original output ABI.
+- Goal:
+  - Avoid redundant singleton dimensions in the source JAX graph so jax2onnx would emit less layout churn for the demo-only entry-cache artifact.
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+- Dynamics graph result:
+  - Nodes: `5843 -> 6786`
+  - `Reshape`: `0 -> 598`
+  - `Transpose`: `122 -> 535`
+  - `Einsum`: `238 -> 356`
+  - `Gemm`: `487 -> 726`
+- Browser benchmark with `bun run benchmark:webgpu`:
+  - Regular streaming tests passed, but graph-capture benchmark failed session creation.
+  - ORT error: graph capture could not be used because not all compute graph nodes were partitioned to WebGPU.
+
+Conclusion:
+- Rejected and reverted.
+- The source-level rank reduction made the exported graph less WebGPU-friendly. It reintroduced many `Reshape` nodes, which are CPU-only in ORT WebGPU, and broke graph capture.
+- The accepted baseline was restored from `/private/tmp/visionary_active_before_flat_step_trial_20260503`.
+
+Full temporal BHSD layout rewrite trial:
+- Built a temporary post-export graph rewrite over the accepted entry-cache artifact.
+- Goal:
+  - Keep temporal Q/K/V attention islands in `[B,H,S,D]` instead of converting back to `[B,S,H,D]`.
+  - Remove the remaining temporal RoPE transpose wrappers without changing attention math.
+- Matched all temporal islands:
+  - Temporal sites: `29`
+  - Nodes: `5843 -> 5785`
+  - `Transpose`: `122 -> 64`
+  - `Reshape`: stayed `0`
+- Validation result:
+  - Rejected before benchmarking.
+  - ORT refused to load the rewritten graph because final cache-entry output shape inference no longer matched the declared public ABI.
+  - Concrete failure: `node_Concat_14694` inferred dimension `1` where the declared cache-entry layout expects dimension `2`.
+
+Conclusion:
+- Rejected and reverted.
+- The current public K/V cache ABI is `[B,T,H,D]`. A full temporal `[B,H,T,D]` rewrite changes the layout of K/V entries that are also graph outputs.
+- Adding transposes back only for those outputs would erase most or all of the intended dispatch reduction.
+- A useful version of this idea requires a deliberate cache ABI change: store and stream temporal K/V cache in `[B,H,T,D]` layout across prefill, entry graph outputs, and the browser cache-update shader, then validate against the raw graph with explicit output/input transposes in the validator.
+
+### 2026-05-03 Temporal Attention Fusion Retests
+
+Goal: reduce the current accepted graph-capture steady-state latency of roughly 48.6 ms/frame without changing sample_steps=4 or numerical outputs.
+
+Validation rule used before browser benchmarking:
+- Raw jax2onnx artifact comparison via `scripts/webgpu/compare_raw_optimized_onnx.py`.
+- Entry-cache reconstruction comparison via `scripts/webgpu/verify_entry_cache_update.py`.
+
+Trial: full-KV temporal `GroupQueryAttention` without past-cache inputs.
+- Replaced 29 temporal manual attention sites.
+- Intended graph delta: `Softmax 119 -> 90`, `Einsum 238 -> 180`, `Gather 239 -> 181`.
+- Rejected before benchmark. ORT CPU validation rejected the graph because `GroupQueryAttention` requires schema inputs/outputs and then rejects no-past query length 1 with key length 65. This is not safe under the raw-vs-optimized validation gate.
+
+Trial: temporal `MultiHeadAttention`.
+- Replaced 29 temporal manual attention sites.
+- Validation passed; max raw-vs-optimized error stayed around 6e-6.
+- Browser benchmark passed, including graph capture, but was slower.
+- Result: streaming frame mean 57.72 ms, dynamics mean 53.12 ms, decoder mean 3.69 ms.
+- Accepted baseline before the trial: streaming frame mean 48.62 ms, dynamics mean 45.03 ms.
+- Conclusion: reject. ORT WebGPU's MHA path adds enough layout/work overhead that the manual temporal attention graph is faster on this model.
+
+Trial: spatial-only `MultiHeadAttention`.
+- Replaced 90 spatial manual attention sites while leaving the temporal attention path unchanged.
+- Graph delta:
+  - `MultiHeadAttention`: `0 -> 90`
+  - `Einsum`: `238 -> 58`
+  - `Softmax`: `119 -> 29`
+  - `Transpose`: `122 -> 212`
+  - `Squeeze`: `570 -> 660`
+  - Nodes: unchanged at `5843`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed; max errors stayed at the accepted fp32 baseline scale.
+  - Entry-cache reconstruction passed.
+- Browser benchmark with `bun run benchmark:webgpu`:
+  - Graph-capture streaming frame: `68.77 ms`
+  - Dynamics after graph-capture warmup: `63.27 ms`
+  - Decoder after graph-capture warmup: `4.63 ms`
+- Accepted baseline before the trial:
+  - Graph-capture streaming frame: `48.62 ms`
+  - Dynamics: `45.03 ms`
+  - Decoder: `3.09 ms`
+- Conclusion: reject. Removing many small attention ops was outweighed by ORT WebGPU's MHA layout work and added dispatch cost. The accepted manual spatial attention graph is faster.
+
+Trial: temporal past-cache `GroupQueryAttention`.
+- Replaced 29 temporal manual attention sites with `com.microsoft::GroupQueryAttention` using current-token K/V plus past-cache K/V.
+- Graph delta:
+  - `GroupQueryAttention`: `0 -> 29`
+  - `Einsum`: `238 -> 180`
+  - `Softmax`: `119 -> 90`
+  - `Gather`: `239 -> 181`
+  - `Split`: `488 -> 546`
+  - `Squeeze`: `570 -> 918`
+  - `Concat`: `543 -> 601`
+  - Nodes: `5843 -> 6365`
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed.
+  - Entry-cache reconstruction passed.
+- Browser benchmark:
+  - Non-graph-capture WebGPU smoke and streaming tests passed.
+  - Graph-capture test failed inside ORT WebGPU `GroupQueryAttention`.
+  - Error: `Invalid dispatch group size (0, 1, 1)`.
+- Conclusion: reject. Even though the math validates, the ORT WebGPU GQA kernel is not reliable in the graph-capture demo path for this shape.
+
+Trial: packed QKV head projection pass.
+- Ran the existing `rewrite_packed_qkv_head_projection_for_webgpu` pass on the current accepted step graph.
+- Result: no matched rewrites, no graph changes.
+- Conclusion: no-op on the current optimized artifact.
+
+Trial: export-native final context-entry K/V-only block.
+- Added a temporary inference-only source path that skipped the final temporal block's attention output and MLP during cache-entry writing, computing only the K/V entries needed for the rolling context cache.
+- Goal:
+  - Avoid one full temporal attention/MLP block in the context-cache update part of the demo frame.
+  - Keep the public ONNX input/output contract unchanged.
+- Numerical validation:
+  - Raw-vs-optimized ONNX comparison passed at `atol=5e-4`, `rtol=5e-4`.
+  - Entry-cache reconstruction passed.
+  - Max errors stayed around `1e-5` for K/V entries and `7e-6` for sampled latent output.
+- Exported graph result:
+  - Nodes: `5843 -> 8148`
+  - `Einsum`: `238 -> 716`
+  - `Transpose`: `122 -> 774`
+  - `Reshape`: `0 -> 238`
+  - `Gather`: `239 -> 5`
+  - `SimplifiedLayerNormalization`: `299 -> 66`
+- Browser benchmark:
+  - Non-graph-capture tests became much slower.
+  - Graph-capture session creation failed because the graph was no longer fully assigned to WebGPU.
+- Conclusion: reject and revert.
+  - The source-level shortcut changed jax2onnx lowering enough to reintroduce CPU-only `Reshape` nodes and many more layout ops.
+  - Numerical accuracy alone was not sufficient; WebGPU partitioning and graph-capture viability must stay in the validation gate.
+
+## 2026-05-04 KST: Final Output And Runtime Fusion Trials
+
+Baseline entering this round:
+- Active artifact: `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4.onnx`.
+- Graph shape: `Reshape=0`, `Einsum=238`, `Gemm=487`, `Transpose=98`, `Unsqueeze=1988`, `Squeeze=570`.
+- Typical graph-capture benchmark range before this round:
+  - Dynamics after graph-capture warmup: about `44.5-45.1 ms`.
+  - Streaming frame after graph-capture warmup: about `48.5-49.0 ms`.
+
+Numerical validation policy:
+- Fixed deterministic inputs/noise.
+- Compare optimized ONNX against raw unoptimized ONNX on CPU.
+- For the final-output-only graph, compare raw `pred_z` and raw `final_z` against optimized `final_z` because the optimized graph intentionally removes the redundant `pred_z` output.
+- Keep tolerance at `atol=5e-4`, `rtol=5e-4`; observed max absolute errors stayed around `1e-6`.
+
+Accepted trial: final-output-only steady step.
+- Rewrote the optimized entry step output contract to remove `pred_z`.
+- The graph now outputs only:
+  - `final_z`
+  - `candidate_k_entry`
+  - `candidate_v_entry`
+- Reason:
+  - At the fourth and final sampler update, `final_z` is mathematically the same value as `pred_z`.
+  - The browser only needs this final latent for the next frame and decoder.
+- Graph result:
+  - Nodes: `5791`
+  - `Identity=0`
+  - `Reshape=0`
+  - `Transpose=74`
+  - `Einsum=238`
+  - `Gemm=487`
+- Numerical validation:
+  - Raw `final_z` vs optimized `final_z`: max abs `2.1755695e-6`.
+  - Raw `pred_z` vs optimized `final_z`: max abs `2.1755695e-6`.
+  - `candidate_k_entry`: max abs `6.4373016e-6`.
+  - `candidate_v_entry`: max abs `5.9604645e-6`.
+  - Decoder patches stayed valid: max abs `1.1920929e-6`.
+  - Entry-cache reconstruction passed; full-cache `pred_z` vs entry `final_z` was exact in the check.
+- Browser benchmark:
+  - Graph capture passed.
+  - Best run in this round: streaming frame after graph-capture warmup about `47.96 ms`.
+  - Later repeat after cleanup: streaming frame after graph-capture warmup about `48.63 ms`.
+- Conclusion:
+  - Accept as a small, behavior-preserving output-contract cleanup.
+  - The gain is modest and close to benchmark noise, but it removes a redundant graph output and keeps graph capture viable.
+
+Rejected trial: attention `Einsum` to `MatMul`.
+- Replaced all fixed attention `Einsum` equations with equivalent `Transpose` + `MatMul` patterns:
+  - `bhqd,bhkd->bhqk`
+  - `bhqk,bhkd->bqhd`
+  - `bhqk,bkhd->bqhd`
+- Numerical validation passed:
+  - Max errors stayed identical to the accepted final-output-only graph.
+- Graph result:
+  - `Einsum`: `238 -> 0`
+  - `MatMul`: `0 -> 238`
+  - `Transpose`: `74 -> 402`
+  - Nodes: `5791 -> 6119`
+- Browser benchmark:
+  - Streaming frame after graph-capture warmup: about `54.56 ms`.
+  - Dynamics after graph-capture warmup: about `50.24 ms`.
+- Conclusion:
+  - Reject.
+  - ORT WebGPU `MatMul` does not offset the extra transpose traffic for this attention layout.
+
+Rejected trial: layer-cache prefill and steady-state step.
+- Existing layer-cache artifacts validated against raw ONNX:
+  - Layer prefill passed.
+  - Layer steady-state step passed.
+- Browser result:
+  - Normal benchmark failed because runtime cache handling tried to read GPU cache tensors as CPU data.
+  - Graph-capture benchmark failed session creation because not all layer-cache step nodes were assigned to WebGPU.
+- Conclusion:
+  - Reject for the demo path.
+  - Keep the entry-cache artifact plus browser-side in-place cache slide/rebase.
+
+Rejected trial: composite step plus decoder ONNX session.
+- Built a temporary composite graph:
+  - Inputs: same as the accepted entry step.
+  - Outputs: `final_z`, `candidate_k_entry`, `candidate_v_entry`, `patches`.
+  - The decoder consumed `final_z` inside the same ONNX graph.
+- Numerical validation passed against a raw composite graph:
+  - `patches`: max abs `7.1525574e-7`.
+  - `final_z`, K entry, V entry stayed at accepted error levels.
+- Browser benchmark:
+  - Separate decoder timing dropped to `0 ms`, as intended.
+  - But the combined graph made the captured step slower.
+  - Streaming frame after graph-capture warmup: about `52.39 ms`.
+  - Dynamics/combined step after graph-capture warmup: about `51.95 ms`.
+- Conclusion:
+  - Reject and remove the temporary artifact.
+  - Combining sessions increases the step graph enough that it loses more than the separate decoder call costs.
+
+Runtime graph optimization level trial:
+- Tested session `graphOptimizationLevel` values on the accepted final-output-only artifact.
+- `all`: accepted default, current range around `48-49 ms` streaming after graph-capture warmup.
+- `extended`: passed, about `48.18 ms` streaming after graph-capture warmup.
+- `basic`: passed, about `48.15 ms` streaming after graph-capture warmup.
+- `disabled`: passed but regressed to about `49.55 ms`.
+- Conclusion:
+  - Keep `basic` for now as a tiny runtime-level improvement.
+  - This is not a structural speedup; it does not change the main bottleneck.
+
+Current bottleneck:
+- The demo is still dynamics-bound.
+- Steady graph-capture dynamics remains around `44-45 ms`; decoder plus copy overhead is around `3.5-4.0 ms`.
+- The remaining practical bottleneck is the cost of five unrolled transformer-style passes for four sampler steps plus the context-entry cache update path.
+- Small layout/output changes are now exhausted; reaching `25 ms` likely requires a genuinely faster attention/MLP execution path or fewer equivalent compute passes, not another local shape rewrite.
+
+## 2026-05-04 KST: Status After Layer-Cache Retry
+
+Current accepted browser path:
+- Prefill artifact priority is back to `breakout_dynamics_prefill_cached_b1_t64`.
+- Step artifact priority is back to `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4`.
+- The latest saved `latest.json` may still show the rejected layer-cache trial if no newer benchmark has overwritten it.
+
+Latest accepted numerical validation:
+- Raw optimized comparison passed for `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4`.
+- `final_z` max abs error: `4.5299530e-6`.
+- `pred_z` compared to optimized `final_z` max abs error: `4.5299530e-6`.
+- `candidate_k_entry` max abs error: `3.7431717e-5`.
+- `candidate_v_entry` max abs error: `1.5676022e-5`.
+- Tolerance remains `atol=5e-4`, `rtol=5e-4`.
+
+Latest accepted timing before the layer-cache retry:
+- Runtime graph optimization level: `basic`.
+- Dynamics after graph-capture warmup: about `43.45 ms`.
+- Decoder after graph-capture warmup: about `3.80 ms`.
+- Streaming frame after graph-capture warmup: about `48.02 ms`.
+- This is viable for roughly `20 fps`, but not close to the `25 ms` target.
+
+Rejected layer-cache retry:
+- Layer-cache artifacts passed numerical validation.
+- The layer-cache step graph was larger than the entry-cache step graph:
+  - Nodes: about `6734`.
+  - `Transpose`: about `441`.
+- Browser timing regressed to roughly `53.6 ms` per streaming frame after graph-capture warmup.
+- Normal benchmark tests also exposed GPU-buffer cache handling issues for the layer-cache output contract.
+
+Conclusion:
+- Keep the entry-cache path.
+- The remaining speed target is no longer blocked by host-device cache copies; those are now tiny.
+- The dominant cost is the steady fp32 dynamics graph itself, especially repeated attention and MLP work across four sampler steps plus the context-entry update.
+- Reaching `25 ms` probably requires changing the execution layer, such as specialized ORT WebGPU kernels for the current `Einsum` attention equations or fused packed SwiGLU/projection kernels. Another small ONNX shape rewrite is unlikely to cut the frame time in half.

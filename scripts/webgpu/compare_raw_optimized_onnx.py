@@ -67,6 +67,10 @@ def artifact_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     }
 
 
+def load_raw_manifest(raw_dir: Path) -> dict[str, Any]:
+    return load_json(raw_dir / RAW_MANIFEST_NAME)
+
+
 def default_artifacts(manifest: dict[str, Any]) -> list[str]:
     demo = manifest.get("demo_generation", {})
     names = [
@@ -123,6 +127,54 @@ def make_feed(
     raise ValueError(f"Unsupported input dtype for {name}: {dtype!r}")
 
 
+def model_input_specs(path: Path) -> dict[str, dict[str, Any]]:
+    dtype_map = {
+        "tensor(float)": "float32",
+        "tensor(float16)": "float16",
+        "tensor(int32)": "int32",
+    }
+    session = ort.InferenceSession(path.as_posix(), providers=["CPUExecutionProvider"])
+    specs = {}
+    for input_info in session.get_inputs():
+        dtype = dtype_map.get(input_info.type)
+        if dtype is None:
+            raise ValueError(f"Unsupported input dtype for {input_info.name}: {input_info.type}")
+        specs[input_info.name] = {
+            "dtype": dtype,
+            "shape": [int(dim) for dim in input_info.shape],
+        }
+    return specs
+
+
+def adapt_feeds_for_spec(
+    feeds: dict[str, np.ndarray],
+    target_inputs: dict[str, dict[str, Any]],
+) -> dict[str, np.ndarray]:
+    adapted: dict[str, np.ndarray] = {}
+    for name, value in feeds.items():
+        target = target_inputs.get(name)
+        if target is None:
+            continue
+        shape = tuple(int(dim) for dim in target.get("shape", []))
+        if value.shape == shape:
+            adapted[name] = value
+            continue
+        if (
+            value.ndim == 6
+            and len(shape) == 6
+            and value.shape[:3] == shape[:3]
+            and value.shape[3] == shape[4]
+            and value.shape[4] == shape[3]
+            and value.shape[5] == shape[5]
+        ):
+            adapted[name] = np.transpose(value, (0, 1, 2, 4, 3, 5)).copy()
+            continue
+        raise ValueError(
+            f"Cannot adapt input {name}: raw shape {value.shape}, target shape {shape}."
+        )
+    return adapted
+
+
 def run_ort(path: Path, feeds: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     session = ort.InferenceSession(path.as_posix(), providers=["CPUExecutionProvider"])
     output_names = [output.name for output in session.get_outputs()]
@@ -163,6 +215,7 @@ def compare_artifact(
     *,
     name: str,
     entry: dict[str, Any],
+    raw_entry: dict[str, Any],
     raw_dir: Path,
     optimized_dir: Path,
     manifest: dict[str, Any],
@@ -178,22 +231,36 @@ def compare_artifact(
         raise FileNotFoundError(f"Missing optimized artifact for {name}: {optimized_path}")
 
     rng = np.random.default_rng(seed)
+    raw_inputs = raw_entry.get("inputs") or model_input_specs(raw_path)
     feeds = {
         input_name: make_feed(input_name, input_spec, manifest, rng)
-        for input_name, input_spec in entry.get("inputs", {}).items()
+        for input_name, input_spec in raw_inputs.items()
     }
     raw_outputs = run_ort(raw_path, feeds)
-    optimized_outputs = run_ort(optimized_path, feeds)
+    optimized_outputs = run_ort(
+        optimized_path,
+        adapt_feeds_for_spec(feeds, entry.get("inputs", {})),
+    )
     output_names = sorted(raw_outputs)
-    comparisons = {
-        output_name: compare_arrays(
+    comparisons = {}
+    for output_name in output_names:
+        optimized_name = output_name
+        if output_name not in optimized_outputs:
+            if entry.get("final_z_aliases_pred_z") and output_name == "pred_z":
+                optimized_name = "final_z"
+            else:
+                raise KeyError(
+                    f"{name} optimized artifact is missing output {output_name!r}; "
+                    f"available outputs: {sorted(optimized_outputs)}"
+                )
+        comparisons[output_name] = compare_arrays(
             raw_outputs[output_name],
-            optimized_outputs[output_name],
+            optimized_outputs[optimized_name],
             atol=atol,
             rtol=rtol,
         )
-        for output_name in output_names
-    }
+        if optimized_name != output_name:
+            comparisons[output_name]["optimized_output"] = optimized_name
     return {
         "name": name,
         "raw_path": raw_path.as_posix(),
@@ -208,11 +275,13 @@ def compare_artifact(
 def main() -> int:
     args = parse_args()
     manifest = load_json(manifest_path(args))
+    raw_manifest = load_raw_manifest(args.raw_dir)
     if not (args.raw_dir / RAW_MANIFEST_NAME).exists():
         raise FileNotFoundError(
             f"{args.raw_dir / RAW_MANIFEST_NAME} does not exist. Re-export with --raw_out_dir."
         )
     exports = artifact_map(manifest)
+    raw_exports = artifact_map(raw_manifest)
     artifacts = args.artifact or default_artifacts(manifest)
     missing = [name for name in artifacts if name not in exports]
     if missing:
@@ -222,6 +291,7 @@ def main() -> int:
         compare_artifact(
             name=name,
             entry=exports[name],
+            raw_entry=raw_exports.get(name, {}),
             raw_dir=args.raw_dir,
             optimized_dir=args.optimized_dir,
             manifest=manifest,
