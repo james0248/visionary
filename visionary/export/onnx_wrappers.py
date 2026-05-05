@@ -682,7 +682,10 @@ class _CachedTemporalStepAttention(nn.Module):
             keys = jnp.concatenate([k_cache.astype(k.dtype), k], axis=1)
             values = jnp.concatenate([v_cache.astype(v.dtype), v], axis=1)
         cache_positions = jnp.arange(self.context_length + 1, dtype=jnp.int32)
-        valid = cache_positions < (cache_length[0] + 1)
+        current_position = jnp.asarray(self.context_length, dtype=jnp.int32)
+        valid_cache = cache_positions < cache_length[0]
+        valid_current = cache_positions == current_position
+        valid = jnp.logical_or(valid_cache, valid_current)
         mask = valid[None, None, None, :]
 
         if _ATTENTION_EXPORT_LAYOUT == "bnsh":
@@ -1924,6 +1927,76 @@ class _CachedDynamicsModel(nn.Module):
         return final_z, pred_z, entry_k.astype(jnp.float32), entry_v.astype(jnp.float32)
 
     @nn.compact
+    def sample_step_append_context_cache_length_entries(
+        self,
+        sample_noise: jnp.ndarray,
+        context_noise: jnp.ndarray,
+        actions: jnp.ndarray,
+        k_cache: jnp.ndarray,
+        v_cache: jnp.ndarray,
+        cache_length: jnp.ndarray,
+        *,
+        context_tau: float,
+        sample_steps: int,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        context_length = int(self.cfg.context_length)
+        max_sample_position = jnp.asarray([context_length], dtype=jnp.int32)
+        max_context_position = jnp.asarray([context_length - 1], dtype=jnp.int32)
+        sample_position_index = jnp.minimum(cache_length, max_sample_position)
+        context_position_index = jnp.minimum(cache_length, max_context_position)
+        final_z, pred_z = self.sample_step_predict_only(
+            sample_noise,
+            actions,
+            sample_position_index,
+            k_cache,
+            v_cache,
+            cache_length,
+            sample_steps=sample_steps,
+        )
+
+        context_step_level = int(self.cfg.max_step_size) - 1
+        context_step_count = 1 << context_step_level
+        context_signal_level = min(
+            max(int(round(float(context_tau) * context_step_count)), 0),
+            context_step_count - 1,
+        )
+        context_tau_used = jnp.asarray(context_signal_level / context_step_count, dtype=jnp.float32)
+        noised_context_z = context_tau_used * final_z.astype(jnp.float32) + (
+            jnp.asarray(1.0, dtype=jnp.float32) - context_tau_used
+        ) * context_noise.astype(jnp.float32)
+        context_step_levels = jnp.full(
+            final_z.shape[:2],
+            context_step_level,
+            dtype=jnp.int32,
+        )
+        context_signal_levels = jnp.full(
+            final_z.shape[:2],
+            context_signal_level,
+            dtype=jnp.int32,
+        )
+        _, entry_k, entry_v = self.step_entries(
+            noised_context_z,
+            actions,
+            context_step_levels,
+            context_signal_levels,
+            context_position_index,
+            k_cache,
+            v_cache,
+            cache_length,
+        )
+        candidate_cache_length = jnp.minimum(
+            cache_length + 1,
+            jnp.asarray([context_length], dtype=jnp.int32),
+        ).astype(jnp.int32)
+        return (
+            final_z,
+            pred_z,
+            entry_k.astype(jnp.float32),
+            entry_v.astype(jnp.float32),
+            candidate_cache_length,
+        )
+
+    @nn.compact
     def sample_step_append_context_layer_cache(
         self,
         sample_noise: jnp.ndarray,
@@ -2351,4 +2424,38 @@ def apply_dynamics_cached_sample_step_append_context_full_cache_entries(
             context_tau=context_tau,
             sample_steps=sample_steps,
             method=_CachedDynamicsModel.sample_step_append_context_full_cache_entries,
+        )
+
+
+def apply_dynamics_cached_sample_step_append_context_cache_length_entries(
+    variables: Any,
+    cfg: DictConfig,
+    sample_noise: jnp.ndarray,
+    context_noise: jnp.ndarray,
+    actions: jnp.ndarray,
+    k_cache: jnp.ndarray,
+    v_cache: jnp.ndarray,
+    cache_length: jnp.ndarray,
+    *,
+    context_tau: float,
+    sample_steps: int,
+    dtype: Any | None = jnp.float32,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    model = _CachedDynamicsModel(
+        cfg,
+        dtype=dtype or jnp.float32,
+        cache_update="fill",
+    )
+    with export_overrides():
+        return model.apply(
+            variables,
+            sample_noise,
+            context_noise,
+            actions,
+            k_cache,
+            v_cache,
+            cache_length,
+            context_tau=context_tau,
+            sample_steps=sample_steps,
+            method=_CachedDynamicsModel.sample_step_append_context_cache_length_entries,
         )

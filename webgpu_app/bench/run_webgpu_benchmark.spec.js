@@ -33,17 +33,6 @@ async function runBenchmark(page, mode, options = {}) {
   if (process.env.WEBGPU_BENCHMARK_TIMED_RUNS) {
     params.set('timedRuns', process.env.WEBGPU_BENCHMARK_TIMED_RUNS);
   }
-  if (options.profiling) {
-    params.set('profiling', 'true');
-    params.set(
-      'profilingDrainMs',
-      process.env.WEBGPU_BENCHMARK_PROFILING_DRAIN_MS ?? '100',
-    );
-    params.set('profilingTopK', process.env.WEBGPU_BENCHMARK_PROFILING_TOP_K ?? '20');
-  }
-  if (options.profilingRequired) {
-    params.set('profilingRequired', 'true');
-  }
   if (process.env.WEBGPU_BENCHMARK_GRAPH_CAPTURE === '1' || options.graphCapture) {
     params.set('graphCapture', 'true');
   }
@@ -128,33 +117,6 @@ test('webgpu demo streaming benchmark graph capture @graph-capture', async ({ pa
   expect(result.results.find((entry) => entry.mode === 'cached_step').graph_capture).toBe(true);
   expect(
     result.results.find((entry) => entry.mode === 'streaming_frame').timing
-      .steady_state_after_graph_capture_warmup_fps,
+    .steady_state_after_graph_capture_warmup_fps,
   ).toBeGreaterThan(0);
-});
-
-test('webgpu demo profiling benchmark @profile', async ({ page }) => {
-  test.skip(process.env.WEBGPU_BENCHMARK_PROFILING !== '1');
-  const result = await runBenchmark(page, 'streaming', {
-    profiling: true,
-    profilingRequired: process.env.WEBGPU_BENCHMARK_PROFILING_REQUIRED === '1',
-  });
-  await writeResult(result);
-  expect(['passed', 'blocked'], result.message ?? '').toContain(result.status);
-  expect(result.profiling.enabled).toBe(true);
-  if (result.status === 'blocked') return;
-
-  if (result.profiling.available) {
-    expect(result.profiling.attribution.strict_scope_protocol).toBe(true);
-    expect(result.profiling.scopes.length).toBeGreaterThan(0);
-    expect(result.profiling.raw_events.length).toBeGreaterThan(0);
-    expect(result.profiling.summary.by_role.cached_prefill).toBeTruthy();
-    expect(result.profiling.summary.by_role.cached_step).toBeTruthy();
-    expect(result.profiling.summary.by_role.single_frame_decoder).toBeTruthy();
-    expect(result.profiling.attribution.late_event_count).toBe(result.profiling.late_events.length);
-    expect(result.profiling.attribution.unscoped_event_count).toBe(
-      result.profiling.unscoped_events.length,
-    );
-  } else if (process.env.WEBGPU_BENCHMARK_PROFILING_REQUIRED === '1') {
-    throw new Error(result.profiling.reason ?? 'Profiling was required but unavailable');
-  }
 });

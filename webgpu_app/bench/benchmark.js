@@ -8,8 +8,8 @@ ort.env.webgpu ??= {};
 ort.env.webgpu.powerPreference = 'high-performance';
 const DEFAULT_TIMED_RUNS = 64;
 const GRAPH_CAPTURE_STEADY_STATE_DROP = 8;
-const SAMPLE_STEPS = 4;
-const SAMPLE_STEP_LEVEL = 2;
+const SAMPLE_STEPS = 2;
+const SAMPLE_STEP_LEVEL = 1;
 const CONTEXT_STEP_LEVEL = 5;
 const CONTEXT_TAU_EFFECTIVE = 29 / 32;
 const DEFAULT_CONFIG = {
@@ -18,10 +18,6 @@ const DEFAULT_CONFIG = {
   warmupRuns: 1,
   timedRuns: DEFAULT_TIMED_RUNS,
   requireHardwareGpu: true,
-  profiling: false,
-  profilingRequired: false,
-  profilingDrainMs: 100,
-  profilingTopK: 20,
   debugStats: false,
   graphCapture: false,
   preferredLayout: null,
@@ -31,6 +27,15 @@ const DEFAULT_CONFIG = {
 const REQUIRED_ARTIFACTS = {
   prefill: ['breakout_dynamics_prefill_cached_b1_t64', 'breakout_dynamics_prefill_layer_cached_b1_t64'],
   step: [
+    'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2',
+    'breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2',
+    'breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2',
+    'breakout_dynamics_sample_append_context_slide_b1_t1_s2',
+    'breakout_dynamics_sample_append_context_slide_layer_b1_t1_s2',
+    'breakout_dynamics_sample_append_context_b1_t1_s2',
+    'breakout_dynamics_cached_sample_step_slide_b1_t1_s2',
+    'breakout_dynamics_cached_sample_step_b1_t1_s2',
+    'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s4',
     'breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4',
     'breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s4',
     'breakout_dynamics_sample_append_context_slide_b1_t1_s4',
@@ -57,11 +62,6 @@ function parseConfig() {
     timedRuns: Number(params.get('timedRuns') ?? DEFAULT_CONFIG.timedRuns),
     requireHardwareGpu:
       (params.get('requireHardwareGpu') ?? String(DEFAULT_CONFIG.requireHardwareGpu)) === 'true',
-    profiling: (params.get('profiling') ?? String(DEFAULT_CONFIG.profiling)) === 'true',
-    profilingRequired:
-      (params.get('profilingRequired') ?? String(DEFAULT_CONFIG.profilingRequired)) === 'true',
-    profilingDrainMs: Number(params.get('profilingDrainMs') ?? DEFAULT_CONFIG.profilingDrainMs),
-    profilingTopK: Number(params.get('profilingTopK') ?? DEFAULT_CONFIG.profilingTopK),
     debugStats: (params.get('debugStats') ?? String(DEFAULT_CONFIG.debugStats)) === 'true',
     graphCapture: (params.get('graphCapture') ?? String(DEFAULT_CONFIG.graphCapture)) === 'true',
     preferredLayout: params.get('preferredLayout') ?? DEFAULT_CONFIG.preferredLayout,
@@ -296,10 +296,6 @@ function summarizeGraphCaptureSteady(samples, config) {
   return config.graphCapture ? summarizeAfter(samples, GRAPH_CAPTURE_STEADY_STATE_DROP) : null;
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function timeAsync(fn) {
   const start = performance.now();
   const value = await fn();
@@ -437,237 +433,6 @@ function isSoftwareGpu(gpu) {
   return values.includes('swiftshader') || values.includes('software') || gpu.vendor === 'google';
 }
 
-function hasTimestampQuery(gpu) {
-  return (
-    gpu.features.includes('timestamp-query') ||
-    gpu.features.includes('chromium-experimental-timestamp-query-inside-passes')
-  );
-}
-
-function groupProfileEvents(events, keyFn, topK) {
-  const groups = new Map();
-  for (const event of events) {
-    const key = keyFn(event);
-    if (key == null) continue;
-    const entry = groups.get(key) ?? {
-      key,
-      event_count: 0,
-      total_ms: 0,
-      min_ms: Number.POSITIVE_INFINITY,
-      max_ms: 0,
-      examples: [],
-    };
-    entry.event_count += 1;
-    entry.total_ms += event.duration_ms;
-    entry.min_ms = Math.min(entry.min_ms, event.duration_ms);
-    entry.max_ms = Math.max(entry.max_ms, event.duration_ms);
-    if (entry.examples.length < 3) {
-      entry.examples.push({
-        kernelName: event.kernelName,
-        kernelType: event.kernelType,
-        programName: event.programName,
-        inputsMetadata: event.inputsMetadata,
-        outputsMetadata: event.outputsMetadata,
-      });
-    }
-    groups.set(key, entry);
-  }
-  return [...groups.values()]
-    .map((entry) => ({
-      ...entry,
-      mean_ms: entry.event_count === 0 ? 0 : entry.total_ms / entry.event_count,
-      min_ms: entry.min_ms === Number.POSITIVE_INFINITY ? 0 : entry.min_ms,
-    }))
-    .sort((a, b) => b.total_ms - a.total_ms)
-    .slice(0, topK);
-}
-
-function summarizeProfileEvents(events, scopes, topK) {
-  const byRole = {};
-  for (const role of ['cached_prefill', 'cached_step', 'single_frame_decoder']) {
-    const roleEvents = events.filter((event) => event.role === role);
-    byRole[role] = {
-      event_count: roleEvents.length,
-      total_ms: roleEvents.reduce((total, event) => total + event.duration_ms, 0),
-      top_kernels: groupProfileEvents(
-        roleEvents,
-        (event) => `${event.programName}|${event.kernelName}|${event.kernelType}`,
-        topK,
-      ),
-    };
-  }
-  const byScope = scopes.map((scope) => {
-    const scopeEvents = events.filter((event) => event.scope_id === scope.scope_id);
-    return {
-      scope_id: scope.scope_id,
-      run_id: scope.run_id,
-      role: scope.role,
-      phase: scope.phase,
-      frame: scope.frame ?? null,
-      sample: scope.sample ?? null,
-      event_count: scopeEvents.length,
-      total_ms: scopeEvents.reduce((total, event) => total + event.duration_ms, 0),
-      top_kernels: groupProfileEvents(
-        scopeEvents,
-        (event) => `${event.programName}|${event.kernelName}|${event.kernelType}`,
-        topK,
-      ),
-    };
-  });
-  return {
-    by_role: byRole,
-    by_scope: byScope,
-    top_programs: groupProfileEvents(events, (event) => event.programName, topK),
-    top_kernel_names: groupProfileEvents(events, (event) => event.kernelName, topK),
-    top_kernel_types: groupProfileEvents(events, (event) => event.kernelType, topK),
-  };
-}
-
-function createProfilingCollector({ config, gpu }) {
-  const enabled = config.profiling;
-  const available = enabled && hasTimestampQuery(gpu);
-  const reason = enabled
-    ? available
-      ? null
-      : 'WebGPU adapter does not expose timestamp-query'
-    : 'profiling query param is false';
-  const collector = {
-    enabled,
-    required: config.profilingRequired,
-    available,
-    reason,
-    mode: available ? 'default' : null,
-    source: 'ort.env.webgpu.profiling.ondata',
-    time_unit: 'ns',
-    drainMs: config.profilingDrainMs,
-    topK: config.profilingTopK,
-    activeScope: null,
-    nextRunId: 0,
-    hasOpenedScope: false,
-    scopes: [],
-    rawEvents: [],
-    lateEvents: [],
-    unscopedEvents: [],
-    normalize(event, scope) {
-      const durationNs = event.endTime - event.startTime;
-      return {
-        scope_id: scope?.scope_id ?? null,
-        run_id: scope?.run_id ?? null,
-        role: scope?.role ?? null,
-        phase: scope?.phase ?? null,
-        frame: scope?.frame ?? null,
-        sample: scope?.sample ?? null,
-        kernelId: event.kernelId,
-        kernelType: event.kernelType,
-        kernelName: event.kernelName,
-        programName: event.programName,
-        inputsMetadata: event.inputsMetadata,
-        outputsMetadata: event.outputsMetadata,
-        startTime: event.startTime,
-        endTime: event.endTime,
-        duration_ns: durationNs,
-        duration_ms: durationNs / 1_000_000,
-      };
-    },
-    async profileScope(scopeInfo, fn) {
-      if (!this.available) return fn();
-      if (this.activeScope != null) {
-        throw new Error(`Profiling scope overlap: ${this.activeScope.scope_id}`);
-      }
-      const runId = this.nextRunId;
-      this.nextRunId += 1;
-      const scope = {
-        scope_id: [
-          scopeInfo.role,
-          scopeInfo.phase,
-          scopeInfo.frame == null ? null : `frame=${scopeInfo.frame}`,
-          scopeInfo.sample == null ? null : `sample=${scopeInfo.sample}`,
-          `run=${runId}`,
-        ]
-          .filter(Boolean)
-          .join(':'),
-        run_id: runId,
-        role: scopeInfo.role,
-        phase: scopeInfo.phase,
-        frame: scopeInfo.frame ?? null,
-        sample: scopeInfo.sample ?? null,
-        started_at_ms: performance.now(),
-        ended_at_ms: null,
-        drain_ms: this.drainMs,
-        event_count: 0,
-      };
-      this.activeScope = scope;
-      this.hasOpenedScope = true;
-      try {
-        const value = await fn();
-        await delay(this.drainMs);
-        scope.ended_at_ms = performance.now();
-        scope.event_count = this.rawEvents.filter((event) => event.scope_id === scope.scope_id).length;
-        this.scopes.push(scope);
-        return value;
-      } finally {
-        this.activeScope = null;
-      }
-    },
-    result() {
-      const callbackEventsEmitted =
-        !this.enabled || !this.available || this.scopes.length === 0 || this.rawEvents.length > 0;
-      const available = this.available && callbackEventsEmitted;
-      const reason = callbackEventsEmitted
-        ? this.reason
-        : 'ORT WebGPU profiling was configured, but the runtime did not emit profiling callbacks';
-      return {
-        enabled: this.enabled,
-        required: this.required,
-        available,
-        reason,
-        mode: available ? this.mode : null,
-        source: this.source,
-        time_unit: this.time_unit,
-        attribution: {
-          strategy: 'single active scope around timed session.run plus per-phase drain',
-          strict_scope_protocol: true,
-          drain_ms: this.drainMs,
-          scope_count: this.scopes.length,
-          late_event_count: this.lateEvents.length,
-          unscoped_event_count: this.unscopedEvents.length,
-        },
-        scopes: this.scopes,
-        raw_events: this.rawEvents,
-        late_events: this.lateEvents,
-        unscoped_events: this.unscopedEvents,
-        summary: summarizeProfileEvents(this.rawEvents, this.scopes, this.topK),
-      };
-    },
-  };
-
-  ort.env.webgpu ??= {};
-  if (enabled && available) {
-    ort.env.webgpu.profilingMode = 'default';
-    ort.env.webgpu.profiling = {
-      mode: 'default',
-      ondata: (event) => {
-        if (collector.activeScope != null) {
-          collector.rawEvents.push(collector.normalize(event, collector.activeScope));
-        } else if (collector.hasOpenedScope) {
-          collector.lateEvents.push(collector.normalize(event, null));
-        } else {
-          collector.unscopedEvents.push(collector.normalize(event, null));
-        }
-      },
-    };
-  } else {
-    ort.env.webgpu.profilingMode = 'off';
-    ort.env.webgpu.profiling = { mode: 'off' };
-  }
-
-  if (enabled && !available && config.profilingRequired) {
-    throw new Error(reason);
-  }
-
-  return collector;
-}
-
 function externalDataForSpec(spec) {
   return (spec.external_data ?? []).map((entry) => ({
     path: entry.path,
@@ -691,9 +456,13 @@ function resolveDemoSpecs(manifest, config = DEFAULT_CONFIG) {
   const prefillNames = config.prefillArtifact
     ? [config.prefillArtifact, ...REQUIRED_ARTIFACTS.prefill]
     : REQUIRED_ARTIFACTS.prefill;
+  const manifestStepNames = [
+    manifest.demo_generation?.preferred_step_export,
+    manifest.demo_generation?.preferred_steady_state_step_export,
+  ].filter(Boolean);
   const stepNames = config.stepArtifact
     ? [config.stepArtifact, ...REQUIRED_ARTIFACTS.step]
-    : REQUIRED_ARTIFACTS.step;
+    : [...manifestStepNames, ...REQUIRED_ARTIFACTS.step];
   return {
     prefill: findSpec(exportsByName, prefillNames),
     step: findSpec(exportsByName, stepNames),
@@ -863,7 +632,7 @@ function compactManifest(manifest) {
   };
 }
 
-function blockedResult({ config, manifest, gpu, missing, profiler }) {
+function blockedResult({ config, manifest, gpu, missing }) {
   return {
     schema_version: 2,
     status: 'blocked',
@@ -889,7 +658,6 @@ function blockedResult({ config, manifest, gpu, missing, profiler }) {
       graphOptimizationLevel: 'basic',
     },
     gpu,
-    profiling: profiler.result(),
     sampling: samplingConfig(null, config.timedRuns),
     cache_abi: cacheAbi(manifest),
     manifest: compactManifest(manifest),
@@ -1523,7 +1291,7 @@ async function createBenchSession(role, spec, config) {
   };
 }
 
-async function runDemoBenchmark({ config, specs, manifest, profiler }) {
+async function runDemoBenchmark({ config, specs, manifest }) {
   const prefill = await createBenchSession('cached_prefill', specs.prefill, config);
   const step = await createBenchSession('cached_step', specs.step, config);
   const decoder = await createBenchSession('single_frame_decoder', specs.decoder, config);
@@ -1551,7 +1319,7 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
   const zDtype = stepZInputDtype(specs.step);
   const gpuDevice = config.provider === 'webgpu' ? (ort.env.webgpu?.device ?? null) : null;
   const usePreallocatedHotOutputs =
-    gpuDevice && !config.debugStats && !config.profiling && !config.graphCapture;
+    gpuDevice && !config.debugStats && !config.graphCapture;
   const stepCommitFetchArg = usePreallocatedHotOutputs
     ? createPreallocatedFetches(gpuDevice, specs.step, stepCommitFetches)
     : stepCommitFetches;
@@ -1712,13 +1480,7 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
   let latestFrameStats = null;
 
   setStatus('demo benchmark: timed prefill');
-  const timedPrefill = await profiler.profileScope(
-    {
-      role: 'cached_prefill',
-      phase: 'prefill',
-    },
-    () => timeAsync(() => prefill.session.run(prefillFeeds, prefillFetches)),
-  );
+  const timedPrefill = await timeAsync(() => prefill.session.run(prefillFeeds, prefillFetches));
   prefillSamples.push(timedPrefill.elapsedMs);
   disposeCache(persistentCache, graphCapturePinnedTensors);
   persistentCache = cacheFromOutputs(timedPrefill.value, prefillCacheNames);
@@ -1772,18 +1534,8 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
       if (graphCaptureFixedScalars?.positionIndex) {
         feeds.position_index = graphCaptureFixedScalars.positionIndex;
       }
-      const timed = await profiler.profileScope(
-        {
-          role: 'cached_step',
-          phase: 'target_forward',
-          frame,
-          sample,
-        },
-        () => {
-          const fetches = sample === sampleCount - 1 ? stepCommitFetchArg : stepPredFetches;
-          return timeAsync(() => step.session.run(feeds, fetches));
-        },
-      );
+      const fetches = sample === sampleCount - 1 ? stepCommitFetchArg : stepPredFetches;
+      const timed = await timeAsync(() => step.session.run(feeds, fetches));
       predZ = timed.value[predName] ?? null;
       if (!usesFusedSampleStep && !predZ) {
         throw new Error(`Cached step did not return output ${predName}`);
@@ -1821,16 +1573,8 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
       }
       return specs.decoder.inputs?.z ? currentZ : latentFromPredZ(currentZ);
     });
-    const decoderTimed = await profiler.profileScope(
-      {
-        role: 'single_frame_decoder',
-        phase: 'decoder_frame',
-        frame,
-      },
-      () =>
-        timeAsync(() =>
-          decoder.session.run(replaceDecoderLatent(decoderBaseFeeds, packTimed.value), decoderFetchArg),
-        ),
+    const decoderTimed = await timeAsync(() =>
+      decoder.session.run(replaceDecoderLatent(decoderBaseFeeds, packTimed.value), decoderFetchArg),
     );
     const commitTimed = timeSync(() => {
       const oldCache = persistentCache;
@@ -1931,12 +1675,12 @@ async function runDemoBenchmark({ config, specs, manifest, profiler }) {
         entry_cache_update: usesEntryCacheStep ? entryCacheUpdater : null,
         commit_policy: usesFusedSampleStep
           ? 'fused graph reads committed cache for all samples and returns final candidate cache once per frame'
-          : 'discard sample forwards 1-3; commit sample forward 4 once per frame',
+          : 'discard non-final sample forwards; commit the final sample forward once per frame',
         fetch_policy: usesFusedSampleStep
           ? config.debugStats
             ? 'fetch final_z, pred_z, and GPU cache outputs once per frame'
             : 'fetch GPU final_z and GPU cache outputs once per frame; do not fetch pred_z'
-          : 'fetch pred_z for sample forwards 1-3; fetch pred_z and GPU cache outputs for sample forward 4',
+          : 'fetch pred_z for non-final sample forwards; fetch pred_z and GPU cache outputs for the final sample forward',
       },
       output: latestPredStats,
     },
@@ -2000,16 +1744,14 @@ async function runBenchmark() {
       `WebGPU is using a software adapter instead of the hardware GPU: ${JSON.stringify(gpu)}`,
     );
   }
-  const profiler = createProfilingCollector({ config, gpu });
-
   const specs = resolveDemoSpecs(manifest, config);
   const missing = missingDemoArtifacts(specs);
   if (missing.length > 0 || manifest.cache_contract?.status === 'contract_only') {
-    return blockedResult({ config, manifest, gpu, missing, profiler });
+    return blockedResult({ config, manifest, gpu, missing });
   }
   validateDemoSpecs(specs, manifest);
 
-  const results = await runDemoBenchmark({ config, specs, manifest, profiler });
+  const results = await runDemoBenchmark({ config, specs, manifest });
   return {
     schema_version: 2,
     status: 'passed',
@@ -2025,7 +1767,6 @@ async function runBenchmark() {
       graphOptimizationLevel: 'basic',
     },
     gpu,
-    profiling: profiler.result(),
     sampling: samplingConfig(specs, config.timedRuns),
     cache_abi: cacheAbi(manifest),
     manifest: compactManifest(manifest),
@@ -2039,10 +1780,36 @@ function finish(result) {
   console.log(`WEBGPU_BENCHMARK_RESULT ${JSON.stringify(result)}`);
 }
 
+function graphCaptureBlockedResult(error) {
+  const config = parseConfig();
+  const message = error?.message ?? String(error);
+  if (
+    !config.graphCapture ||
+    !message.includes('cannot use the graph capture feature') ||
+    !message.includes('WebGpuExecutionProvider')
+  ) {
+    return null;
+  }
+  return {
+    schema_version: 2,
+    status: 'blocked',
+    streaming_contract_status: 'blocked',
+    benchmark_modes: ['cached_prefill', 'cached_step', 'streaming_frame'],
+    created_at: new Date().toISOString(),
+    user_agent: navigator.userAgent,
+    platform: navigator.platform,
+    config,
+    blocked_reason:
+      'ORT WebGPU graph capture is unavailable because at least one node was not assigned to the WebGPU execution provider.',
+    message,
+    stack: error?.stack ?? null,
+  };
+}
+
 runBenchmark()
   .then(finish)
   .catch((error) => {
-    const result = {
+    const result = graphCaptureBlockedResult(error) ?? {
       schema_version: 2,
       status: 'failed',
       streaming_contract_status: 'failed',

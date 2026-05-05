@@ -10,30 +10,28 @@ Demo benchmark contract:
 - Decode only the newly predicted frame.
 - Benchmark only demo-relevant paths: cached prefill, cached step/sample frame, decoder, full streaming frame.
 
-## Current Baseline
+## Current State
 
-Current assets were generated with `--grouped_gqa_attention`.
+The branch now keeps the fp32 WebGPU path as the maintained demo/export target. The current demo
+uses:
+- `sample_steps=2`.
+- A cache-length entry dynamics step graph:
+  `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2.onnx`.
+- A single-frame tokenizer decode graph: `breakout_tokenizer_decode_z_b1_t1.onnx`.
+- Offline context/cache artifacts generated from the first Breakout episode frames.
 
-Latest browser benchmark:
-- Status: passed.
-- WebGPU hardware: Apple/Metal via Chromium.
-- Cached prefill: needs re-read from `webgpu_app/bench/results/latest.json`.
-- Streaming frame: slower than the previous best baseline.
+The maintained benchmark surface is latency plus graph capture:
+- `bun run benchmark:webgpu` runs the browser streaming benchmark and graph-capture check.
+- `bun run benchmark:webgpu:smoke` runs the smoke subset.
+- Generated results stay under `webgpu_app/bench/results/` and should not be committed.
 
-Known previous best:
-- Fused `cached_sample_step` + `decode_z` baseline was roughly 0.86 s/frame.
-- Native attention export was slower.
-- Grouped GQA with 5D einsum was browser-incompatible.
-- Grouped GQA lowered to matmul is browser-compatible but currently slower.
-
-## Current Hypothesis
-
-The bottleneck is not the CPU time of reshape itself. The major cost is data moving between WebGPU and CPU because ONNX Runtime WebGPU assigns parts of the graph to CPU. The largest suspicious paths are:
-- reshape/transpose/shape plumbing around GQA repeat or grouped-GQA lowering,
-- repeated layout changes in spatiotemporal attention,
-- possible dynamic shape tensors that prevent ORT WebGPU from keeping a graph segment on device.
-
-`jax2onnx` source inspection shows both `jax.lax.reshape` and `jax.numpy.reshape` lowerers try to emit a constant initializer for the reshape target when all dimensions are static. Next step is to inspect the exported ONNX graph and confirm whether our reshape targets are actually constant or dynamic.
+Rejected or inactive paths:
+- `--grouped_gqa_attention` validated in some forms but was slower or browser-incompatible.
+- Native ONNX/ORT attention fusion did not produce a better WebGPU artifact for this model.
+- fp16/bf16 and int quantization experiments either regressed speed, failed validation, or produced
+  unstable outputs. The stable branch target is fp32.
+- ORT WebGPU profiling callbacks/session profiling did not provide reliable actionable attribution,
+  so the maintained workflow keeps timing and graph capture only.
 
 ## Iteration Log
 
@@ -1634,3 +1632,303 @@ Conclusion:
 - The remaining speed target is no longer blocked by host-device cache copies; those are now tiny.
 - The dominant cost is the steady fp32 dynamics graph itself, especially repeated attention and MLP work across four sampler steps plus the context-entry update.
 - Reaching `25 ms` probably requires changing the execution layer, such as specialized ORT WebGPU kernels for the current `Einsum` attention equations or fused packed SwiGLU/projection kernels. Another small ONNX shape rewrite is unlikely to cut the frame time in half.
+
+## 2026-05-04 KST: Two-Step Dynamics Sampler Trial
+
+Goal:
+- Test whether exporting the fused dynamics sampler with `--sample_steps 2` gives a useful speedup.
+- This intentionally changes rollout semantics compared with the accepted `sample_steps=4` demo path, so the validation target is raw two-step ONNX vs optimized two-step ONNX, not equivalence to the four-step sampler.
+
+Command:
+- `uv run python scripts/webgpu/export_dreamer4_onnx.py ... --sample_steps 2 --raw_out_dir webgpu_app/assets_raw_s2 --export_cached --validate --overwrite`
+
+Important naming caveat:
+- The exporter still writes the sample-step artifacts with `_s4` in the filename.
+- The manifest correctly records `sample_steps: 2`.
+- The browser benchmark uses the manifest sample-step metadata for the fused entry-cache graph, so the benchmark result is still a valid two-step timing.
+
+Numerical validation:
+- Raw-vs-optimized ONNX comparison passed for `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4`.
+- Tolerance: `atol=5e-4`, `rtol=5e-4`.
+- `final_z` max abs error: `1.8477440e-6`.
+- `pred_z` compared to optimized `final_z` max abs error: `1.8477440e-6`.
+- `candidate_k_entry` max abs error: `7.3909760e-6`.
+- `candidate_v_entry` max abs error: `5.5991113e-6`.
+- Entry-cache reconstruction passed:
+  - K cache max abs error: `5.0067902e-6`.
+  - V cache max abs error: `3.0994415e-6`.
+  - `final_z` max abs error: `1.1920929e-7`.
+
+Graph size:
+- Nodes: `3543`.
+- `Gemm`: `291`.
+- `Einsum`: `142`.
+- `Softmax`: `71`.
+- `QuickGelu`: `71`.
+- This is much smaller than the four-step accepted graph because the fused sampler now unrolls two model passes instead of four plus the context-entry update.
+
+Browser benchmark:
+- Command: `bun run benchmark:webgpu`.
+- Result: passed smoke, streaming, and graph-capture tests.
+- Sampling config in result:
+  - `sample_steps: 2`.
+  - `sample_step_level: 1`.
+  - `generated_frames: 64`.
+- Cached dynamics step after graph-capture warmup:
+  - Mean: `28.80 ms`.
+  - Median: `32.05 ms`.
+  - P95: `37.52 ms`.
+- Decoder after graph-capture warmup:
+  - Mean: `5.19 ms`.
+  - Median: `5.45 ms`.
+  - P95: `7.93 ms`.
+- Streaming frame after graph-capture warmup:
+  - Mean: `34.64 ms`.
+  - Median: `38.82 ms`.
+  - P95: `43.86 ms`.
+  - Throughput: `28.87 fps`.
+
+Conclusion:
+- The two-step export works and is substantially faster than the four-step export.
+- It does not reach the `25 ms` target, but it moves the browser demo from about `20 fps` to about `29 fps`.
+- The tradeoff is model behavior: this is a lower-quality/fewer-solver-step sampler, so rollout quality must be judged visually or against an offline metric before accepting it as the main demo setting.
+
+## 2026-05-04 KST: INT4 Weight-Only Quantization Trial
+
+Goal:
+- Test whether ORT INT4 weight-only quantization improves the current optimized two-step dynamics step model.
+- Keep the active demo artifact restored to fp32 after the trial because INT4 output drift is not yet acceptable.
+
+Method:
+- ORT INT4 quantization targets constant-weight `MatMul` nodes, but the current optimized graph uses `Gemm` for dense layers.
+- Rewrote all eligible `Gemm` nodes to numerically equivalent `MatMul` plus optional `Add`.
+- The fp32 rewrite was exactly equivalent on CPU for the tested deterministic feeds:
+  - `final_z` max abs error: `0.0`.
+  - `candidate_k_entry` max abs error: `0.0`.
+  - `candidate_v_entry` max abs error: `0.0`.
+- Applied ORT `MatMulNBits` INT4 quantization with symmetric weights and block size 32.
+
+Full INT4 b32 graph:
+- Converted `291` dense matmuls to `MatMulNBits`.
+- File size dropped from about `191 MiB` to about `30.7 MiB`.
+- CPU output drift against fp32:
+  - `final_z` mean abs error: `0.0626`, max abs error: `0.4488`.
+  - `candidate_k_entry` mean abs error: `0.1372`, max abs error: `1.9553`.
+  - `candidate_v_entry` mean abs error: `0.0691`, max abs error: `0.9422`.
+- WebGPU benchmark passed, including graph capture.
+- WebGPU timing after graph-capture warmup:
+  - Dynamics median: `23.33 ms`, p95: `24.00 ms`.
+  - Streaming frame median: `29.13 ms`, p95: `29.63 ms`.
+
+Comparison with fp32 in the same run window:
+- Fp32 active graph size: about `191 MiB` on disk, `200,322,981` bytes over HTTP.
+- Fp32 WebGPU timing after graph-capture warmup:
+  - Dynamics median: `25.99 ms`, p95: `26.43 ms`.
+  - Streaming frame median: `31.90 ms`, p95: `32.60 ms`.
+- Full INT4 b32 speedup:
+  - Dynamics median improved by about `10.2%`.
+  - Streaming median improved by about `8.7%`.
+  - Session creation also improved because the model payload is much smaller.
+
+Rejected variants:
+- Full INT4 b128:
+  - Smaller file, about `26.3 MiB`.
+  - Slower than fp32 in WebGPU: streaming median `37.00 ms`, p95 `37.84 ms`.
+  - Worse output drift than b32.
+- Selective INT4 b32 for qkv plus SwiGLU projections:
+  - File size about `56.3 MiB`.
+  - Streaming median `31.32 ms`, p95 `32.00 ms`, barely faster than fp32.
+  - Output drift was still far above the normal raw-vs-optimized tolerance.
+
+Conclusion:
+- INT4 b32 does speed up ORT WebGPU, but only modestly for this graph.
+- The current full INT4 model is not numerically safe as a replacement for the fp32 demo model.
+- The useful takeaway is that `MatMulNBits` runs on ORT WebGPU and graph capture accepts it; a production INT4 path would need quantization-aware validation or a more selective policy with a clear quality metric.
+
+## 2026-05-04 KST: INT8 Quantization Trial
+
+Goal:
+- Test whether INT8 is a better speed/quality tradeoff than INT4 for the optimized two-step dynamics step model.
+- Keep the active demo artifact restored to fp32 after the trial.
+
+Dynamic INT8:
+- ORT dynamic quantization on the original `Gemm` graph barely changed the graph:
+  - Most dense nodes stayed as `Gemm`.
+  - File size stayed about `191 MiB`.
+  - CPU outputs were exactly equal for the tested feeds because the hot dense path was effectively not quantized.
+- ORT dynamic quantization on the `Gemm -> MatMul` rewrite produced:
+  - `291` `MatMulInteger` nodes.
+  - `290` `DynamicQuantizeLinear` nodes.
+  - File size about `49.7 MiB`.
+- CPU accuracy was better than INT4 for signed INT8 but still far outside the normal raw-vs-optimized tolerance:
+  - `final_z` mean abs error: `0.0185`, max abs error: `0.1560`.
+  - `candidate_k_entry` mean abs error: `0.0413`, max abs error: `2.6112`.
+  - `candidate_v_entry` mean abs error: `0.0216`, max abs error: `0.6397`.
+- Browser benchmark with `bun run benchmark:webgpu`:
+  - Smoke and normal streaming tests passed.
+  - Graph capture failed because not all compute nodes were assigned to WebGPU.
+  - This path is not viable for the production browser hot path.
+
+Weight-only INT8 with `DequantizeLinear`:
+- Manually quantized constant matmul weights to signed int8, per output channel.
+- Inserted `291` `DequantizeLinear` nodes before fp32 `MatMul`.
+- File size dropped from about `191 MiB` to about `49.2 MiB`.
+- CPU accuracy:
+  - `final_z` mean abs error: `0.0133`, max abs error: `0.1000`.
+  - `candidate_k_entry` mean abs error: `0.0253`, max abs error: `2.0496`.
+  - `candidate_v_entry` mean abs error: `0.0133`, max abs error: `0.4941`.
+- Browser benchmark passed, including graph capture.
+- WebGPU timing after graph-capture warmup:
+  - Dynamics median: `34.28 ms`, p95: `34.80 ms`.
+  - Streaming frame median: `38.43 ms`, p95: `38.86 ms`.
+- This is slower than fp32 because the graph still does fp32 matmul and now also dequantizes weights in the runtime graph.
+
+Comparison with fp32 baseline:
+- Fp32 dynamics median: `25.99 ms`, p95 `26.43 ms`.
+- Fp32 streaming median: `31.90 ms`, p95 `32.60 ms`.
+- Weight-DQ INT8 is smaller on disk but slower at runtime.
+
+Conclusion:
+- INT8 is not useful for the current ORT WebGPU demo graph.
+- Dynamic INT8 uses unsupported/non-WebGPU-partitioned operators for graph capture.
+- Weight-DQ INT8 stays WebGPU compatible but adds dequantization work and regresses latency.
+- INT4 b32 remains the only quantized variant that improved WebGPU runtime, but it is not accurate enough yet.
+
+## 2026-05-04 KST: FP16 Weight-Only Storage With FP32 Compute
+
+Goal:
+- Test a safer weight-only compression path than INT8/INT4.
+- Store dense weights as fp16, cast them back to fp32 in the ONNX graph, and keep activations plus matmul/Gemm compute in fp32.
+- Keep the active demo artifact restored to fp32 after the trial.
+
+Method:
+- Converted the `291` dense-layer weights to fp16 initializers.
+- Inserted one fp16-to-fp32 `Cast` per unique dense weight initializer:
+  - `194` unique dense weights.
+  - Direct `Gemm` variant: `291` `Gemm`, `194` `Cast`.
+  - `Gemm -> MatMul` variant: `291` `MatMul`, `194` `Cast`.
+- Both variants passed ONNX Runtime CPU execution and ORT WebGPU graph capture.
+
+Size:
+- Fp32 active graph: about `191 MiB` on disk, `200,322,981` bytes over HTTP.
+- FP16-weight direct `Gemm`: about `96.0 MiB` on disk, `100,705,698` bytes over HTTP.
+- FP16-weight `MatMul`: about `96.0 MiB` on disk, `100,690,535` bytes over HTTP.
+
+Numerical drift against fp32:
+- Both variants had the same CPU drift for the deterministic validation feed.
+- `final_z`:
+  - Mean abs error: `1.3271e-4`.
+  - P95 abs error: `3.4848e-4`.
+  - Max abs error: `8.2517e-4`.
+- `candidate_k_entry`:
+  - Mean abs error: `3.0646e-4`.
+  - P95 abs error: `8.5173e-4`.
+  - Max abs error: `6.9528e-3`.
+- `candidate_v_entry`:
+  - Mean abs error: `1.2516e-4`.
+  - P95 abs error: `4.0520e-4`.
+  - Max abs error: `3.2272e-3`.
+
+WebGPU timing after graph-capture warmup:
+- Fp32:
+  - Dynamics median: `25.99 ms`, p95 `26.43 ms`.
+  - Streaming median: `31.90 ms`, p95 `32.60 ms`.
+- FP16-weight direct `Gemm`:
+  - Dynamics median: `25.95 ms`, p95 `26.39 ms`.
+  - Streaming median: `32.04 ms`, p95 `32.55 ms`.
+- FP16-weight `MatMul`:
+  - Dynamics median: `26.19 ms`, p95 `26.69 ms`.
+  - Streaming median: `32.22 ms`, p95 `32.81 ms`.
+
+Conclusion:
+- FP16 weight-only storage is the best compression-only option tested so far.
+- It cuts the dynamics step model payload roughly in half and preserves graph-capture compatibility.
+- It does not improve hot-path latency because the graph still computes in fp32 and the weight casts do not reduce the fp32 matmul/Gemm work.
+- The direct `Gemm` variant is preferable to the `MatMul` variant if we use this path, because it preserves the current graph structure and is slightly faster.
+- Accuracy is much better than INT8/INT4, but it is not exactly equivalent to fp32 and exceeds the previous strict `5e-4` max-error tolerance on cache entries.
+
+## 2026-05-04 KST: Q4F16 MatMulNBits Trial
+
+Goal:
+- Test the browser-LLM style path: packed INT4 weights through `MatMulNBits`, fp16 activations inside the dense kernels, and fp32 boundaries around the rest of the graph.
+- Keep the active demo artifact restored to fp32 after the trial unless numerical validation is acceptable.
+
+Method:
+- Started from the accepted fp32 two-step dynamics step artifact:
+  - `webgpu_app/assets/breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4.onnx`.
+- Rewrote `291` `Gemm` nodes into equivalent `MatMul` plus optional `Add` nodes.
+- Applied ORT `MatMulNBits` INT4 quantization with:
+  - bits: `4`.
+  - block size: `32`.
+  - symmetric weights: enabled.
+- Inserted fp16 activation/output casts around every `MatMulNBits`:
+  - `Cast(fp32 -> fp16)` before the `MatMulNBits` input activation.
+  - `Cast(fp16 -> fp32)` after the `MatMulNBits` output.
+- Converted `194` scale initializers from fp32 to fp16 so WebGPU shader operands use the same fp16 data type inside `MatMulNBits`.
+
+Graph size:
+- Accepted fp32 step graph: about `191 MiB`.
+- Full INT4 fp32-activation graph: `32,195,648` bytes.
+- Q4F16 graph: `29,202,453` bytes.
+
+CPU numerical validation against the accepted fp32 graph:
+- Result: failed both `5e-4` and `1e-2` allclose checks.
+- `final_z`:
+  - Mean abs error: `0.0613`.
+  - P95 abs error: `0.1550`.
+  - Max abs error: `0.7848`.
+- `candidate_k_entry`:
+  - Mean abs error: `0.1344`.
+  - P95 abs error: `0.4033`.
+  - Max abs error: `2.7824`.
+- `candidate_v_entry`:
+  - Mean abs error: `0.0678`.
+  - P95 abs error: `0.2429`.
+  - Max abs error: `2.2024`.
+
+Browser benchmark:
+- Attempted the normal benchmark command: `bun run benchmark:webgpu`.
+- The q4f16 benchmark did not reach model loading. Chromium crashed during startup with Crashpad permission errors before the page or ORT session was created.
+- A fp32 run immediately before the q4f16 swap passed, so the current accepted fp32 artifact was restored and `latest.json` was restored to the fp32 result.
+
+Conclusion:
+- Q4F16 does not solve the accuracy problem. Its output drift is essentially in the same range as the earlier full INT4 b32 graph, meaning INT4 weight error dominates more than activation dtype.
+- Since numerical validation fails by a large margin, this is not a candidate replacement for the demo graph even if a later browser run shows better latency.
+- The useful result is that the expected q4f16 transformation is mechanically possible and shrinks the graph slightly more than fp32-activation INT4, but accuracy remains the blocker.
+
+## 2026-05-05 KST: Cache-Length Entry Graph For 4-Frame Demo Prefix
+
+Goal:
+- Replace the browser demo's two dynamics sessions with one entry-cache graph that accepts the logical `cache_length`.
+- Keep the physical K/V cache at the fixed 64-slot shape, but only attend to committed slots plus the current generated token.
+- Use the first 4 real frames as prefix, then fill slots 4 through 63 before switching to slide/rebase updates.
+
+Changes:
+- Added a cached append-context entry export:
+  - `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s4.onnx`.
+  - Inputs: `sample_noise`, `context_noise`, `actions`, `k_cache`, `v_cache`, `cache_length`.
+  - Outputs: `final_z`, `candidate_k_entry`, `candidate_v_entry`, `candidate_cache_length`.
+- Fixed the cached temporal attention mask for partial caches:
+  - Old mask allowed indices `< cache_length + 1`, which accidentally masked out the appended current token because the current K/V is concatenated at the fixed final slot.
+  - New mask allows committed cache slots `< cache_length` plus the appended current slot at `context_length`.
+- Updated the demo cache updater:
+  - Fill mode writes the one returned K/V entry into `slot = cache_length`.
+  - Slide mode shifts/rebases once `cache_length == 64`.
+- Regenerated `breakout_demo_initial_cache.*` from the first 4 prefix frames. The manifest reports `cache_length = 4`.
+
+Validation:
+- Export-time ONNX validation passed for the new graph.
+- CPU comparison at `cache_length = 4` against the full candidate-cache append graph:
+  - `candidate_cache_length`: `[5]` vs `[5]`.
+  - `final_z` compared to the rewritten graph's `pred_z` alias: max abs `0.0`.
+  - `candidate_k_entry` vs old graph slot 4: max abs `4.1127e-6`.
+  - `candidate_v_entry` vs old graph slot 4: max abs `4.8280e-6`.
+- Demo smoke:
+  - `bun run demo:webgpu:smoke`: passed, 2 tests.
+- Benchmark:
+  - `bun run benchmark:webgpu`: passed after graph capture was classified as blocked when ORT reports that not all nodes partitioned to WebGPU.
+  - The graph-capture result is blocked for this artifact, not a numerical or normal streaming failure.
+
+Conclusion:
+- This is the correct cache ABI for the public demo: one fixed GPU cache, a logical length scalar, and per-frame K/V entry updates.
+- It removes the need to download and instantiate both the fill full-cache graph and the steady-state entry graph for the website.

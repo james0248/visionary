@@ -37,8 +37,10 @@ The benchmark only runs when these cached demo artifacts are present in
 `webgpu_app/assets/breakout_onnx_manifest.json`:
 
 - `breakout_dynamics_prefill_cached_b1_t64.onnx`
-- `breakout_dynamics_step_cached_b1_t1.onnx`
-- `breakout_tokenizer_decoder_b1_t1.onnx` or `breakout_decoder_b1_t1.onnx`
+- `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2.onnx`
+- `breakout_tokenizer_decode_z_b1_t1.onnx`
+- `breakout_demo_context.*`
+- `breakout_demo_initial_cache.*`
 
 If those artifacts are missing, the benchmark writes a structured `blocked` result instead of running
 the old full-window graphs.
@@ -53,6 +55,7 @@ uv run python scripts/webgpu/export_dreamer4_onnx.py \
   --dynamics_step 1000000 \
   --out_dir webgpu_app/assets \
   --seq_len 64 \
+  --sample_steps 2 \
   --export_cached \
   --validate \
   --overwrite
@@ -63,20 +66,17 @@ uv run python scripts/webgpu/export_dreamer4_onnx.py \
 The benchmark models one generated demo frame as:
 
 ```text
-cached dynamics target forward 1
-cached dynamics target forward 2
-cached dynamics target forward 3
-cached dynamics target forward 4
-commit only the final cache
-reshape/copy predicted z for the decoder
+run the cache-length entry dynamics step artifact
+update the rolling K/V cache from the returned entry tensors
+copy predicted z to the decoder input
 decode the accepted single frame
 ```
 
 Sampling constants are recorded in the result:
 
 ```text
-sample_steps = 4
-sample_step_level = 2
+sample_steps = 2
+sample_step_level = 1
 context_step_level = 5
 context_tau_effective = 29 / 32
 ```
@@ -86,74 +86,24 @@ context_tau_effective = 29 / 32
 `results/latest.json` uses `schema_version: 2` and reports:
 
 - `cached_prefill`: context cache creation time
-- `cached_step`: cached dynamics target-forward time and four-forward frame time
+- `cached_step`: cached dynamics target-forward time and full dynamics frame time
 - `streaming_frame`: full steady-state generated-frame time and FPS
 
 Fetch time, session creation time, warmup, and browser metadata are reported separately from
 steady-state frame timing.
 
-## Profiling
+## Graph Capture
 
-WebGPU kernel profiling is opt-in because it adds timestamp-query overhead and should not be used
-as the latency baseline.
-
-```bash
-bun run benchmark:webgpu:profile
-```
-
-To require profiling support and fail if the browser/GPU cannot provide timestamp queries:
+The regular benchmark also includes a graph-capture test case:
 
 ```bash
-WEBGPU_BENCHMARK_PROFILING_REQUIRED=1 bun run benchmark:webgpu:profile
+bun run benchmark:webgpu
 ```
 
-To wait longer for async profiling callbacks after each profiled inference:
-
-```bash
-WEBGPU_BENCHMARK_PROFILING_DRAIN_MS=200 bun run benchmark:webgpu:profile
-```
-
-Profiling data is written to `webgpu_app/bench/results/latest.json` under `profiling`.
-If the browser and GPU expose timestamp queries but ONNX Runtime Web does not emit callback data,
-the benchmark still writes the latency result and reports `profiling.available: false` with a
-reason. In that case there are no kernel-level rows to inspect.
-
-To check whether the installed ONNX Runtime Web package can emit profiling data at all:
-
-```bash
-bun run benchmark:webgpu:profile:diagnostic
-```
-
-This writes:
-
-- `webgpu_app/bench/results/profile_diagnostic_import_matrix.json`
-- `webgpu_app/bench/results/profile_diagnostic_latest.json`
-- a timestamped copy of the previous `latest.json` as `profile_baseline_*.json`
-
-The diagnostic tests browser-loadable WebGPU import variants and records both `ondata` callback
-events and console fallback rows containing `[profiling]`.
-
-To also test ORT session profiling with `enableProfiling` / `endProfiling()` for WebGPU and WASM:
-
-```bash
-bun run benchmark:webgpu:profile:session-diagnostic
-```
-
-To summarize a profiling result:
-
-```bash
-bun run benchmark:webgpu:profile:summary
-```
-
-Start with:
-
-- `profiling.summary.by_role.cached_step.top_kernels`
-- `profiling.summary.by_role.cached_prefill.top_kernels`
-- `profiling.summary.by_role.single_frame_decoder.top_kernels`
-
-If `profiling.attribution.late_event_count` is high, rerun with a larger
-`WEBGPU_BENCHMARK_PROFILING_DRAIN_MS`. Late and unscoped events are reported separately and are not
-assigned to the next profiling scope.
+When graph capture succeeds, `results/latest.json` records graph-capture warmup-adjusted timings
+under the `*_after_graph_capture_warmup` fields. If ONNX Runtime rejects graph capture because part
+of the graph cannot be assigned to WebGPU, the test records a structured `blocked` result instead of
+failing the whole benchmark run.
 
 ## Baselines
 

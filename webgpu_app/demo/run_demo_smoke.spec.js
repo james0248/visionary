@@ -1,7 +1,23 @@
 import { expect, test } from '@playwright/test';
 
+const demoPath = `/webgpu_app/demo/index.html${process.env.DEMO_QUERY ?? ''}`;
+
+test('world model demo loads its stylesheet @demo', async ({ page }) => {
+  await page.goto(demoPath);
+  await expect
+    .poll(async () =>
+      page.locator('.shell').evaluate((element) => getComputedStyle(element).display),
+    )
+    .toBe('grid');
+  await expect
+    .poll(async () =>
+      page.locator('.machine').evaluate((element) => getComputedStyle(element).borderTopStyle),
+    )
+    .toBe('solid');
+});
+
 test('world model demo starts and renders a frame @demo', async ({ page }) => {
-  await page.goto('/webgpu_app/demo/index.html');
+  await page.goto(demoPath);
   await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
   await page.locator('#start').click();
   await expect
@@ -13,7 +29,7 @@ test('world model demo starts and renders a frame @demo', async ({ page }) => {
 });
 
 test('world model demo changes the canvas over generated frames @demo', async ({ page }) => {
-  await page.goto('/webgpu_app/demo/index.html');
+  await page.goto(demoPath);
   await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
   await page.locator('#start').click();
 

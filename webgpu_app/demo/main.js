@@ -1,12 +1,34 @@
-import * as ort from '/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs';
 import { NormalNoiseGenerator } from './jax_noise.js';
 
-const ASSET_DIR = '/webgpu_app/assets';
+const params = new URLSearchParams(window.location.search);
+const scriptElement = document.getElementById('visionary-demo-main');
+const globalConfig = window.VISIONARY_DEMO_CONFIG ?? {};
+
+function configValue(name, fallback) {
+  return params.get(name) ?? scriptElement?.dataset?.[name] ?? globalConfig[name] ?? fallback;
+}
+
+function resolveUrl(value) {
+  return new URL(value, window.location.href).href;
+}
+
+function resolveBaseUrl(value) {
+  return resolveUrl(value).replace(/\/$/, '');
+}
+
+const ASSET_DIR = resolveBaseUrl(configValue('assetBase', '/webgpu_app/assets'));
 const MANIFEST_URL = `${ASSET_DIR}/breakout_onnx_manifest.json`;
 const CONTEXT_URL = `${ASSET_DIR}/breakout_demo_context.json`;
+const INITIAL_CACHE_URL = `${ASSET_DIR}/breakout_demo_initial_cache.json`;
+const DEFAULT_TARGET_FPS = 0;
+const DEFAULT_ORT_MODULE = `/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs`;
+const DEFAULT_ORT_WASM_BASE = `/node_modules/onnxruntime-web/dist/`;
+const ort = await import(resolveUrl(configValue('ortModule', DEFAULT_ORT_MODULE)));
 
 ort.env.wasm ??= {};
-ort.env.wasm.wasmPaths = '/node_modules/onnxruntime-web/dist/';
+ort.env.wasm.wasmPaths = resolveUrl(configValue('ortWasmBase', DEFAULT_ORT_WASM_BASE));
+ort.env.webgpu ??= {};
+ort.env.webgpu.powerPreference = 'high-performance';
 
 const ACTIONS = {
   noop: 0,
@@ -23,7 +45,6 @@ const ACTION_LABELS = {
 };
 
 const CONTEXT_TENSOR_SIZE = 32 * 32;
-const CACHE_SHAPE = [6, 1, 36, 64, 2, 64];
 const float32Scratch = new Float32Array(1);
 const uint32Scratch = new Uint32Array(float32Scratch.buffer);
 
@@ -37,6 +58,12 @@ const elements = {
   frameCount: document.getElementById('frame-count'),
   latency: document.getElementById('latency'),
   context: document.getElementById('context'),
+  backend: document.getElementById('backend'),
+  payload: document.getElementById('payload'),
+  targetFps: document.getElementById('target-fps'),
+  loadFill: document.getElementById('load-progress-fill'),
+  loadText: document.getElementById('load-progress-text'),
+  loadLog: document.getElementById('load-log'),
   keys: {
     noop: document.getElementById('key-noop'),
     fire: document.getElementById('key-fire'),
@@ -54,9 +81,55 @@ let frameCount = 0;
 let currentAction = ACTIONS.noop;
 let lastFrameTime = performance.now();
 let noiseGenerator = new NormalNoiseGenerator(0);
+let targetFps = parseTargetFps(configValue('fps', DEFAULT_TARGET_FPS));
+const throttleMbps = Number(params.get('throttleMbps') ?? 0);
+let loadEvents = [];
+
+function parseTargetFps(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_TARGET_FPS;
+}
 
 function setStatus(message) {
   elements.status.textContent = message;
+}
+
+function formatBytes(bytes) {
+  if (bytes == null) return '';
+  const mib = bytes / (1024 * 1024);
+  return `${mib.toFixed(mib >= 100 ? 0 : 1)} MiB`;
+}
+
+function formatMs(ms) {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms.toFixed(0)} ms`;
+}
+
+function recordLoadEvent(label, elapsedMs, bytes = null) {
+  loadEvents = [...loadEvents, { label, elapsedMs, bytes }];
+  const totalBytes = loadEvents.reduce((total, event) => total + (event.bytes ?? 0), 0);
+  elements.payload.textContent = formatBytes(totalBytes);
+  elements.loadLog.replaceChildren(
+    ...loadEvents.map((event) => {
+      const item = document.createElement('li');
+      const size = event.bytes == null ? '' : ` · ${formatBytes(event.bytes)}`;
+      item.textContent = `${event.label}: ${formatMs(event.elapsedMs)}${size}`;
+      return item;
+    }),
+  );
+}
+
+function updateLoadProgress(label, received, total) {
+  if (!elements.loadFill || !elements.loadText) return;
+  const percent = total > 0 ? Math.min(100, (received / total) * 100) : 0;
+  elements.loadFill.style.width = `${percent}%`;
+  const size = total > 0 ? `${formatBytes(received)} / ${formatBytes(total)}` : formatBytes(received);
+  elements.loadText.textContent = `${label} ${size}`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function dtypeArray(dtype) {
@@ -64,6 +137,43 @@ function dtypeArray(dtype) {
   if (dtype === 'float16') return Uint16Array;
   if (dtype === 'int32') return Int32Array;
   throw new Error(`Unsupported artifact dtype ${dtype}`);
+}
+
+function mul(shape) {
+  return shape.reduce((total, value) => total * value, 1);
+}
+
+function tensorByteLength(dtype, shape) {
+  const bytesPerElement =
+    dtype === 'float32' || dtype === 'int32' || dtype === 'uint32'
+      ? 4
+      : dtype === 'float16'
+        ? 2
+        : dtype === 'uint8'
+          ? 1
+          : 8;
+  return mul(shape) * bytesPerElement;
+}
+
+function tensorDataBytes(tensor) {
+  const data = tensor.data;
+  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+}
+
+function createGpuTensorFromCpu(device, tensor) {
+  const byteLength = Math.max(16, tensorByteLength(tensor.type, tensor.dims));
+  const buffer = device.createBuffer({
+    size: byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+    mappedAtCreation: true,
+  });
+  new Uint8Array(buffer.getMappedRange()).set(tensorDataBytes(tensor));
+  buffer.unmap();
+  return ort.Tensor.fromGpuBuffer(buffer, {
+    dataType: tensor.type,
+    dims: tensor.dims,
+    dispose: () => buffer.destroy(),
+  });
 }
 
 function float32ToFloat16Bits(value) {
@@ -128,18 +238,58 @@ function makeFloatTensor(dtype, values, shape) {
   return new ort.Tensor('float32', new Float32Array(values), shape);
 }
 
-async function fetchJson(url) {
+async function fetchBytes(url, label) {
+  const started = performance.now();
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.status}`);
-  return response.json();
+  const total = Number(response.headers.get('content-length') ?? 0);
+  let received = 0;
+
+  if (!response.body) {
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    recordLoadEvent(label, performance.now() - started, bytes.byteLength);
+    updateLoadProgress(label, bytes.byteLength, bytes.byteLength);
+    return bytes;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    updateLoadProgress(label, received, total);
+    if (throttleMbps > 0) {
+      const targetElapsed = (received * 8 * 1000) / (throttleMbps * 1_000_000);
+      const actualElapsed = performance.now() - started;
+      if (targetElapsed > actualElapsed) {
+        await delay(targetElapsed - actualElapsed);
+      }
+    }
+  }
+
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  recordLoadEvent(label, performance.now() - started, received);
+  updateLoadProgress(label, received, total || received);
+  return bytes;
 }
 
-async function fetchTensorFromArtifact(baseUrl, spec) {
-  const response = await fetch(`${baseUrl}/${spec.path}`);
-  if (!response.ok) throw new Error(`Failed to fetch ${spec.path}: ${response.status}`);
-  const buffer = await response.arrayBuffer();
+async function fetchJson(url, label) {
+  const bytes = await fetchBytes(url, label);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+async function fetchTensorFromArtifact(baseUrl, spec, label) {
+  const bytes = await fetchBytes(`${baseUrl}/${spec.path}`, label);
   const ArrayType = dtypeArray(spec.dtype);
-  return new ort.Tensor(spec.dtype, new ArrayType(buffer), spec.shape);
+  return new ort.Tensor(spec.dtype, new ArrayType(bytes.buffer), spec.shape);
 }
 
 function findExport(manifest, name) {
@@ -148,61 +298,31 @@ function findExport(manifest, name) {
   return entry;
 }
 
-function findFirstExport(manifest, names) {
-  for (const name of names) {
-    const entry = manifest.exports.find((item) => item.name === name);
-    if (entry) return entry;
-  }
-  throw new Error(`Missing exports ${names.join(', ')}`);
-}
-
 function outputName(spec, preferred) {
   if (spec.outputs?.[preferred]) return preferred;
   return Object.keys(spec.outputs ?? {})[0];
 }
 
-function optionalOutputName(spec, preferred) {
-  return spec.outputs?.[preferred] ? preferred : null;
-}
-
-async function createSession(spec, options = {}) {
-  const executionProviders = options.executionProviders ?? [{ name: 'webgpu' }];
-  const sessionOptions = { ...options };
-  delete sessionOptions.executionProviders;
-  return ort.InferenceSession.create(`${ASSET_DIR}/${spec.path}`, {
-    executionProviders,
-    graphOptimizationLevel: 'all',
+async function createSession(spec, label, modelBytes, backend, options = {}) {
+  const started = performance.now();
+  setStatus(`Compiling ${label} · ${backend}`);
+  const backendOptions = backend === 'webgpu' ? options : {};
+  const session = await ort.InferenceSession.create(modelBytes, {
+    executionProviders: backend === 'webgpu' ? [{ name: 'webgpu' }] : ['wasm'],
+    graphOptimizationLevel: 'basic',
     externalData: (spec.external_data ?? []).map((entry) => ({
       path: entry.path,
       data: `${ASSET_DIR}/${entry.path}`,
     })),
-    ...sessionOptions,
+    ...backendOptions,
   });
+  recordLoadEvent(`${label} ${backend} compile`, performance.now() - started);
+  return session;
 }
 
 function randomNormalTensor(shape, dtype = 'float32') {
   const size = shape.reduce((total, value) => total * value, 1);
   return makeFloatTensor(dtype, noiseGenerator.tensorData(size), shape);
-}
-
-function zeroTensor(dtype, shape) {
-  const size = shape.reduce((total, value) => total * value, 1);
-  const ArrayType = dtypeArray(dtype);
-  return new ort.Tensor(dtype, new ArrayType(size), shape);
-}
-
-function scalarTensor(value, shape = [1, 1]) {
-  return new ort.Tensor('int32', new Int32Array([value]), shape);
-}
-
-function contextFrameTensor(tensor, frameIndex, dtype = 'float32') {
-  const start = frameIndex * CONTEXT_TENSOR_SIZE;
-  const end = start + CONTEXT_TENSOR_SIZE;
-  return makeFloatTensor(dtype, tensor.data.slice(start, end), [1, 1, 32, 32]);
-}
-
-function contextScalarTensor(tensor, frameIndex) {
-  return new ort.Tensor('int32', new Int32Array([tensor.data[frameIndex]]), [1, 1]);
 }
 
 function disposeGpuTensor(tensor) {
@@ -211,8 +331,18 @@ function disposeGpuTensor(tensor) {
   }
 }
 
+function disposeCache(cache) {
+  disposeGpuTensor(cache?.k);
+  disposeGpuTensor(cache?.v);
+}
+
+function contextFrameTensor(tensor, frameIndex, dtype = 'float32') {
+  const start = frameIndex * CONTEXT_TENSOR_SIZE;
+  const end = start + CONTEXT_TENSOR_SIZE;
+  return makeFloatTensor(dtype, tensor.data.slice(start, end), [1, 1, 32, 32]);
+}
+
 function patchesToImageData(patchesTensor, preprocessor) {
-  const patches = patchesTensor.data;
   const width = preprocessor.image_width;
   const height = preprocessor.image_height;
   const patchSize = preprocessor.patch_size;
@@ -232,7 +362,7 @@ function patchesToImageData(patchesTensor, preprocessor) {
         for (let ix = 0; ix < patchSize; ix += 1) {
           const x = px * patchSize + ix - preprocessor.pad_width[1];
           if (x < 0 || x >= width) continue;
-          const source = patchOffset + ((iy * patchSize + ix) * channels);
+          const source = patchOffset + (iy * patchSize + ix) * channels;
           const target = (y * width + x) * 4;
           const r = floatTensorValue(patchesTensor, source);
           const g = floatTensorValue(patchesTensor, source + 1);
@@ -248,244 +378,642 @@ function patchesToImageData(patchesTensor, preprocessor) {
   return image;
 }
 
-function tensorStats(tensor) {
-  const values = tensor.data;
-  let min = Number.POSITIVE_INFINITY;
-  let max = Number.NEGATIVE_INFINITY;
-  let sum = 0;
-  let finite = 0;
-  let nonzero = 0;
-
-  for (let index = 0; index < values.length; index += 1) {
-    const value = floatTensorValue(tensor, index);
-    if (!Number.isFinite(value)) continue;
-    min = Math.min(min, value);
-    max = Math.max(max, value);
-    sum += value;
-    finite += 1;
-    if (value !== 0) nonzero += 1;
+function cacheContractFromSpec(spec, manifest) {
+  const cacheSpec = spec.inputs?.k_cache;
+  const entrySpec = spec.outputs?.candidate_k_entry;
+  if (!cacheSpec || !entrySpec) {
+    throw new Error('Entry-cache update requires k_cache input and candidate_k_entry output specs.');
   }
-
+  if (cacheSpec.dtype !== 'float32' || entrySpec.dtype !== 'float32') {
+    throw new Error('Entry-cache update currently supports float32 caches only.');
+  }
+  const cacheLayout =
+    manifest.cache_contract?.tensors?.k_cache?.layout ?? 'layer_batch_token_time_head_dim';
+  let layers;
+  let batch;
+  let tokens;
+  let contextLength;
+  let heads;
+  let headDim;
+  if (cacheLayout === 'layer_batch_token_head_time_dim') {
+    [layers, batch, tokens, heads, contextLength, headDim] = cacheSpec.shape;
+  } else {
+    [layers, batch, tokens, contextLength, heads, headDim] = cacheSpec.shape;
+  }
   return {
-    type: tensor.type,
-    dims: tensor.dims,
-    min,
-    max,
-    mean: finite ? sum / finite : Number.NaN,
-    finite,
-    nonzero,
+    cacheLayout,
+    cacheSpec,
+    contextLength,
+    batch,
+    entrySpec,
+    halfHeadDim: headDim / 2,
+    headDim,
+    heads,
+    layers,
+    tokens,
   };
 }
 
-function canvasStats() {
-  const data = ctx.getImageData(0, 0, elements.canvas.width, elements.canvas.height).data;
-  let min = 255;
-  let max = 0;
-  let sum = 0;
-  let nonzero = 0;
-  for (let index = 0; index < data.length; index += 4) {
-    const value = data[index] + data[index + 1] + data[index + 2];
-    min = Math.min(min, value);
-    max = Math.max(max, value);
-    sum += value;
-    if (value !== 0) nonzero += 1;
+function createEntryCacheUpdater(device, spec, manifest) {
+  const {
+    cacheLayout,
+    contextLength,
+    batch,
+    halfHeadDim,
+    headDim,
+    heads,
+    layers,
+    tokens,
+  } = cacheContractFromSpec(spec, manifest);
+  const ropeBase = Number(manifest.dynamics?.rope_base ?? manifest.dynamics?.base ?? 10000);
+  const workgroupSize = 64;
+  const makeReadonlyBuffer = (label, values) => {
+    const buffer = device.createBuffer({
+      label,
+      size: Math.max(16, values.byteLength),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    new Uint8Array(buffer.getMappedRange()).set(new Uint8Array(values.buffer));
+    buffer.unmap();
+    return buffer;
+  };
+  const cosValues = new Float32Array(halfHeadDim);
+  const sinValues = new Float32Array(halfHeadDim);
+  for (let dim = 0; dim < halfHeadDim; dim += 1) {
+    const theta = 1 / (ropeBase ** (dim / halfHeadDim));
+    cosValues[dim] = Math.cos(theta);
+    sinValues[dim] = Math.sin(theta);
   }
-  const pixels = data.length / 4;
-  return { min, max, mean: sum / pixels, nonzero };
+  const cosBuffer = makeReadonlyBuffer('visionary-entry-cache-cos', cosValues);
+  const sinBuffer = makeReadonlyBuffer('visionary-entry-cache-sin', sinValues);
+  const slotBuffer = device.createBuffer({
+    label: 'visionary-entry-cache-slot',
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const shader = device.createShaderModule({
+    label: 'visionary-entry-cache-fill-slide-rebase',
+    code: `
+const LAYERS: u32 = ${layers}u;
+const BATCH: u32 = ${batch}u;
+const TOKENS: u32 = ${tokens}u;
+const CONTEXT: u32 = ${contextLength}u;
+const CONTEXT_MINUS_ONE: u32 = ${contextLength - 1}u;
+const HEADS: u32 = ${heads}u;
+const HEAD_DIM: u32 = ${headDim}u;
+const HALF_HEAD_DIM: u32 = ${halfHeadDim}u;
+
+@group(0) @binding(0) var<storage, read_write> k_cache: array<f32>;
+@group(0) @binding(1) var<storage, read_write> v_cache: array<f32>;
+@group(0) @binding(2) var<storage, read> k_entry: array<f32>;
+@group(0) @binding(3) var<storage, read> v_entry: array<f32>;
+@group(0) @binding(4) var<storage, read> cos_cache: array<f32>;
+@group(0) @binding(5) var<storage, read> sin_cache: array<f32>;
+
+struct Params {
+  slot: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+};
+@group(0) @binding(6) var<uniform> params: Params;
+
+fn cache_index(layer: u32, batch: u32, token: u32, time: u32, head: u32, dim: u32) -> u32 {
+  ${
+    cacheLayout === 'layer_batch_token_head_time_dim'
+      ? 'return (((((layer * BATCH + batch) * TOKENS + token) * HEADS + head) * CONTEXT + time) * HEAD_DIM + dim);'
+      : 'return (((((layer * BATCH + batch) * TOKENS + token) * CONTEXT + time) * HEADS + head) * HEAD_DIM + dim);'
+  }
+}
+
+fn entry_index(layer: u32, batch: u32, token: u32, head: u32, dim: u32) -> u32 {
+  return ((((layer * BATCH + batch) * TOKENS + token) * HEADS + head) * HEAD_DIM + dim);
+}
+
+@compute @workgroup_size(${workgroupSize})
+fn fill(@builtin(global_invocation_id) global_id: vec3<u32>) {
+  let idx = global_id.x;
+  let total = LAYERS * BATCH * TOKENS * HEADS * HEAD_DIM;
+  if (idx >= total) {
+    return;
+  }
+
+  let dim = idx % HEAD_DIM;
+  var remaining = idx / HEAD_DIM;
+  let head = remaining % HEADS;
+  remaining = remaining / HEADS;
+  let token = remaining % TOKENS;
+  remaining = remaining / TOKENS;
+  let batch = remaining % BATCH;
+  let layer = remaining / BATCH;
+  let dst_time = min(params.slot, CONTEXT_MINUS_ONE);
+  let src = entry_index(layer, batch, token, head, dim);
+  let dst = cache_index(layer, batch, token, dst_time, head, dim);
+  k_cache[dst] = k_entry[src];
+  v_cache[dst] = v_entry[src];
+}
+
+@compute @workgroup_size(${workgroupSize})
+fn slide(@builtin(global_invocation_id) global_id: vec3<u32>) {
+  let idx = global_id.x;
+  let key_total = LAYERS * BATCH * TOKENS * HEADS * HALF_HEAD_DIM;
+  let value_total = LAYERS * BATCH * TOKENS * HEADS * HEAD_DIM;
+
+  if (idx < key_total) {
+    let half_dim = idx % HALF_HEAD_DIM;
+    var remaining = idx / HALF_HEAD_DIM;
+    let head = remaining % HEADS;
+    remaining = remaining / HEADS;
+    let token = remaining % TOKENS;
+    remaining = remaining / TOKENS;
+    let batch = remaining % BATCH;
+    let layer = remaining / BATCH;
+
+    let cos_theta = cos_cache[half_dim];
+    let sin_theta = sin_cache[half_dim];
+    for (var time = 0u; time < CONTEXT_MINUS_ONE; time = time + 1u) {
+      let src_left = cache_index(layer, batch, token, time + 1u, head, half_dim);
+      let src_right = cache_index(layer, batch, token, time + 1u, head, HALF_HEAD_DIM + half_dim);
+      let dst_left = cache_index(layer, batch, token, time, head, half_dim);
+      let dst_right = cache_index(layer, batch, token, time, head, HALF_HEAD_DIM + half_dim);
+      let left = k_cache[src_left];
+      let right = k_cache[src_right];
+      k_cache[dst_left] = left * cos_theta + right * sin_theta;
+      k_cache[dst_right] = right * cos_theta - left * sin_theta;
+    }
+
+    let src_entry_left = entry_index(layer, batch, token, head, half_dim);
+    let src_entry_right = entry_index(layer, batch, token, head, HALF_HEAD_DIM + half_dim);
+    let dst_entry_left = cache_index(layer, batch, token, CONTEXT_MINUS_ONE, head, half_dim);
+    let dst_entry_right = cache_index(layer, batch, token, CONTEXT_MINUS_ONE, head, HALF_HEAD_DIM + half_dim);
+    k_cache[dst_entry_left] = k_entry[src_entry_left];
+    k_cache[dst_entry_right] = k_entry[src_entry_right];
+  }
+
+  if (idx < value_total) {
+    let dim = idx % HEAD_DIM;
+    var remaining = idx / HEAD_DIM;
+    let head = remaining % HEADS;
+    remaining = remaining / HEADS;
+    let token = remaining % TOKENS;
+    remaining = remaining / TOKENS;
+    let batch = remaining % BATCH;
+    let layer = remaining / BATCH;
+
+    for (var time = 0u; time < CONTEXT_MINUS_ONE; time = time + 1u) {
+      let src = cache_index(layer, batch, token, time + 1u, head, dim);
+      let dst = cache_index(layer, batch, token, time, head, dim);
+      v_cache[dst] = v_cache[src];
+    }
+    let src_entry = entry_index(layer, batch, token, head, dim);
+    let dst_entry = cache_index(layer, batch, token, CONTEXT_MINUS_ONE, head, dim);
+    v_cache[dst_entry] = v_entry[src_entry];
+  }
+}
+`,
+  });
+  const bindGroupLayout = device.createBindGroupLayout({
+    label: 'visionary-entry-cache-slide-rebase-bindings',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  const fillPipeline = device.createComputePipeline({
+    label: 'visionary-entry-cache-fill',
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+    compute: { module: shader, entryPoint: 'fill' },
+  });
+  const slidePipeline = device.createComputePipeline({
+    label: 'visionary-entry-cache-slide-rebase',
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
+    compute: { module: shader, entryPoint: 'slide' },
+  });
+  const fillDispatchCount = Math.ceil(
+    (layers * batch * tokens * heads * headDim) / workgroupSize,
+  );
+  const slideDispatchCount = Math.ceil(
+    Math.max(
+      layers * batch * tokens * heads * halfHeadDim,
+      layers * batch * tokens * heads * headDim,
+    ) / workgroupSize,
+  );
+  let cachedBindGroup = null;
+  let cachedBuffers = null;
+
+  return {
+    update(cache, kEntry, vEntry, cacheLength) {
+      const logicalLength = cacheLength?.data?.[0] ?? contextLength;
+      const slot = Math.min(Math.max(logicalLength, 0), contextLength - 1);
+      device.queue.writeBuffer(slotBuffer, 0, new Uint32Array([slot, 0, 0, 0]));
+      const buffers = [cache.k.gpuBuffer, cache.v.gpuBuffer, kEntry.gpuBuffer, vEntry.gpuBuffer];
+      if (!cachedBindGroup || !cachedBuffers?.every((buffer, index) => buffer === buffers[index])) {
+        cachedBindGroup = device.createBindGroup({
+          label: 'visionary-entry-cache-slide-rebase-bind-group',
+          layout: bindGroupLayout,
+          entries: [
+            { binding: 0, resource: { buffer: cache.k.gpuBuffer } },
+            { binding: 1, resource: { buffer: cache.v.gpuBuffer } },
+            { binding: 2, resource: { buffer: kEntry.gpuBuffer } },
+            { binding: 3, resource: { buffer: vEntry.gpuBuffer } },
+            { binding: 4, resource: { buffer: cosBuffer } },
+            { binding: 5, resource: { buffer: sinBuffer } },
+            { binding: 6, resource: { buffer: slotBuffer } },
+          ],
+        });
+        cachedBuffers = buffers;
+      }
+      const useFill = logicalLength < contextLength;
+      const encoder = device.createCommandEncoder({ label: 'visionary-entry-cache-update' });
+      const pass = encoder.beginComputePass({
+        label: useFill ? 'visionary-entry-cache-fill' : 'visionary-entry-cache-slide-rebase',
+      });
+      pass.setPipeline(useFill ? fillPipeline : slidePipeline);
+      pass.setBindGroup(0, cachedBindGroup);
+      pass.dispatchWorkgroups(useFill ? fillDispatchCount : slideDispatchCount);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+      return cache;
+    },
+  };
+}
+
+function createCpuEntryCacheUpdater(spec, manifest) {
+  const {
+    cacheLayout,
+    contextLength,
+    batch,
+    halfHeadDim,
+    headDim,
+    heads,
+    layers,
+    tokens,
+  } = cacheContractFromSpec(spec, manifest);
+  const ropeBase = Number(manifest.dynamics?.rope_base ?? manifest.dynamics?.base ?? 10000);
+  const cosValues = new Float32Array(halfHeadDim);
+  const sinValues = new Float32Array(halfHeadDim);
+  for (let dim = 0; dim < halfHeadDim; dim += 1) {
+    const theta = 1 / (ropeBase ** (dim / halfHeadDim));
+    cosValues[dim] = Math.cos(theta);
+    sinValues[dim] = Math.sin(theta);
+  }
+
+  const cacheIndex =
+    cacheLayout === 'layer_batch_token_head_time_dim'
+      ? (layer, batchIndex, token, time, head, dim) =>
+          (((((layer * batch + batchIndex) * tokens + token) * heads + head) * contextLength +
+            time) *
+            headDim +
+            dim)
+      : (layer, batchIndex, token, time, head, dim) =>
+          (((((layer * batch + batchIndex) * tokens + token) * contextLength + time) * heads +
+            head) *
+            headDim +
+            dim);
+  const entryIndex = (layer, batchIndex, token, head, dim) =>
+    ((((layer * batch + batchIndex) * tokens + token) * heads + head) * headDim + dim);
+
+  return {
+    update(cache, kEntry, vEntry, cacheLength) {
+      const logicalLength = cacheLength?.data?.[0] ?? contextLength;
+      const kCache = cache.k.data;
+      const vCache = cache.v.data;
+      const kEntryData = kEntry.data;
+      const vEntryData = vEntry.data;
+
+      if (logicalLength < contextLength) {
+        const dstTime = Math.min(Math.max(logicalLength, 0), contextLength - 1);
+        for (let layer = 0; layer < layers; layer += 1) {
+          for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+            for (let token = 0; token < tokens; token += 1) {
+              for (let head = 0; head < heads; head += 1) {
+                for (let dim = 0; dim < headDim; dim += 1) {
+                  const src = entryIndex(layer, batchIndex, token, head, dim);
+                  const dst = cacheIndex(layer, batchIndex, token, dstTime, head, dim);
+                  kCache[dst] = kEntryData[src];
+                  vCache[dst] = vEntryData[src];
+                }
+              }
+            }
+          }
+        }
+        return cache;
+      }
+
+      const lastTime = contextLength - 1;
+      for (let layer = 0; layer < layers; layer += 1) {
+        for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+          for (let token = 0; token < tokens; token += 1) {
+            for (let head = 0; head < heads; head += 1) {
+              for (let halfDim = 0; halfDim < halfHeadDim; halfDim += 1) {
+                const cosTheta = cosValues[halfDim];
+                const sinTheta = sinValues[halfDim];
+                for (let time = 0; time < lastTime; time += 1) {
+                  const srcLeft = cacheIndex(layer, batchIndex, token, time + 1, head, halfDim);
+                  const srcRight = cacheIndex(
+                    layer,
+                    batchIndex,
+                    token,
+                    time + 1,
+                    head,
+                    halfHeadDim + halfDim,
+                  );
+                  const dstLeft = cacheIndex(layer, batchIndex, token, time, head, halfDim);
+                  const dstRight = cacheIndex(
+                    layer,
+                    batchIndex,
+                    token,
+                    time,
+                    head,
+                    halfHeadDim + halfDim,
+                  );
+                  const left = kCache[srcLeft];
+                  const right = kCache[srcRight];
+                  kCache[dstLeft] = left * cosTheta + right * sinTheta;
+                  kCache[dstRight] = right * cosTheta - left * sinTheta;
+                }
+
+                const srcEntryLeft = entryIndex(layer, batchIndex, token, head, halfDim);
+                const srcEntryRight = entryIndex(
+                  layer,
+                  batchIndex,
+                  token,
+                  head,
+                  halfHeadDim + halfDim,
+                );
+                const dstEntryLeft = cacheIndex(layer, batchIndex, token, lastTime, head, halfDim);
+                const dstEntryRight = cacheIndex(
+                  layer,
+                  batchIndex,
+                  token,
+                  lastTime,
+                  head,
+                  halfHeadDim + halfDim,
+                );
+                kCache[dstEntryLeft] = kEntryData[srcEntryLeft];
+                kCache[dstEntryRight] = kEntryData[srcEntryRight];
+              }
+
+              for (let dim = 0; dim < headDim; dim += 1) {
+                for (let time = 0; time < lastTime; time += 1) {
+                  const src = cacheIndex(layer, batchIndex, token, time + 1, head, dim);
+                  const dst = cacheIndex(layer, batchIndex, token, time, head, dim);
+                  vCache[dst] = vCache[src];
+                }
+                const srcEntry = entryIndex(layer, batchIndex, token, head, dim);
+                const dstEntry = cacheIndex(layer, batchIndex, token, lastTime, head, dim);
+                vCache[dstEntry] = vEntryData[srcEntry];
+              }
+            }
+          }
+        }
+      }
+      return cache;
+    },
+  };
+}
+
+function cloneCpuTensor(tensor) {
+  const ArrayType = dtypeArray(tensor.type);
+  return new ort.Tensor(tensor.type, new ArrayType(tensor.data), [...tensor.dims]);
+}
+
+function cacheFromInitialArtifacts(device, initialCache, backend) {
+  if (backend !== 'webgpu') {
+    return {
+      k: cloneCpuTensor(initialCache.k),
+      v: cloneCpuTensor(initialCache.v),
+      length: cloneCpuTensor(initialCache.length),
+    };
+  }
+  return {
+    k: createGpuTensorFromCpu(device, initialCache.k),
+    v: createGpuTensorFromCpu(device, initialCache.v),
+    length: cloneCpuTensor(initialCache.length),
+  };
 }
 
 async function renderLatent(zTensor) {
-  const decoderOutputs = await runtime.sessions.decoder.run(
-    {
-      z: zTensor,
-    },
-    [runtime.names.patches],
-  );
+  const decoderOutputs = await runtime.sessions.decoder.run({ z: zTensor }, [runtime.names.patches]);
   const patches = decoderOutputs[runtime.names.patches];
   const image = patchesToImageData(patches, runtime.preprocessor);
   ctx.putImageData(image, 0, 0);
-  return {
-    patches: tensorStats(patches),
-    canvas: canvasStats(),
-  };
 }
 
-function updateActionUi() {
+function setAction(action) {
+  currentAction = action;
   const label = ACTION_LABELS[currentAction];
   elements.action.textContent = label;
   for (const [name, element] of Object.entries(elements.keys)) {
-    element.classList.toggle('active', name === label);
+    const active = name === label;
+    element.classList.toggle('active', active);
+    element.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
 }
 
 function actionFromKeys(event, pressed) {
   if (event.code === 'ArrowLeft') {
-    currentAction = pressed ? ACTIONS.left : ACTIONS.noop;
+    event.preventDefault();
+    setAction(pressed ? ACTIONS.left : ACTIONS.noop);
   } else if (event.code === 'ArrowRight') {
-    currentAction = pressed ? ACTIONS.right : ACTIONS.noop;
+    event.preventDefault();
+    setAction(pressed ? ACTIONS.right : ACTIONS.noop);
   } else if (event.code === 'Space' || event.code === 'ArrowUp') {
     event.preventDefault();
-    currentAction = pressed ? ACTIONS.fire : ACTIONS.noop;
-  } else {
-    return;
+    setAction(pressed ? ACTIONS.fire : ACTIONS.noop);
   }
-  updateActionUi();
+}
+
+function bindActionButton(element, action) {
+  element.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    element.setPointerCapture?.(event.pointerId);
+    setAction(action);
+  });
+  const release = (event) => {
+    event.preventDefault();
+    if (currentAction === action || action === ACTIONS.noop) setAction(ACTIONS.noop);
+  };
+  element.addEventListener('pointerup', release);
+  element.addEventListener('pointercancel', release);
+  element.addEventListener('lostpointercapture', () => {
+    if (currentAction === action) setAction(ACTIONS.noop);
+  });
+}
+
+function preferredBackends() {
+  const requested = String(configValue('backend', 'auto')).toLowerCase();
+  if (requested === 'wasm' || requested === 'cpu') return ['wasm'];
+  if (requested === 'webgpu') return ['webgpu'];
+  return ['webgpu', 'wasm'];
+}
+
+async function releaseSession(session) {
+  try {
+    await session?.release?.();
+  } catch {
+    // Releasing after a failed compile is best-effort only.
+  }
+}
+
+async function createRuntimeForBackend(backend, loaded) {
+  let stepSession = null;
+  let decoderSession = null;
+  try {
+    stepSession = await createSession(loaded.stepSpec, 'dynamics', loaded.stepModelBytes, backend, {
+      preferredOutputLocation: {
+        final_z: 'gpu-buffer',
+        candidate_k_entry: 'gpu-buffer',
+        candidate_v_entry: 'gpu-buffer',
+        candidate_cache_length: 'cpu',
+      },
+    });
+    decoderSession = await createSession(
+      loaded.decoderSpec,
+      'decoder',
+      loaded.decoderModelBytes,
+      backend,
+      {
+        preferredOutputLocation: { patches: 'cpu' },
+      },
+    );
+
+    const device = backend === 'webgpu' ? ort.env.webgpu?.device : null;
+    if (backend === 'webgpu' && !device) {
+      throw new Error('WebGPU session was created but ORT did not expose a GPU device.');
+    }
+
+    const cacheUpdater =
+      backend === 'webgpu'
+        ? createEntryCacheUpdater(device, loaded.stepSpec, loaded.manifest)
+        : createCpuEntryCacheUpdater(loaded.stepSpec, loaded.manifest);
+
+    const loadedRuntime = {
+      backend,
+      contextManifest: loaded.contextManifest,
+      initialCacheManifest: loaded.initialCacheManifest,
+      preprocessor: loaded.contextManifest.preprocessor,
+      device,
+      sessions: {
+        step: stepSession,
+        decoder: decoderSession,
+      },
+      specs: {
+        step: loaded.stepSpec,
+        decoder: loaded.decoderSpec,
+      },
+      names: {
+        stepFinalZ: outputName(loaded.stepSpec, 'final_z'),
+        stepK: outputName(loaded.stepSpec, 'candidate_k_entry'),
+        stepV: outputName(loaded.stepSpec, 'candidate_v_entry'),
+        stepLength: outputName(loaded.stepSpec, 'candidate_cache_length'),
+        patches: outputName(loaded.decoderSpec, 'patches'),
+      },
+      dtypes: {
+        sampleNoise: loaded.stepSpec.inputs.sample_noise.dtype,
+      },
+      initialCache: {
+        k: loaded.initialK,
+        v: loaded.initialV,
+        length: loaded.initialLength,
+      },
+      displayZ: loaded.displayZ,
+      cacheUpdater,
+      cache: null,
+    };
+
+    loadedRuntime.cache = cacheFromInitialArtifacts(device, loadedRuntime.initialCache, backend);
+    elements.backend.textContent = backend;
+    return loadedRuntime;
+  } catch (error) {
+    await Promise.all([releaseSession(stepSession), releaseSession(decoderSession)]);
+    throw error;
+  }
 }
 
 async function loadRuntime() {
-  setStatus('Loading manifest');
-  const [manifest, contextManifest] = await Promise.all([
-    fetchJson(MANIFEST_URL),
-    fetchJson(CONTEXT_URL),
+  const loadStarted = performance.now();
+  setStatus('Loading manifests');
+  const [manifest, contextManifest, initialCacheManifest] = await Promise.all([
+    fetchJson(MANIFEST_URL, 'ONNX manifest'),
+    fetchJson(CONTEXT_URL, 'context manifest'),
+    fetchJson(INITIAL_CACHE_URL, 'initial cache manifest'),
   ]);
-  const prefixStepSpec = findExport(manifest, 'breakout_dynamics_step_cached_b1_t1');
-  const sampleStepSpec = findExport(manifest, 'breakout_dynamics_sample_append_context_b1_t1_s4');
-  const sampleStepSlideSpec = findFirstExport(manifest, [
-    'breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s4',
-    'breakout_dynamics_sample_append_context_slide_b1_t1_s4',
-  ]);
+  const stepSpec = findExport(
+    manifest,
+    manifest.demo_generation?.preferred_step_export ??
+      manifest.demo_generation?.preferred_steady_state_step_export ??
+      'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2',
+  );
   const decoderSpec = findExport(manifest, 'breakout_tokenizer_decode_z_b1_t1');
 
-  setStatus('Loading context');
-  const [contextZ, displayZ, contextActions, stepLevels, signalLevels] = await Promise.all([
-    fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.z),
-    contextManifest.arrays.display_z
-      ? fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.display_z)
-      : Promise.resolve(null),
-    fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.actions),
-    fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.step_levels),
-    fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.signal_levels),
+  setStatus('Loading context preview and initial cache');
+  const [displayZ, initialK, initialV, initialLength] = await Promise.all([
+    fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.display_z, 'context preview'),
+    fetchTensorFromArtifact(ASSET_DIR, initialCacheManifest.arrays.k_cache, 'initial K cache'),
+    fetchTensorFromArtifact(ASSET_DIR, initialCacheManifest.arrays.v_cache, 'initial V cache'),
+    fetchTensorFromArtifact(ASSET_DIR, initialCacheManifest.arrays.cache_length, 'cache length'),
   ]);
-  elements.context.textContent =
-    `${contextManifest.prefix_frames} frames @ ${contextManifest.episode_start}`;
+  elements.context.textContent = `${contextManifest.prefix_frames} frames @ ${contextManifest.episode_start}`;
 
-  setStatus('Creating prefix session');
-  const prefixStepSession = await createSession(prefixStepSpec, {
-    preferredOutputLocation: {
-      pred_z: 'cpu',
-      candidate_k_cache: 'gpu-buffer',
-      candidate_v_cache: 'gpu-buffer',
-      candidate_cache_length: 'cpu',
-    },
-  });
-  setStatus('Creating sampling session');
-  const sampleStepSession = await createSession(sampleStepSpec, {
-    preferredOutputLocation: {
-      final_z: 'gpu-buffer',
-      candidate_k_cache: 'gpu-buffer',
-      candidate_v_cache: 'gpu-buffer',
-      candidate_cache_length: 'cpu',
-    },
-  });
-  setStatus('Creating steady sampling session');
-  const sampleSlideOutputLocation = {
-    final_z: 'gpu-buffer',
-    candidate_k_cache: 'gpu-buffer',
-    candidate_v_cache: 'gpu-buffer',
-  };
-  if (sampleStepSlideSpec.outputs?.candidate_cache_length) {
-    sampleSlideOutputLocation.candidate_cache_length = 'cpu';
-  }
-  const sampleStepSlideSession = await createSession(sampleStepSlideSpec, {
-    preferredOutputLocation: sampleSlideOutputLocation,
-  });
-  setStatus('Creating decoder session');
-  const decoderSession = await createSession(decoderSpec, {
-    preferredOutputLocation: {
-      patches: 'cpu',
-    },
-  });
+  setStatus('Loading ONNX models');
+  const [stepModelBytes, decoderModelBytes] = await Promise.all([
+    fetchBytes(`${ASSET_DIR}/${stepSpec.path}`, 'dynamics model'),
+    fetchBytes(`${ASSET_DIR}/${decoderSpec.path}`, 'decoder model'),
+  ]);
 
-  return {
+  const loaded = {
+    manifest,
     contextManifest,
-    preprocessor: contextManifest.preprocessor,
-    sessions: {
-      prefixStep: prefixStepSession,
-      sampleStep: sampleStepSession,
-      sampleStepSlide: sampleStepSlideSession,
-      decoder: decoderSession,
-    },
-    specs: {
-      prefixStep: prefixStepSpec,
-      sampleStep: sampleStepSpec,
-      sampleStepSlide: sampleStepSlideSpec,
-      decoder: decoderSpec,
-    },
-    names: {
-      prefixK: outputName(prefixStepSpec, 'candidate_k_cache'),
-      prefixV: outputName(prefixStepSpec, 'candidate_v_cache'),
-      prefixCacheLength: outputName(prefixStepSpec, 'candidate_cache_length'),
-      finalZ: outputName(sampleStepSpec, 'final_z'),
-      sampleK: outputName(sampleStepSpec, 'candidate_k_cache'),
-      sampleV: outputName(sampleStepSpec, 'candidate_v_cache'),
-      sampleCacheLength: optionalOutputName(sampleStepSpec, 'candidate_cache_length'),
-      sampleSlideK: outputName(sampleStepSlideSpec, 'candidate_k_cache'),
-      sampleSlideV: outputName(sampleStepSlideSpec, 'candidate_v_cache'),
-      sampleSlideCacheLength: optionalOutputName(sampleStepSlideSpec, 'candidate_cache_length'),
-      patches: outputName(decoderSpec, 'patches'),
-    },
-    context: {
-      z: contextZ,
-      displayZ,
-      actions: contextActions,
-      stepLevels,
-      signalLevels,
-    },
-    dtypes: {
-      prefixZ: prefixStepSpec.inputs.z.dtype,
-      cache: prefixStepSpec.inputs.k_cache.dtype,
-      sampleNoise: sampleStepSpec.inputs.sample_noise.dtype,
-    },
-    cache: null,
+    initialCacheManifest,
+    stepSpec,
+    decoderSpec,
+    displayZ,
+    initialK,
+    initialV,
+    initialLength,
+    stepModelBytes,
+    decoderModelBytes,
   };
+  let lastError = null;
+  for (const backend of preferredBackends()) {
+    try {
+      const result = await createRuntimeForBackend(backend, loaded);
+      recordLoadEvent('total load', performance.now() - loadStarted);
+      return result;
+    } catch (error) {
+      lastError = error;
+      recordLoadEvent(`${backend} unavailable`, 0);
+      elements.backend.textContent = `${backend} failed`;
+      setStatus(`${backend} unavailable`);
+    }
+  }
+  throw lastError ?? new Error('No ONNX Runtime backend is available.');
 }
 
-async function prefill() {
-  const prefixFrames = runtime.contextManifest.prefix_frames ?? runtime.contextManifest.context_length;
-  const prefixSlotStart =
-    runtime.contextManifest.prefix_slot_start ??
-    Math.max(0, runtime.contextManifest.context_length - prefixFrames);
-  setStatus(`Prefilling ${prefixFrames} prefix frames`);
-  disposeGpuTensor(runtime.cache?.k);
-  disposeGpuTensor(runtime.cache?.v);
-  runtime.cache = {
-    k: zeroTensor(runtime.dtypes.cache, CACHE_SHAPE),
-    v: zeroTensor(runtime.dtypes.cache, CACHE_SHAPE),
-    length: scalarTensor(0, [1]),
-  };
-  for (let offset = 0; offset < prefixFrames; offset += 1) {
-    const index = prefixSlotStart + offset;
-    const outputs = await runtime.sessions.prefixStep.run(
-      {
-        z: contextFrameTensor(runtime.context.z, index, runtime.dtypes.prefixZ),
-        actions: contextScalarTensor(runtime.context.actions, index),
-        step_levels: contextScalarTensor(runtime.context.stepLevels, index),
-        signal_levels: contextScalarTensor(runtime.context.signalLevels, index),
-        position_index: runtime.cache.length,
-        k_cache: runtime.cache.k,
-        v_cache: runtime.cache.v,
-        cache_length: runtime.cache.length,
-      },
-      [runtime.names.prefixK, runtime.names.prefixV, runtime.names.prefixCacheLength],
-    );
-    const oldCache = runtime.cache;
-    runtime.cache = {
-      k: outputs[runtime.names.prefixK],
-      v: outputs[runtime.names.prefixV],
-      length: outputs[runtime.names.prefixCacheLength],
-    };
-    disposeGpuTensor(oldCache.k);
-    disposeGpuTensor(oldCache.v);
-  }
+async function resetDemo() {
+  running = false;
+  elements.start.textContent = 'Start';
+  disposeCache(runtime.cache);
+  runtime.cache = cacheFromInitialArtifacts(runtime.device, runtime.initialCache, runtime.backend);
   frameCount = 0;
   noiseGenerator = new NormalNoiseGenerator(runtime.contextManifest.noise_seed ?? 0);
   elements.frameCount.textContent = '0';
-  const previewTensor = runtime.context.displayZ
-    ? contextFrameTensor(runtime.context.displayZ, prefixFrames - 1, runtime.dtypes.prefixZ)
-    : contextFrameTensor(runtime.context.z, prefixSlotStart + prefixFrames - 1, runtime.dtypes.prefixZ);
-  const preview = await renderLatent(previewTensor);
-  runtime.lastPreviewStats = preview;
-  setStatus(`Ready with cache length ${runtime.cache.length.data[0]}`);
+  elements.latency.textContent = '-- ms';
+  const prefixFrames = runtime.contextManifest.prefix_frames ?? 1;
+  const previewTensor = contextFrameTensor(
+    runtime.displayZ,
+    prefixFrames - 1,
+    runtime.specs.decoder.inputs.z.dtype,
+  );
+  await renderLatent(previewTensor);
+  setStatus(`Ready · ${runtime.backend} · cache length ${runtime.initialCache.length.data[0]}`);
 }
 
 async function generateFrame() {
@@ -493,58 +1021,33 @@ async function generateFrame() {
   const action = new ort.Tensor('int32', new Int32Array([currentAction]), [1, 1]);
   const sampleNoise = randomNormalTensor([1, 1, 32, 32], runtime.dtypes.sampleNoise);
   const contextNoise = randomNormalTensor([1, 1, 32, 32], runtime.dtypes.sampleNoise);
-  const sampleSession =
-    runtime.cache.length.data[0] >= CACHE_SHAPE[3]
-      ? runtime.sessions.sampleStepSlide
-      : runtime.sessions.sampleStep;
-  const sampleNames =
-    runtime.cache.length.data[0] >= CACHE_SHAPE[3]
-      ? {
-          k: runtime.names.sampleSlideK,
-          v: runtime.names.sampleSlideV,
-          length: runtime.names.sampleSlideCacheLength,
-        }
-      : {
-          k: runtime.names.sampleK,
-          v: runtime.names.sampleV,
-          length: runtime.names.sampleCacheLength,
-        };
-  const fetches = [runtime.names.finalZ, sampleNames.k, sampleNames.v];
-  if (sampleNames.length) fetches.push(sampleNames.length);
-  const sampleSpec =
-    sampleSession === runtime.sessions.sampleStepSlide
-      ? runtime.specs.sampleStepSlide
-      : runtime.specs.sampleStep;
-  const feeds = {
-    sample_noise: sampleNoise,
-    context_noise: contextNoise,
-    actions: action,
-    k_cache: runtime.cache.k,
-    v_cache: runtime.cache.v,
-  };
-  if (sampleSpec.inputs?.position_index) feeds.position_index = runtime.cache.length;
-  if (sampleSpec.inputs?.cache_length) feeds.cache_length = runtime.cache.length;
-  const outputs = await sampleSession.run(feeds, fetches);
-  const oldCache = runtime.cache;
-  runtime.cache = {
-    k: outputs[sampleNames.k],
-    v: outputs[sampleNames.v],
-    length: sampleNames.length ? outputs[sampleNames.length] : oldCache.length,
-  };
-  disposeGpuTensor(oldCache.k);
-  disposeGpuTensor(oldCache.v);
+  const outputs = await runtime.sessions.step.run(
+    {
+      sample_noise: sampleNoise,
+      context_noise: contextNoise,
+      actions: action,
+      k_cache: runtime.cache.k,
+      v_cache: runtime.cache.v,
+      cache_length: runtime.cache.length,
+    },
+    [runtime.names.stepFinalZ, runtime.names.stepK, runtime.names.stepV, runtime.names.stepLength],
+  );
+  runtime.cacheUpdater.update(
+    runtime.cache,
+    outputs[runtime.names.stepK],
+    outputs[runtime.names.stepV],
+    runtime.cache.length,
+  );
+  runtime.cache.length = outputs[runtime.names.stepLength];
+  disposeGpuTensor(outputs[runtime.names.stepK]);
+  disposeGpuTensor(outputs[runtime.names.stepV]);
+  const zOutput = outputs[runtime.names.stepFinalZ];
 
-  const decoderOutputs = await runtime.sessions.decoder.run({ z: outputs[runtime.names.finalZ] }, [
-    runtime.names.patches,
-  ]);
-  disposeGpuTensor(outputs[runtime.names.finalZ]);
+  const decoderOutputs = await runtime.sessions.decoder.run({ z: zOutput }, [runtime.names.patches]);
+  disposeGpuTensor(zOutput);
 
   const image = patchesToImageData(decoderOutputs[runtime.names.patches], runtime.preprocessor);
   ctx.putImageData(image, 0, 0);
-  runtime.lastFrameStats = {
-    patches: tensorStats(decoderOutputs[runtime.names.patches]),
-    canvas: canvasStats(),
-  };
 
   frameCount += 1;
   const elapsed = performance.now() - started;
@@ -558,15 +1061,18 @@ async function generateFrame() {
 
 async function streamLoop() {
   if (!running) return;
+  const frameStarted = performance.now();
   try {
     await generateFrame();
-    requestAnimationFrame(streamLoop);
   } catch (error) {
     running = false;
     elements.start.textContent = 'Start';
     setStatus(error instanceof Error ? error.message : String(error));
     throw error;
   }
+  const frameElapsed = performance.now() - frameStarted;
+  const delayMs = targetFps > 0 ? Math.max(0, 1000 / targetFps - frameElapsed) : 0;
+  window.setTimeout(streamLoop, delayMs);
 }
 
 elements.start.addEventListener('click', async () => {
@@ -579,22 +1085,30 @@ elements.start.addEventListener('click', async () => {
   }
 });
 
-elements.reset.addEventListener('click', async () => {
-  running = false;
-  elements.start.textContent = 'Start';
-  await prefill();
+elements.reset.addEventListener('click', resetDemo);
+elements.targetFps.addEventListener('change', () => {
+  targetFps = parseTargetFps(elements.targetFps.value);
 });
-
 window.addEventListener('keydown', (event) => actionFromKeys(event, true));
 window.addEventListener('keyup', (event) => actionFromKeys(event, false));
+bindActionButton(elements.keys.noop, ACTIONS.noop);
+bindActionButton(elements.keys.fire, ACTIONS.fire);
+bindActionButton(elements.keys.left, ACTIONS.left);
+bindActionButton(elements.keys.right, ACTIONS.right);
 
-updateActionUi();
+setAction(ACTIONS.noop);
+if ([...elements.targetFps.options].some((option) => option.value === String(targetFps))) {
+  elements.targetFps.value = String(targetFps);
+} else {
+  targetFps = DEFAULT_TARGET_FPS;
+  elements.targetFps.value = String(DEFAULT_TARGET_FPS);
+}
 elements.start.disabled = true;
 elements.reset.disabled = true;
 
 try {
   runtime = await loadRuntime();
-  await prefill();
+  await resetDemo();
   elements.start.disabled = false;
   elements.reset.disabled = false;
 } catch (error) {
@@ -606,13 +1120,10 @@ window.visionaryDemoDebug = {
   get runtime() {
     return runtime;
   },
-  canvasStats,
-  tensorStats,
-  async renderContext(frameIndex = runtime.contextManifest.context_length - 1) {
-    return renderLatent(contextFrameTensor(runtime.context.z, frameIndex, runtime.dtypes.prefixZ));
+  get loadEvents() {
+    return loadEvents;
   },
   async generateFrame() {
     await generateFrame();
-    return runtime.lastFrameStats;
   },
 };

@@ -26,6 +26,7 @@ from visionary.export.onnx_wrappers import (
     apply_dynamics_cached_prefill_layer_cache,
     apply_dynamics_cached_sample_step,
     apply_dynamics_cached_sample_step_append_context,
+    apply_dynamics_cached_sample_step_append_context_cache_length_entries,
     apply_dynamics_cached_sample_step_append_context_full_cache,
     apply_dynamics_cached_sample_step_append_context_full_cache_entries,
     apply_dynamics_cached_sample_step_append_context_layer_cache,
@@ -47,22 +48,64 @@ DYNAMICS_UNCACHED_NAME = "breakout_dynamics_b1_t64"
 DYNAMICS_CACHED_PREFILL_NAME = "breakout_dynamics_prefill_cached_b1_t64"
 DYNAMICS_CACHED_PREFILL_LAYER_NAME = "breakout_dynamics_prefill_layer_cached_b1_t64"
 DYNAMICS_CACHED_STEP_NAME = "breakout_dynamics_step_cached_b1_t1"
-DYNAMICS_CACHED_SAMPLE_STEP_NAME = "breakout_dynamics_cached_sample_step_b1_t1_s4"
-DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME = "breakout_dynamics_cached_sample_step_slide_b1_t1_s4"
-DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME = "breakout_dynamics_sample_append_context_b1_t1_s4"
-DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME = (
-    "breakout_dynamics_sample_append_context_slide_b1_t1_s4"
-)
-DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME = (
-    "breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s4"
-)
-DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME = (
-    "breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4"
-)
-DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME = (
-    "breakout_dynamics_sample_append_context_slide_layer_b1_t1_s4"
-)
 MANIFEST_NAME = "breakout_onnx_manifest.json"
+
+
+def sample_export_names(sample_steps: int) -> dict[str, str]:
+    suffix = f"s{sample_steps}"
+    return {
+        "cached_sample_step": f"breakout_dynamics_cached_sample_step_b1_t1_{suffix}",
+        "cached_sample_step_slide": (
+            f"breakout_dynamics_cached_sample_step_slide_b1_t1_{suffix}"
+        ),
+        "append_context": f"breakout_dynamics_sample_append_context_b1_t1_{suffix}",
+        "append_context_entry": (
+            "breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_"
+            f"{suffix}"
+        ),
+        "append_context_slide": (
+            f"breakout_dynamics_sample_append_context_slide_b1_t1_{suffix}"
+        ),
+        "append_context_slide_full_cache": (
+            "breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_"
+            f"{suffix}"
+        ),
+        "append_context_slide_entry": (
+            f"breakout_dynamics_sample_append_context_slide_entry_b1_t1_{suffix}"
+        ),
+        "append_context_slide_layer": (
+            f"breakout_dynamics_sample_append_context_slide_layer_b1_t1_{suffix}"
+        ),
+    }
+
+
+def set_sample_export_names(sample_steps: int) -> None:
+    names = sample_export_names(sample_steps)
+    globals().update(
+        {
+            "DYNAMICS_CACHED_SAMPLE_STEP_NAME": names["cached_sample_step"],
+            "DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME": names["cached_sample_step_slide"],
+            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME": names["append_context"],
+            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME": names[
+                "append_context_entry"
+            ],
+            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME": names[
+                "append_context_slide"
+            ],
+            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME": names[
+                "append_context_slide_full_cache"
+            ],
+            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME": names[
+                "append_context_slide_entry"
+            ],
+            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME": names[
+                "append_context_slide_layer"
+            ],
+        }
+    )
+
+
+set_sample_export_names(4)
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seq_len", type=int, default=64)
     parser.add_argument("--opset", type=int, default=23)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--sample_steps", type=int, default=4)
+    parser.add_argument("--sample_steps", type=int, default=2)
     parser.add_argument("--context_tau", type=float, default=29 / 32)
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--atol", type=float, default=0.05)
@@ -5487,6 +5530,7 @@ def validate_outputs(
 def main() -> None:
     args = parse_args()
     require_static_phase1_args(args)
+    set_sample_export_names(args.sample_steps)
     set_attention_export_lowering(args.attention_lowering)
     set_attention_export_layout(args.attention_layout)
 
@@ -5540,6 +5584,9 @@ def main() -> None:
     )
     dynamics_sample_append_context_path = (
         args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME}.onnx"
+    )
+    dynamics_sample_append_context_entry_path = (
+        args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME}.onnx"
     )
     dynamics_sample_append_context_slide_path = (
         args.out_dir / f"{DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME}.onnx"
@@ -5732,6 +5779,27 @@ def main() -> None:
             context_tau=args.context_tau,
             sample_steps=args.sample_steps,
             cache_update="slide",
+        )
+
+    def dynamics_sample_append_context_entry_fn(
+        sample_noise: jax.Array,
+        context_noise: jax.Array,
+        actions: jax.Array,
+        k_cache: jax.Array,
+        v_cache: jax.Array,
+        cache_length: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        return apply_dynamics_cached_sample_step_append_context_cache_length_entries(
+            dynamics_variables,
+            dynamics_cfg,
+            sample_noise,
+            context_noise,
+            actions,
+            k_cache,
+            v_cache,
+            cache_length,
+            context_tau=args.context_tau,
+            sample_steps=args.sample_steps,
         )
 
     def dynamics_sample_append_context_slide_full_cache_fn(
@@ -6097,6 +6165,36 @@ def main() -> None:
             overwrite=args.overwrite,
         )
         export_to_onnx(
+            fn=dynamics_sample_append_context_entry_fn,
+            inputs=(
+                cached_inputs["z_step"],
+                cached_inputs["z_step"],
+                cached_inputs["actions_step"],
+                cached_inputs["k_cache"],
+                cached_inputs["v_cache"],
+                cached_inputs["cache_length"],
+            ),
+            output_path=dynamics_sample_append_context_entry_path,
+            model_name=DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
+            opset=args.opset,
+            input_names=(
+                "sample_noise",
+                "context_noise",
+                "actions",
+                "k_cache",
+                "v_cache",
+                "cache_length",
+            ),
+            output_names=(
+                "final_z",
+                "pred_z",
+                "candidate_k_entry",
+                "candidate_v_entry",
+                "candidate_cache_length",
+            ),
+            overwrite=args.overwrite,
+        )
+        export_to_onnx(
             fn=dynamics_sample_append_context_slide_entry_fn,
             inputs=(
                 cached_inputs["z_step"],
@@ -6171,6 +6269,9 @@ def main() -> None:
                 DYNAMICS_CACHED_SAMPLE_STEP_NAME: dynamics_sample_step_path,
                 DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME: dynamics_sample_step_slide_path,
                 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME: dynamics_sample_append_context_path,
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME: (
+                    dynamics_sample_append_context_entry_path
+                ),
                 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME: (
                     dynamics_sample_append_context_slide_path
                 ),
@@ -6207,6 +6308,7 @@ def main() -> None:
             DYNAMICS_CACHED_SAMPLE_STEP_NAME,
             DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME,
             DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
+            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
             DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME,
             DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME,
             DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
@@ -6359,7 +6461,11 @@ def main() -> None:
     final_z_only_rewrite = {
         name: rewrite_entry_final_z_only_for_webgpu(
             path,
-            enabled=name == DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
+            enabled=name
+            in {
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
+            },
         )
         for name, path in exported_paths.items()
     }
@@ -6376,6 +6482,9 @@ def main() -> None:
             "skipped": not (args.validate and args.export_cached)
         },
         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME: {
+            "skipped": not (args.validate and args.export_cached)
+        },
+        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME: {
             "skipped": not (args.validate and args.export_cached)
         },
         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME: {
@@ -6658,6 +6767,43 @@ def main() -> None:
                     rtol=args.rtol,
                 )
             )
+            sample_append_context_entry_expected = dynamics_sample_append_context_entry_fn(
+                cached_inputs["z_step"],
+                cached_inputs["z_step"],
+                cached_inputs["actions_step"],
+                cached_inputs["k_cache"],
+                cached_inputs["v_cache"],
+                cached_inputs["cache_length"],
+            )
+            cache_length_entry_final_z_aliases_pred_z = bool(
+                final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME].get(
+                    "final_z_aliases_pred_z", False
+                )
+            )
+            cache_length_entry_expected = {
+                "final_z": sample_append_context_entry_expected[
+                    1 if cache_length_entry_final_z_aliases_pred_z else 0
+                ],
+                "candidate_k_entry": sample_append_context_entry_expected[2],
+                "candidate_v_entry": sample_append_context_entry_expected[3],
+                "candidate_cache_length": sample_append_context_entry_expected[4],
+            }
+            if not cache_length_entry_final_z_aliases_pred_z:
+                cache_length_entry_expected["pred_z"] = sample_append_context_entry_expected[1]
+            validation[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME] = validate_outputs(
+                path=dynamics_sample_append_context_entry_path,
+                feeds={
+                    "sample_noise": cached_inputs["z_step"],
+                    "context_noise": cached_inputs["z_step"],
+                    "actions": cached_inputs["actions_step"],
+                    "k_cache": cached_inputs["k_cache"],
+                    "v_cache": cached_inputs["v_cache"],
+                    "cache_length": cached_inputs["cache_length"],
+                },
+                expected=cache_length_entry_expected,
+                atol=args.atol,
+                rtol=args.rtol,
+            )
             sample_append_context_slide_entry_expected = (
                 dynamics_sample_append_context_slide_entry_fn(
                     cached_inputs["z_step"],
@@ -6770,6 +6916,11 @@ def main() -> None:
     dynamics_sample_append_context_files = (
         export_file_metadata(dynamics_sample_append_context_path) if args.export_cached else None
     )
+    dynamics_sample_append_context_entry_files = (
+        export_file_metadata(dynamics_sample_append_context_entry_path)
+        if args.export_cached
+        else None
+    )
     dynamics_sample_append_context_slide_files = (
         export_file_metadata(dynamics_sample_append_context_slide_path)
         if args.export_cached
@@ -6790,38 +6941,56 @@ def main() -> None:
         if args.export_cached
         else None
     )
+    cache_length_entry_manifest_final_z_aliases_pred_z = bool(
+        final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME].get(
+            "final_z_aliases_pred_z", False
+        )
+    )
     entry_manifest_final_z_aliases_pred_z = bool(
         final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME].get(
             "final_z_aliases_pred_z", False
         )
     )
-    entry_manifest_outputs = {
-        "final_z": tensor_spec("float32", dyn_shapes.step_z),
-        "candidate_k_entry": tensor_spec(
-            "float32",
-            (
-                dyn_shapes.cache[0],
-                dyn_shapes.cache[1],
-                dyn_shapes.cache[2],
-                1,
-                dyn_shapes.cache[4],
-                dyn_shapes.cache[5],
+    def entry_manifest_output_specs(*, include_cache_length: bool, final_z_aliases_pred_z: bool):
+        outputs = {
+            "final_z": tensor_spec("float32", dyn_shapes.step_z),
+            "candidate_k_entry": tensor_spec(
+                "float32",
+                (
+                    dyn_shapes.cache[0],
+                    dyn_shapes.cache[1],
+                    dyn_shapes.cache[2],
+                    1,
+                    dyn_shapes.cache[4],
+                    dyn_shapes.cache[5],
+                ),
             ),
-        ),
-        "candidate_v_entry": tensor_spec(
-            "float32",
-            (
-                dyn_shapes.cache[0],
-                dyn_shapes.cache[1],
-                dyn_shapes.cache[2],
-                1,
-                dyn_shapes.cache[4],
-                dyn_shapes.cache[5],
+            "candidate_v_entry": tensor_spec(
+                "float32",
+                (
+                    dyn_shapes.cache[0],
+                    dyn_shapes.cache[1],
+                    dyn_shapes.cache[2],
+                    1,
+                    dyn_shapes.cache[4],
+                    dyn_shapes.cache[5],
+                ),
             ),
-        ),
-    }
-    if not entry_manifest_final_z_aliases_pred_z:
-        entry_manifest_outputs["pred_z"] = tensor_spec("float32", dyn_shapes.step_z)
+        }
+        if include_cache_length:
+            outputs["candidate_cache_length"] = tensor_spec("int32", (1,))
+        if not final_z_aliases_pred_z:
+            outputs["pred_z"] = tensor_spec("float32", dyn_shapes.step_z)
+        return outputs
+
+    cache_length_entry_manifest_outputs = entry_manifest_output_specs(
+        include_cache_length=True,
+        final_z_aliases_pred_z=cache_length_entry_manifest_final_z_aliases_pred_z,
+    )
+    entry_manifest_outputs = entry_manifest_output_specs(
+        include_cache_length=False,
+        final_z_aliases_pred_z=entry_manifest_final_z_aliases_pred_z,
+    )
     exports = [
         {
             "name": TOKENIZER_DECODER_NAME,
@@ -7123,6 +7292,49 @@ def main() -> None:
                     "fallback": DYNAMICS_CACHED_STEP_NAME,
                     "cache_update": "fill",
                     "steady_state_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME,
+                },
+                {
+                    "name": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
+                    **dynamics_sample_append_context_entry_files,
+                    "inputs": {
+                        "sample_noise": tensor_spec("float32", dyn_shapes.step_z),
+                        "context_noise": tensor_spec("float32", dyn_shapes.step_z),
+                        "actions": tensor_spec("int32", dyn_shapes.step_levels),
+                        "k_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "v_cache": tensor_spec("float32", dyn_shapes.cache),
+                        "cache_length": tensor_spec("int32", (1,)),
+                    },
+                    "outputs": cache_length_entry_manifest_outputs,
+                    "validation": validation[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME],
+                    "simplification": simplification[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
+                    ],
+                    "optimization": optimization[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME],
+                    "layout_rewrite": layout_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
+                    ],
+                    "gqa_repeat_rewrite": gqa_repeat_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
+                    ],
+                    "head_projection_rewrite": head_projection_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
+                    ],
+                    "rmsnorm_rewrite": rmsnorm_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
+                    ],
+                    "gather_index_rewrite": gather_index_rewrite[
+                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
+                    ],
+                    "production_browser_ready": True,
+                    "sample_steps": args.sample_steps,
+                    "context_tau": args.context_tau,
+                    "sample_cache_policy": "sample_then_append_generated_context",
+                    "fallback": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
+                    "cache_update": "fill_or_slide_by_cache_length",
+                    "cache_update_contract": "webgpu_inplace_fill_or_slide_rebase_entry",
+                    "final_z_aliases_pred_z": cache_length_entry_manifest_final_z_aliases_pred_z,
+                    "supports_logical_cache_length": True,
+                    "steady_state_full_cache_specialized": False,
                 },
                 {
                     "name": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME,
@@ -7439,14 +7651,16 @@ def main() -> None:
             "sample_steps": args.sample_steps,
             "context_tau": args.context_tau,
             "sample_cache_policy": "sample_then_append_generated_context",
-            "preferred_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
+            "preferred_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
             "preferred_prefill_export": DYNAMICS_CACHED_PREFILL_NAME,
             "preferred_steady_state_step_export": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
             ),
             "fallback_steady_state_step_export": (
                 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
             ),
+            "legacy_full_candidate_cache_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
+            "legacy_steady_state_entry_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
             "experimental_layer_prefill_export": DYNAMICS_CACHED_PREFILL_LAYER_NAME,
             "experimental_layer_steady_state_step_export": (
                 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
@@ -7480,6 +7694,7 @@ def main() -> None:
         print(f"Wrote {dynamics_sample_step_path}")
         print(f"Wrote {dynamics_sample_step_slide_path}")
         print(f"Wrote {dynamics_sample_append_context_path}")
+        print(f"Wrote {dynamics_sample_append_context_entry_path}")
         print(f"Wrote {dynamics_sample_append_context_slide_path}")
         print(f"Wrote {dynamics_sample_append_context_slide_full_cache_path}")
         print(f"Wrote {dynamics_sample_append_context_slide_entry_path}")

@@ -2,39 +2,54 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
     <title>Breakout World Model</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="shell">
-      <section class="stage">
-        <canvas id="frame" width="96" height="128" aria-label="Generated Breakout frame"></canvas>
+      <section class="machine" aria-label="Breakout world model">
+        <div class="marquee">
+          <span>Breakout</span>
+          <strong>World Model</strong>
+          <div id="fps" class="meter">-- fps</div>
+        </div>
+        <div class="stage">
+          <div class="screen-bezel">
+            <canvas id="frame" width="96" height="128" aria-label="Generated Breakout frame"></canvas>
+          </div>
+        </div>
       </section>
       <aside class="panel">
         <div class="topline">
-          <div>
-            <h1>Breakout World Model</h1>
-            <p id="status">Loading assets</p>
+          <h1>Breakout</h1>
+          <p id="status">Loading assets</p>
+        </div>
+
+        <div class="control-deck">
+          <div class="controls">
+            <button id="start" type="button">Start</button>
+            <button id="reset" type="button">Reset</button>
           </div>
-          <div id="fps" class="meter">-- fps</div>
-        </div>
 
-        <div class="controls">
-          <button id="start" type="button">Start</button>
-          <button id="reset" type="button">Reset</button>
-        </div>
-
-        <div class="action-grid" aria-label="Action controls">
-          <div></div>
-          <kbd id="key-fire">Space</kbd>
-          <div></div>
-          <kbd id="key-left">←</kbd>
-          <kbd id="key-noop">Noop</kbd>
-          <kbd id="key-right">→</kbd>
+          <div class="action-grid" aria-label="Action controls">
+            <div></div>
+            <button id="key-fire" class="key-button fire-button" type="button">Fire</button>
+            <div></div>
+            <button id="key-left" class="key-button" type="button">←</button>
+            <button id="key-noop" class="key-button" type="button">•</button>
+            <button id="key-right" class="key-button" type="button">→</button>
+          </div>
         </div>
 
         <dl class="stats">
+          <div>
+            <dt>Backend</dt>
+            <dd id="backend">--</dd>
+          </div>
           <div>
             <dt>Action</dt>
             <dd id="action">noop</dd>
@@ -48,12 +63,43 @@
             <dd id="latency">-- ms</dd>
           </div>
           <div>
+            <dt>Target</dt>
+            <dd>
+              <select id="target-fps" aria-label="Target FPS">
+                <option value="0" selected>Max</option>
+                <option value="15">15 fps</option>
+                <option value="20">20 fps</option>
+                <option value="30">30 fps</option>
+                <option value="60">60 fps</option>
+              </select>
+            </dd>
+          </div>
+          <div>
+            <dt>Payload</dt>
+            <dd id="payload">--</dd>
+          </div>
+          <div>
             <dt>Context</dt>
             <dd id="context">episode_0 @ 4</dd>
           </div>
         </dl>
+
+        <div class="loadout" aria-label="Loading progress">
+          <div class="loadbar">
+            <div id="load-progress-fill"></div>
+          </div>
+          <p id="load-progress-text">Waiting</p>
+          <ol id="load-log"></ol>
+        </div>
       </aside>
     </main>
-    <script type="module" src="./main.js"></script>
+    <script
+      id="visionary-demo-main"
+      type="module"
+      src="./main.js"
+      data-asset-base="/webgpu_app/assets"
+      data-ort-module="/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs"
+      data-ort-wasm-base="/node_modules/onnxruntime-web/dist/"
+    ></script>
   </body>
 </html>
