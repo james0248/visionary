@@ -1,12 +1,22 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 const RESULT_DIR = 'webgpu_app/bench/results';
 const RESULT_PATH = path.join(RESULT_DIR, 'latest.json');
 
-async function runBenchmark(page, mode, options = {}) {
-  const diagnostics = [];
+type BenchmarkOptions = {
+  graphCapture?: boolean;
+};
+
+type BenchmarkResult = any;
+
+async function runBenchmark(
+  page: Page,
+  mode: string,
+  options: BenchmarkOptions = {},
+): Promise<BenchmarkResult> {
+  const diagnostics: string[] = [];
   page.on('console', (message) => {
     diagnostics.push(`console.${message.type()}: ${message.text()}`);
   });
@@ -65,7 +75,7 @@ async function runBenchmark(page, mode, options = {}) {
   }
 }
 
-async function writeResult(result) {
+async function writeResult(result: BenchmarkResult) {
   await mkdir(RESULT_DIR, { recursive: true });
   await writeFile(RESULT_PATH, `${JSON.stringify(result, null, 2)}\n`);
 }

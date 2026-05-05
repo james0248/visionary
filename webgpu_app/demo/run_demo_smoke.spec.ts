@@ -41,8 +41,10 @@ test('world model demo changes the canvas over generated frames @demo', async ({
       })
       .toBeGreaterThanOrEqual(targetFrame);
     samples.push(
-      await page.locator('#frame').evaluate((canvas) => {
+      await page.locator('#frame').evaluate((canvasElement) => {
+        const canvas = canvasElement as HTMLCanvasElement;
         const context = canvas.getContext('2d');
+        if (!context) throw new Error('Could not get 2D canvas context');
         const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
         let hash = 2166136261;
         for (let index = 0; index < data.length; index += 4) {

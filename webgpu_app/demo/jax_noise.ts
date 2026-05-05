@@ -1,6 +1,9 @@
 // Deterministic standard-normal noise for browser rollout.
 // This matches JAX's normal distribution contract, not JAX's bit-exact Threefry stream.
 export class NormalNoiseGenerator {
+  state: number;
+  spare: number | null;
+
   constructor(seed = 0) {
     this.state = seed >>> 0;
     this.spare = null;

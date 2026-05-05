@@ -982,7 +982,7 @@ Conclusion:
 
 Benchmark stability note:
 - A browser launch failure occurred while Google Chrome attempted to read the user's real Crashpad settings.
-- `playwright.config.js` now launches Chrome with an isolated `HOME` at `/private/tmp/visionary-chrome-home`.
+- `playwright.config.ts` now launches Chrome with an isolated `HOME` at `/private/tmp/visionary-chrome-home`.
 - This does not affect model math or measured model execution; it avoids benchmark startup failures in the sandboxed environment.
 
 Rank-preserving `MatMul` projection trial:

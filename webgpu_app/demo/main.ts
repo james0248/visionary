@@ -1,7 +1,7 @@
-import { NormalNoiseGenerator } from './jax_noise.js';
+import { NormalNoiseGenerator } from './jax_noise';
 
 const params = new URLSearchParams(window.location.search);
-const scriptElement = document.getElementById('visionary-demo-main');
+const scriptElement = document.getElementById('visionary-demo-main') as HTMLElement | null;
 const globalConfig = window.VISIONARY_DEMO_CONFIG ?? {};
 
 function configValue(name, fallback) {
@@ -49,10 +49,10 @@ const float32Scratch = new Float32Array(1);
 const uint32Scratch = new Uint32Array(float32Scratch.buffer);
 
 const elements = {
-  canvas: document.getElementById('frame'),
+  canvas: document.getElementById('frame') as HTMLCanvasElement,
   status: document.getElementById('status'),
-  start: document.getElementById('start'),
-  reset: document.getElementById('reset'),
+  start: document.getElementById('start') as HTMLButtonElement,
+  reset: document.getElementById('reset') as HTMLButtonElement,
   fps: document.getElementById('fps'),
   action: document.getElementById('action'),
   frameCount: document.getElementById('frame-count'),
@@ -60,7 +60,7 @@ const elements = {
   context: document.getElementById('context'),
   backend: document.getElementById('backend'),
   payload: document.getElementById('payload'),
-  targetFps: document.getElementById('target-fps'),
+  targetFps: document.getElementById('target-fps') as HTMLSelectElement,
   loadFill: document.getElementById('load-progress-fill'),
   loadText: document.getElementById('load-progress-text'),
   loadLog: document.getElementById('load-log'),

@@ -43,3 +43,7 @@ webgpu_app/assets/breakout_demo_context.*
 webgpu_app/assets/breakout_demo_initial_cache.*
 webgpu_app/assets_raw/
 webgpu_app/bench/results/*.json
+webgpu_app/bench/benchmark.js
+webgpu_app/bench/benchmark.js.map
+webgpu_app/demo/main.js
+webgpu_app/demo/main.js.map

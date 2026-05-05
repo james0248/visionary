@@ -1,6 +1,9 @@
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
+import { buildBrowserEntrypoints } from './build_browser_entrypoints';
+
+await buildBrowserEntrypoints();
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {

@@ -1,7 +1,10 @@
-import * as ort from '/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs';
+// @ts-nocheck
+export {};
 
 const ASSET_DIR = '/webgpu_app/assets';
 const MANIFEST_URL = `${ASSET_DIR}/breakout_onnx_manifest.json`;
+const ORT_MODULE_URL = '/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs';
+const ort = await import(ORT_MODULE_URL);
 ort.env.wasm ??= {};
 ort.env.wasm.wasmPaths = '/node_modules/onnxruntime-web/dist/';
 ort.env.webgpu ??= {};

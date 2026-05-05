@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import { buildDemoBrowserBundle } from './build_browser_entrypoints';
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 1) {
@@ -59,9 +60,10 @@ function demoModelAssets() {
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
-for (const file of ['styles.css', 'main.js', 'jax_noise.js']) {
+for (const file of ['styles.css']) {
   copyFileSync(join(demoDir, file), join(outDir, file));
 }
+await buildDemoBrowserBundle(outDir);
 
 let html = readFileSync(join(demoDir, 'index.html'), 'utf8');
 html = html
