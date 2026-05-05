@@ -22,18 +22,18 @@ from visionary.common.checkpoint import (
     restore_model_export_single_device,
 )
 from visionary.export.onnx_wrappers import (
-    apply_dynamics_cached_prefill,
-    apply_dynamics_cached_prefill_layer_cache,
-    apply_dynamics_cached_sample_step,
-    apply_dynamics_cached_sample_step_append_context,
-    apply_dynamics_cached_sample_step_append_context_cache_length_entries,
-    apply_dynamics_cached_sample_step_append_context_full_cache,
-    apply_dynamics_cached_sample_step_append_context_full_cache_entries,
-    apply_dynamics_cached_sample_step_append_context_layer_cache,
-    apply_dynamics_cached_step,
-    apply_dynamics_uncached,
-    apply_tokenizer_decode_z,
-    apply_tokenizer_decoder,
+    onnx_apply_dynamics_cached_prefill,
+    onnx_apply_dynamics_cached_prefill_layer_cache,
+    onnx_apply_dynamics_cached_sample_step,
+    onnx_apply_dynamics_cached_sample_step_append_context,
+    onnx_apply_dynamics_cached_sample_step_append_context_cache_length_entries,
+    onnx_apply_dynamics_cached_sample_step_append_context_full_cache,
+    onnx_apply_dynamics_cached_sample_step_append_context_full_cache_entries,
+    onnx_apply_dynamics_cached_sample_step_append_context_layer_cache,
+    onnx_apply_dynamics_cached_step,
+    onnx_apply_dynamics_uncached,
+    onnx_apply_tokenizer_decode_z,
+    onnx_apply_tokenizer_decoder,
     dynamics_shapes,
     set_attention_export_layout,
     set_attention_export_lowering,
@@ -80,29 +80,30 @@ def sample_export_names(sample_steps: int) -> dict[str, str]:
 
 
 def set_sample_export_names(sample_steps: int) -> None:
+    global DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
+    global DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME
+    global DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+    global DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+    global DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
+    global DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME
+    global DYNAMICS_CACHED_SAMPLE_STEP_NAME
+    global DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME
+
     names = sample_export_names(sample_steps)
-    globals().update(
-        {
-            "DYNAMICS_CACHED_SAMPLE_STEP_NAME": names["cached_sample_step"],
-            "DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME": names["cached_sample_step_slide"],
-            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME": names["append_context"],
-            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME": names[
-                "append_context_entry"
-            ],
-            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME": names[
-                "append_context_slide"
-            ],
-            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME": names[
-                "append_context_slide_full_cache"
-            ],
-            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME": names[
-                "append_context_slide_entry"
-            ],
-            "DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME": names[
-                "append_context_slide_layer"
-            ],
-        }
-    )
+    DYNAMICS_CACHED_SAMPLE_STEP_NAME = names["cached_sample_step"]
+    DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME = names["cached_sample_step_slide"]
+    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME = names["append_context"]
+    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME = names["append_context_entry"]
+    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME = names["append_context_slide"]
+    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME = names[
+        "append_context_slide_full_cache"
+    ]
+    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME = names[
+        "append_context_slide_entry"
+    ]
+    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME = names[
+        "append_context_slide_layer"
+    ]
 
 
 set_sample_export_names(4)
@@ -5604,21 +5605,21 @@ def main() -> None:
     ensure_output(manifest_path, overwrite=args.overwrite)
 
     def decoder_fn(latent: jax.Array) -> jax.Array:
-        return apply_tokenizer_decoder(
+        return onnx_apply_tokenizer_decoder(
             tokenizer_variables,
             tokenizer_cfg,
             latent,
         )
 
     def decoder_step_fn(latent: jax.Array) -> jax.Array:
-        return apply_tokenizer_decoder(
+        return onnx_apply_tokenizer_decoder(
             tokenizer_variables,
             tokenizer_cfg,
             latent,
         )
 
     def decoder_z_step_fn(z: jax.Array) -> jax.Array:
-        return apply_tokenizer_decode_z(
+        return onnx_apply_tokenizer_decode_z(
             tokenizer_variables,
             tokenizer_cfg,
             z,
@@ -5631,7 +5632,7 @@ def main() -> None:
         step_levels: jax.Array,
         signal_levels: jax.Array,
     ) -> jax.Array:
-        return apply_dynamics_uncached(
+        return onnx_apply_dynamics_uncached(
             dynamics_variables,
             dynamics_cfg,
             z,
@@ -5646,7 +5647,7 @@ def main() -> None:
         step_levels: jax.Array,
         signal_levels: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-        return apply_dynamics_cached_prefill(
+        return onnx_apply_dynamics_cached_prefill(
             dynamics_variables,
             dynamics_cfg,
             z,
@@ -5661,7 +5662,7 @@ def main() -> None:
         step_levels: jax.Array,
         signal_levels: jax.Array,
     ) -> tuple[jax.Array, tuple[jax.Array, ...], tuple[jax.Array, ...], jax.Array]:
-        return apply_dynamics_cached_prefill_layer_cache(
+        return onnx_apply_dynamics_cached_prefill_layer_cache(
             dynamics_variables,
             dynamics_cfg,
             z,
@@ -5680,7 +5681,7 @@ def main() -> None:
         v_cache: jax.Array,
         cache_length: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-        return apply_dynamics_cached_step(
+        return onnx_apply_dynamics_cached_step(
             dynamics_variables,
             dynamics_cfg,
             z,
@@ -5701,7 +5702,7 @@ def main() -> None:
         v_cache: jax.Array,
         cache_length: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
-        return apply_dynamics_cached_sample_step(
+        return onnx_apply_dynamics_cached_sample_step(
             dynamics_variables,
             dynamics_cfg,
             sample_noise,
@@ -5721,7 +5722,7 @@ def main() -> None:
         v_cache: jax.Array,
         cache_length: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
-        return apply_dynamics_cached_sample_step(
+        return onnx_apply_dynamics_cached_sample_step(
             dynamics_variables,
             dynamics_cfg,
             sample_noise,
@@ -5743,7 +5744,7 @@ def main() -> None:
         v_cache: jax.Array,
         cache_length: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
-        return apply_dynamics_cached_sample_step_append_context(
+        return onnx_apply_dynamics_cached_sample_step_append_context(
             dynamics_variables,
             dynamics_cfg,
             sample_noise,
@@ -5766,7 +5767,7 @@ def main() -> None:
         v_cache: jax.Array,
         cache_length: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
-        return apply_dynamics_cached_sample_step_append_context(
+        return onnx_apply_dynamics_cached_sample_step_append_context(
             dynamics_variables,
             dynamics_cfg,
             sample_noise,
@@ -5789,7 +5790,7 @@ def main() -> None:
         v_cache: jax.Array,
         cache_length: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
-        return apply_dynamics_cached_sample_step_append_context_cache_length_entries(
+        return onnx_apply_dynamics_cached_sample_step_append_context_cache_length_entries(
             dynamics_variables,
             dynamics_cfg,
             sample_noise,
@@ -5809,7 +5810,7 @@ def main() -> None:
         k_cache: jax.Array,
         v_cache: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-        return apply_dynamics_cached_sample_step_append_context_full_cache(
+        return onnx_apply_dynamics_cached_sample_step_append_context_full_cache(
             dynamics_variables,
             dynamics_cfg,
             sample_noise,
@@ -5828,7 +5829,7 @@ def main() -> None:
         k_cache: jax.Array,
         v_cache: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-        return apply_dynamics_cached_sample_step_append_context_full_cache_entries(
+        return onnx_apply_dynamics_cached_sample_step_append_context_full_cache_entries(
             dynamics_variables,
             dynamics_cfg,
             sample_noise,
@@ -5859,7 +5860,7 @@ def main() -> None:
         v_cache_5: jax.Array,
         cache_length: jax.Array,
     ) -> tuple[jax.Array, jax.Array, tuple[jax.Array, ...], tuple[jax.Array, ...], jax.Array]:
-        return apply_dynamics_cached_sample_step_append_context_layer_cache(
+        return onnx_apply_dynamics_cached_sample_step_append_context_layer_cache(
             dynamics_variables,
             dynamics_cfg,
             sample_noise,

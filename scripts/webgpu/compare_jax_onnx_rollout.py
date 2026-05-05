@@ -16,8 +16,8 @@ from visionary.common.checkpoint import (
 )
 from visionary.dynamics import DynamicsModel
 from visionary.export.onnx_wrappers import (
-    apply_dynamics_cached_sample_step,
-    apply_dynamics_cached_step,
+    onnx_apply_dynamics_cached_sample_step,
+    onnx_apply_dynamics_cached_step,
 )
 from visionary.tokenizer import Tokenizer
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
@@ -88,7 +88,7 @@ def compare_jax_cached_wrapper(
     }
 
     def append_context(cache_state: dict[str, jax.Array], z: np.ndarray, action: int) -> dict[str, jax.Array]:
-        _, candidate_k, candidate_v, candidate_length = apply_dynamics_cached_step(
+        _, candidate_k, candidate_v, candidate_length = onnx_apply_dynamics_cached_step(
             dynamics_variables,
             dynamics_cfg,
             jnp.asarray(z),
@@ -114,7 +114,7 @@ def compare_jax_cached_wrapper(
     sample_commit = []
     context_append = []
     for offset in range(generated_frames):
-        final_z, _, candidate_k, candidate_v, candidate_length = apply_dynamics_cached_sample_step(
+        final_z, _, candidate_k, candidate_v, candidate_length = onnx_apply_dynamics_cached_sample_step(
             dynamics_variables,
             dynamics_cfg,
             jnp.asarray(sample_noise_z[:, offset : offset + 1]),
@@ -132,7 +132,7 @@ def compare_jax_cached_wrapper(
             "length": candidate_length,
         }
 
-        final_z_append, _, _, _, _ = apply_dynamics_cached_sample_step(
+        final_z_append, _, _, _, _ = onnx_apply_dynamics_cached_sample_step(
             dynamics_variables,
             dynamics_cfg,
             jnp.asarray(sample_noise_z[:, offset : offset + 1]),

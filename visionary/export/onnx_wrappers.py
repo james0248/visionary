@@ -2098,7 +2098,7 @@ def export_overrides():
         dynamics_module.create_temporal_rope = original_dynamics_temporal_rope
 
 
-def apply_tokenizer_decoder(
+def onnx_apply_tokenizer_decoder(
     variables: Any,
     cfg: DictConfig,
     latent: jnp.ndarray,
@@ -2110,7 +2110,7 @@ def apply_tokenizer_decoder(
         return model.apply(variables, latent, method=Tokenizer.decode)
 
 
-def apply_tokenizer_decode_z(
+def onnx_apply_tokenizer_decode_z(
     variables: Any,
     cfg: DictConfig,
     z: jnp.ndarray,
@@ -2152,7 +2152,7 @@ def apply_tokenizer_decode_z(
         return model.apply(variables, latent, method=Tokenizer.decode)
 
 
-def apply_dynamics_uncached(
+def onnx_apply_dynamics_uncached(
     variables: Any,
     cfg: DictConfig,
     z: jnp.ndarray,
@@ -2174,7 +2174,7 @@ def apply_dynamics_uncached(
         )
 
 
-def apply_dynamics_cached_prefill(
+def onnx_apply_dynamics_cached_prefill(
     variables: Any,
     cfg: DictConfig,
     z: jnp.ndarray,
@@ -2199,7 +2199,7 @@ def apply_dynamics_cached_prefill(
         )
 
 
-def apply_dynamics_cached_prefill_layer_cache(
+def onnx_apply_dynamics_cached_prefill_layer_cache(
     variables: Any,
     cfg: DictConfig,
     z: jnp.ndarray,
@@ -2221,7 +2221,7 @@ def apply_dynamics_cached_prefill_layer_cache(
         )
 
 
-def apply_dynamics_cached_step(
+def onnx_apply_dynamics_cached_step(
     variables: Any,
     cfg: DictConfig,
     z: jnp.ndarray,
@@ -2256,7 +2256,7 @@ def apply_dynamics_cached_step(
         )
 
 
-def apply_dynamics_cached_sample_step(
+def onnx_apply_dynamics_cached_sample_step(
     variables: Any,
     cfg: DictConfig,
     z: jnp.ndarray,
@@ -2289,7 +2289,7 @@ def apply_dynamics_cached_sample_step(
         )
 
 
-def apply_dynamics_cached_sample_step_append_context(
+def onnx_apply_dynamics_cached_sample_step_append_context(
     variables: Any,
     cfg: DictConfig,
     sample_noise: jnp.ndarray,
@@ -2326,7 +2326,7 @@ def apply_dynamics_cached_sample_step_append_context(
         )
 
 
-def apply_dynamics_cached_sample_step_append_context_layer_cache(
+def onnx_apply_dynamics_cached_sample_step_append_context_layer_cache(
     variables: Any,
     cfg: DictConfig,
     sample_noise: jnp.ndarray,
@@ -2363,7 +2363,7 @@ def apply_dynamics_cached_sample_step_append_context_layer_cache(
         )
 
 
-def apply_dynamics_cached_sample_step_append_context_full_cache(
+def onnx_apply_dynamics_cached_sample_step_append_context_full_cache(
     variables: Any,
     cfg: DictConfig,
     sample_noise: jnp.ndarray,
@@ -2395,7 +2395,7 @@ def apply_dynamics_cached_sample_step_append_context_full_cache(
         )
 
 
-def apply_dynamics_cached_sample_step_append_context_full_cache_entries(
+def onnx_apply_dynamics_cached_sample_step_append_context_full_cache_entries(
     variables: Any,
     cfg: DictConfig,
     sample_noise: jnp.ndarray,
@@ -2427,7 +2427,7 @@ def apply_dynamics_cached_sample_step_append_context_full_cache_entries(
         )
 
 
-def apply_dynamics_cached_sample_step_append_context_cache_length_entries(
+def onnx_apply_dynamics_cached_sample_step_append_context_cache_length_entries(
     variables: Any,
     cfg: DictConfig,
     sample_noise: jnp.ndarray,
@@ -2459,3 +2459,29 @@ def apply_dynamics_cached_sample_step_append_context_cache_length_entries(
             sample_steps=sample_steps,
             method=_CachedDynamicsModel.sample_step_append_context_cache_length_entries,
         )
+
+
+# Compatibility aliases for older export scripts. New ONNX-only call sites should
+# use the onnx_ names so they are easy to distinguish from core model methods.
+apply_tokenizer_decoder = onnx_apply_tokenizer_decoder
+apply_tokenizer_decode_z = onnx_apply_tokenizer_decode_z
+apply_dynamics_uncached = onnx_apply_dynamics_uncached
+apply_dynamics_cached_prefill = onnx_apply_dynamics_cached_prefill
+apply_dynamics_cached_prefill_layer_cache = onnx_apply_dynamics_cached_prefill_layer_cache
+apply_dynamics_cached_step = onnx_apply_dynamics_cached_step
+apply_dynamics_cached_sample_step = onnx_apply_dynamics_cached_sample_step
+apply_dynamics_cached_sample_step_append_context = (
+    onnx_apply_dynamics_cached_sample_step_append_context
+)
+apply_dynamics_cached_sample_step_append_context_layer_cache = (
+    onnx_apply_dynamics_cached_sample_step_append_context_layer_cache
+)
+apply_dynamics_cached_sample_step_append_context_full_cache = (
+    onnx_apply_dynamics_cached_sample_step_append_context_full_cache
+)
+apply_dynamics_cached_sample_step_append_context_full_cache_entries = (
+    onnx_apply_dynamics_cached_sample_step_append_context_full_cache_entries
+)
+apply_dynamics_cached_sample_step_append_context_cache_length_entries = (
+    onnx_apply_dynamics_cached_sample_step_append_context_cache_length_entries
+)
