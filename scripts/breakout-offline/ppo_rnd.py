@@ -6,6 +6,7 @@ from collections.abc import Callable
 import flax.linen as nn
 import gymnasium as gym
 import hydra
+import imageio
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -359,6 +360,41 @@ def minibatches(
     return [{key: value[idx] for key, value in batch.items()} for idx in splits]
 
 
+def record_eval_rollout(
+    env: gym.Env,
+    policy_model: ActorCritic,
+    params: dict,
+    output_dir: str,
+    global_step: int,
+) -> tuple[int, float, str]:
+    video_dir = os.path.join(output_dir, "videos")
+    os.makedirs(video_dir, exist_ok=True)
+    video_path = os.path.join(video_dir, f"ppo_rnd_rollout_{global_step}.mp4")
+
+    @jax.jit
+    def get_action(policy_params, obs):
+        logits, _, _ = policy_model.apply(policy_params, obs[None])
+        return jnp.argmax(logits, axis=-1)
+
+    obs, _ = env.reset()
+    fps = env.metadata.get("render_fps", 30)
+    frames = [env.render()]
+    total_reward = 0.0
+    steps = 0
+
+    while True:
+        action = int(get_action(params["policy"], jnp.asarray(obs)).item())
+        obs, reward, terminated, truncated, _ = env.step(action)
+        total_reward += reward
+        steps += 1
+        frames.append(env.render())
+        if terminated or truncated:
+            break
+
+    imageio.mimsave(video_path, frames, fps=fps, macro_block_size=1)
+    return steps, total_reward, video_path
+
+
 @hydra.main(config_path="config", config_name="ppo_rnd", version_base=None)
 def main(cfg: DictConfig):
     key = jax.random.key(cfg.seed)
@@ -388,6 +424,7 @@ def main(cfg: DictConfig):
         return env
 
     env = make_vec_env(make_env, n_envs=cfg.n_envs)
+    eval_env = make_env(eval=True)
     obs, _ = env.reset()
 
     action_size = env.single_action_space.n
@@ -615,6 +652,17 @@ def main(cfg: DictConfig):
             checkpoint_manager.save(step=global_step, state=state, force=True)
             last_checkpoint_step = global_step
 
+        if cfg.eval_steps > 0 and global_step % cfg.eval_steps < cfg.n_envs:
+            steps, reward, video_path = record_eval_rollout(
+                eval_env,
+                policy_model,
+                state.params,
+                output_dir,
+                global_step,
+            )
+            wb.log({"eval/steps": steps, "eval/reward": reward}, step=global_step)
+            wb.log_video("eval/rollout", video_path, step=global_step)
+
         if rollout_idx % cfg.log_interval_rollouts == 0:
             elapsed = max(time.time() - start_time, 1e-6)
             log_data = {
@@ -638,6 +686,7 @@ def main(cfg: DictConfig):
     checkpoint_manager.close()
     wb.finish()
     env.close()
+    eval_env.close()
 
 
 if __name__ == "__main__":

@@ -34,6 +34,9 @@ predictor_proportion: 0.25
 checkpoint_interval_rollouts: 100
 log_interval_rollouts: 10
 
+# Evaluation
+eval_steps: 100_000
+
 # Wandb
 wandb:
   enabled: true
