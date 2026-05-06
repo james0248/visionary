@@ -24,6 +24,7 @@ from visionary.common.env import (
     ClipRewardEnv,
     EpisodicLifeEnv,
     FireResetEnv,
+    has_fire_action,
     make_vec_env,
 )
 from visionary.common.rollout import record_rollout
@@ -130,7 +131,7 @@ def main(cfg: DictConfig):
             env = EpisodicLifeEnv(env)
             env = ClipRewardEnv(env)
         env = gym.wrappers.FrameStackObservation(env, stack_size=4)
-        if "FIRE" in env.unwrapped.get_action_meanings():
+        if cfg.fire_reset and has_fire_action(env.unwrapped.get_action_meanings()):
             env = FireResetEnv(env, fire_on_life_loss=eval)
         return env
 

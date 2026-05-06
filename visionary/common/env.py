@@ -73,6 +73,10 @@ class FrameRecorder(gym.Wrapper):
         return frames
 
 
+def has_fire_action(action_meanings: list[str]) -> bool:
+    return "FIRE" in action_meanings
+
+
 class FireResetEnv(gym.Wrapper):
     """Press FIRE on reset so Atari games (e.g. Breakout) start immediately."""
 

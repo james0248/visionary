@@ -13,7 +13,7 @@ from dqn import DQN
 from omegaconf import DictConfig
 
 from visionary.common.checkpoint import CheckpointManager
-from visionary.common.env import FireResetEnv, FrameRecorder, make_vec_env
+from visionary.common.env import FireResetEnv, FrameRecorder, has_fire_action, make_vec_env
 from visionary.common.train_state import TargetTrainState
 
 logger = logging.getLogger(__name__)
@@ -92,6 +92,7 @@ def main(cfg: DictConfig):
     run_cfg = load_run_config(cfg.run_dir)
     env_id = run_cfg["env"]
     frame_skip = run_cfg["frame_skip"]
+    fire_reset = run_cfg.get("fire_reset", True)
 
     output_dir = os.path.join(cfg.run_dir, "rollouts")
     checkpoint_manager = CheckpointManager(
@@ -122,7 +123,7 @@ def main(cfg: DictConfig):
             scale_obs=False,
         )
         env = gym.wrappers.FrameStackObservation(env, stack_size=4)
-        if "FIRE" in env.unwrapped.get_action_meanings():
+        if fire_reset and has_fire_action(env.unwrapped.get_action_meanings()):
             env = FireResetEnv(env, fire_on_life_loss=True)
         return env
 
