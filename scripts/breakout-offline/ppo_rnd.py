@@ -366,15 +366,18 @@ def record_eval_rollout(
     params: dict,
     output_dir: str,
     global_step: int,
+    key: jax.Array,
+    temperature: float,
 ) -> tuple[int, float, str]:
     video_dir = os.path.join(output_dir, "videos")
     os.makedirs(video_dir, exist_ok=True)
     video_path = os.path.join(video_dir, f"ppo_rnd_rollout_{global_step}.mp4")
 
     @jax.jit
-    def get_action(policy_params, obs):
+    def get_action(policy_params, obs, action_key, temperature):
         logits, _, _ = policy_model.apply(policy_params, obs[None])
-        return jnp.argmax(logits, axis=-1)
+        logits = logits / jnp.maximum(temperature, 1e-6)
+        return jax.random.categorical(action_key, logits, axis=-1)
 
     obs, _ = env.reset()
     fps = env.metadata.get("render_fps", 30)
@@ -383,7 +386,15 @@ def record_eval_rollout(
     steps = 0
 
     while True:
-        action = int(get_action(params["policy"], jnp.asarray(obs)).item())
+        key, action_key = jax.random.split(key)
+        action = int(
+            get_action(
+                params["policy"],
+                jnp.asarray(obs),
+                action_key,
+                jnp.asarray(temperature),
+            ).item()
+        )
         obs, reward, terminated, truncated, _ = env.step(action)
         total_reward += reward
         steps += 1
@@ -654,12 +665,15 @@ def main(cfg: DictConfig):
             last_checkpoint_step = global_step
 
         if cfg.eval_steps > 0 and global_step >= next_eval_step:
+            key, eval_key = jax.random.split(key)
             steps, reward, video_path = record_eval_rollout(
                 eval_env,
                 policy_model,
                 state.params,
                 output_dir,
                 global_step,
+                eval_key,
+                float(cfg.eval_temperature),
             )
             wb.log({"eval/steps": steps, "eval/reward": reward}, step=global_step)
             wb.log_video("eval/rollout", video_path, step=global_step)

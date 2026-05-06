@@ -36,6 +36,7 @@ log_interval_rollouts: 10
 
 # Evaluation
 eval_steps: 100_000
+eval_temperature: 1.0
 
 # Wandb
 wandb:
