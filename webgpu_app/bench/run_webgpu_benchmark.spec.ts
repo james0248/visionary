@@ -4,6 +4,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 const RESULT_DIR = 'webgpu_app/bench/results';
 const RESULT_PATH = path.join(RESULT_DIR, 'latest.json');
+const GRAPH_CAPTURE_RESULT_PATH = path.join(RESULT_DIR, 'graph_capture_latest.json');
 
 type BenchmarkOptions = {
   graphCapture?: boolean;
@@ -75,9 +76,9 @@ async function runBenchmark(
   }
 }
 
-async function writeResult(result: BenchmarkResult) {
+async function writeResult(result: BenchmarkResult, resultPath = RESULT_PATH) {
   await mkdir(RESULT_DIR, { recursive: true });
-  await writeFile(RESULT_PATH, `${JSON.stringify(result, null, 2)}\n`);
+  await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`);
 }
 
 test('webgpu benchmark smoke @smoke', async ({ page }) => {
@@ -118,7 +119,7 @@ test('webgpu demo streaming benchmark', async ({ page }) => {
 
 test('webgpu demo streaming benchmark graph capture @graph-capture', async ({ page }) => {
   const result = await runBenchmark(page, 'streaming', { graphCapture: true });
-  await writeResult(result);
+  await writeResult(result, GRAPH_CAPTURE_RESULT_PATH);
   expect(['passed', 'blocked'], result.message ?? '').toContain(result.status);
   expect(result.schema_version).toBe(2);
 

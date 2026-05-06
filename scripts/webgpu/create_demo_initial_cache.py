@@ -11,7 +11,7 @@ import onnxruntime as ort
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create browser demo initial K/V cache artifacts from the exported prefill ONNX model."
+        description="Create browser demo initial K/V cache artifacts from the exported prefix-step ONNX model."
     )
     parser.add_argument("--asset_dir", type=Path, default=Path("webgpu_app/assets"))
     parser.add_argument("--onnx_manifest", default="breakout_onnx_manifest.json")
@@ -174,7 +174,7 @@ def main() -> None:
         },
         "notes": [
             "This cache is generated offline by replaying the same 4-frame prefix-step loop used by the original browser demo.",
-            "The browser uses an append-capable dynamics graph until cache_length reaches context_length, then switches to entry-cache sliding updates.",
+            "The browser continues rollout with the cache-length entry graph and updates the fixed-size cache from per-frame K/V entries.",
         ],
     }
     manifest_out.write_text(json.dumps(cache_manifest, indent=2, sort_keys=True) + "\n")

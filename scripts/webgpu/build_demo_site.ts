@@ -49,9 +49,7 @@ function demoModelAssets() {
   const manifestPath = join(assetDir, 'breakout_onnx_manifest.json');
   if (!existsSync(manifestPath)) return [];
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  const preferredStep =
-    manifest.demo_generation?.preferred_step_export ??
-    manifest.demo_generation?.preferred_steady_state_step_export;
+  const preferredStep = manifest.demo_generation?.preferred_step_export;
   if (!preferredStep) return [];
   const exportSpec = manifest.exports?.find((entry) => entry.name === preferredStep);
   return exportSpec?.path ? [exportSpec.path] : [];

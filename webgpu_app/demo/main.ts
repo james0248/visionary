@@ -136,6 +136,7 @@ function dtypeArray(dtype) {
   if (dtype === 'float32') return Float32Array;
   if (dtype === 'float16') return Uint16Array;
   if (dtype === 'int32') return Int32Array;
+  if (dtype === 'uint8') return Uint8Array;
   throw new Error(`Unsupported artifact dtype ${dtype}`);
 }
 
@@ -298,9 +299,62 @@ function findExport(manifest, name) {
   return entry;
 }
 
+function findFirstExport(manifest, names) {
+  for (const name of names.filter(Boolean)) {
+    const entry = manifest.exports.find((item) => item.name === name);
+    if (entry) return entry;
+  }
+  throw new Error(`Missing exports: ${names.filter(Boolean).join(', ')}`);
+}
+
 function outputName(spec, preferred) {
   if (spec.outputs?.[preferred]) return preferred;
   return Object.keys(spec.outputs ?? {})[0];
+}
+
+function requiredOutputName(spec, preferred) {
+  if (spec.outputs?.[preferred]) return preferred;
+  throw new Error(`${spec.name} must output ${preferred}`);
+}
+
+function optionalOutputName(spec, preferred) {
+  return spec.outputs?.[preferred] ? preferred : null;
+}
+
+function formatShape(shape) {
+  return `[${shape.join(',')}]`;
+}
+
+function sameShape(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function assertTensorMatchesSpec(tensor, spec, label, name) {
+  if (!spec) return;
+  if (tensor.type !== spec.dtype || !sameShape(tensor.dims, spec.shape)) {
+    throw new Error(
+      `${label} does not match the exported ${name} input. ` +
+        `Artifact has ${tensor.type} ${formatShape(tensor.dims)}, ` +
+        `model expects ${spec.dtype} ${formatShape(spec.shape)}. ` +
+        'Regenerate it with `uv run python scripts/webgpu/create_demo_initial_cache.py --asset_dir webgpu_app/assets --overwrite`.',
+    );
+  }
+}
+
+function validateInitialCache(stepSpec, initialK, initialV, initialLength) {
+  const inputs = stepSpec.inputs ?? {};
+  assertTensorMatchesSpec(initialK, inputs.k_cache, 'Initial K cache', 'k_cache');
+  assertTensorMatchesSpec(initialV, inputs.v_cache, 'Initial V cache', 'v_cache');
+  assertTensorMatchesSpec(initialLength, inputs.cache_length, 'Initial cache length', 'cache_length');
+}
+
+function stepNamesForSpec(stepSpec) {
+  return {
+    finalZ: requiredOutputName(stepSpec, 'final_z'),
+    k: requiredOutputName(stepSpec, 'candidate_k_entry'),
+    v: requiredOutputName(stepSpec, 'candidate_v_entry'),
+    length: optionalOutputName(stepSpec, 'candidate_cache_length'),
+  };
 }
 
 async function createSession(spec, label, modelBytes, backend, options = {}) {
@@ -325,6 +379,46 @@ function randomNormalTensor(shape, dtype = 'float32') {
   return makeFloatTensor(dtype, noiseGenerator.tensorData(size), shape);
 }
 
+function cacheAttentionMaskTensor(inputSpec, cacheLength, contextLength) {
+  const validLength = Math.min(Math.max(cacheLength, 0), contextLength);
+  const values = new Float32Array(mul(inputSpec.shape));
+  for (let index = 0; index < values.length; index += 1) {
+    const position = index % (contextLength + 1);
+    values[index] = position < validLength || position === contextLength ? 1 : 0;
+  }
+  return makeFloatTensor(inputSpec.dtype, values, inputSpec.shape);
+}
+
+function stepPositionFeeds(stepSpec, cacheLength, contextLength, cacheLengthTensor) {
+  const inputs = stepSpec.inputs ?? {};
+  const feeds: Record<string, unknown> = {};
+  if (inputs.sample_position_index) {
+    feeds.sample_position_index = new ort.Tensor(
+      'int32',
+      new Int32Array([Math.min(cacheLength, contextLength)]),
+      inputs.sample_position_index.shape,
+    );
+  }
+  if (inputs.context_position_index) {
+    feeds.context_position_index = new ort.Tensor(
+      'int32',
+      new Int32Array([Math.min(cacheLength, contextLength - 1)]),
+      inputs.context_position_index.shape,
+    );
+  }
+  if (inputs.attention_mask) {
+    feeds.attention_mask = cacheAttentionMaskTensor(inputs.attention_mask, cacheLength, contextLength);
+  }
+  if (inputs.cache_length) {
+    feeds.cache_length = cacheLengthTensor;
+  }
+  return feeds;
+}
+
+function advanceCacheLength(cacheLengthTensor, contextLength) {
+  cacheLengthTensor.data[0] = Math.min(cacheLengthTensor.data[0] + 1, contextLength);
+}
+
 function disposeGpuTensor(tensor) {
   if (tensor?.location === 'gpu-buffer') {
     tensor.dispose();
@@ -340,6 +434,22 @@ function contextFrameTensor(tensor, frameIndex, dtype = 'float32') {
   const start = frameIndex * CONTEXT_TENSOR_SIZE;
   const end = start + CONTEXT_TENSOR_SIZE;
   return makeFloatTensor(dtype, tensor.data.slice(start, end), [1, 1, 32, 32]);
+}
+
+function renderPixelTensor(tensor, frameIndex) {
+  const [frames, height, width, channels] = tensor.dims;
+  const clampedFrame = Math.max(0, Math.min(frames - 1, frameIndex));
+  const sourceFrameOffset = clampedFrame * height * width * channels;
+  const image = new ImageData(width, height);
+  for (let index = 0; index < height * width; index += 1) {
+    const source = sourceFrameOffset + index * channels;
+    const target = index * 4;
+    image.data[target] = tensor.data[source];
+    image.data[target + 1] = tensor.data[source + 1];
+    image.data[target + 2] = tensor.data[source + 2];
+    image.data[target + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
 }
 
 function patchesToImageData(patchesTensor, preprocessor) {
@@ -871,7 +981,6 @@ async function createRuntimeForBackend(backend, loaded) {
         final_z: 'gpu-buffer',
         candidate_k_entry: 'gpu-buffer',
         candidate_v_entry: 'gpu-buffer',
-        candidate_cache_length: 'cpu',
       },
     });
     decoderSession = await createSession(
@@ -909,10 +1018,7 @@ async function createRuntimeForBackend(backend, loaded) {
         decoder: loaded.decoderSpec,
       },
       names: {
-        stepFinalZ: outputName(loaded.stepSpec, 'final_z'),
-        stepK: outputName(loaded.stepSpec, 'candidate_k_entry'),
-        stepV: outputName(loaded.stepSpec, 'candidate_v_entry'),
-        stepLength: outputName(loaded.stepSpec, 'candidate_cache_length'),
+        step: stepNamesForSpec(loaded.stepSpec),
         patches: outputName(loaded.decoderSpec, 'patches'),
       },
       dtypes: {
@@ -923,7 +1029,11 @@ async function createRuntimeForBackend(backend, loaded) {
         v: loaded.initialV,
         length: loaded.initialLength,
       },
+      contextLength:
+        loaded.manifest.cache_contract?.context_length ??
+        loaded.initialCacheManifest.arrays.k_cache.shape[3],
       displayZ: loaded.displayZ,
+      displayPixels: loaded.displayPixels,
       cacheUpdater,
       cache: null,
     };
@@ -945,21 +1055,24 @@ async function loadRuntime() {
     fetchJson(CONTEXT_URL, 'context manifest'),
     fetchJson(INITIAL_CACHE_URL, 'initial cache manifest'),
   ]);
-  const stepSpec = findExport(
-    manifest,
-    manifest.demo_generation?.preferred_step_export ??
-      manifest.demo_generation?.preferred_steady_state_step_export ??
-      'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2',
-  );
+  const stepSpec = findFirstExport(manifest, [
+    manifest.demo_generation?.preferred_step_export,
+    'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2',
+  ]);
   const decoderSpec = findExport(manifest, 'breakout_tokenizer_decode_z_b1_t1');
 
   setStatus('Loading context preview and initial cache');
-  const [displayZ, initialK, initialV, initialLength] = await Promise.all([
+  const displayPixelsPromise = contextManifest.arrays.display_pixels
+    ? fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.display_pixels, 'context preview pixels')
+    : Promise.resolve(null);
+  const [displayZ, displayPixels, initialK, initialV, initialLength] = await Promise.all([
     fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.display_z, 'context preview'),
+    displayPixelsPromise,
     fetchTensorFromArtifact(ASSET_DIR, initialCacheManifest.arrays.k_cache, 'initial K cache'),
     fetchTensorFromArtifact(ASSET_DIR, initialCacheManifest.arrays.v_cache, 'initial V cache'),
     fetchTensorFromArtifact(ASSET_DIR, initialCacheManifest.arrays.cache_length, 'cache length'),
   ]);
+  validateInitialCache(stepSpec, initialK, initialV, initialLength);
   elements.context.textContent = `${contextManifest.prefix_frames} frames @ ${contextManifest.episode_start}`;
 
   setStatus('Loading ONNX models');
@@ -975,6 +1088,7 @@ async function loadRuntime() {
     stepSpec,
     decoderSpec,
     displayZ,
+    displayPixels,
     initialK,
     initialV,
     initialLength,
@@ -1007,20 +1121,34 @@ async function resetDemo() {
   elements.frameCount.textContent = '0';
   elements.latency.textContent = '-- ms';
   const prefixFrames = runtime.contextManifest.prefix_frames ?? 1;
-  const previewTensor = contextFrameTensor(
-    runtime.displayZ,
-    prefixFrames - 1,
-    runtime.specs.decoder.inputs.z.dtype,
-  );
-  await renderLatent(previewTensor);
+  if (runtime.displayPixels) {
+    renderPixelTensor(runtime.displayPixels, prefixFrames - 1);
+  } else {
+    const previewTensor = contextFrameTensor(
+      runtime.displayZ,
+      prefixFrames - 1,
+      runtime.specs.decoder.inputs.z.dtype,
+    );
+    await renderLatent(previewTensor);
+  }
   setStatus(`Ready · ${runtime.backend} · cache length ${runtime.initialCache.length.data[0]}`);
 }
 
 async function generateFrame() {
   const started = performance.now();
   const action = new ort.Tensor('int32', new Int32Array([currentAction]), [1, 1]);
-  const sampleNoise = randomNormalTensor([1, 1, 32, 32], runtime.dtypes.sampleNoise);
-  const contextNoise = randomNormalTensor([1, 1, 32, 32], runtime.dtypes.sampleNoise);
+  const cacheLengthBefore = runtime.cache.length.data[0];
+  const stepInputs = runtime.specs.step.inputs ?? {};
+  const sampleNoise = randomNormalTensor(
+    stepInputs.sample_noise.shape,
+    stepInputs.sample_noise.dtype,
+  );
+  const contextNoise = randomNormalTensor(
+    stepInputs.context_noise.shape,
+    stepInputs.context_noise.dtype,
+  );
+  const fetches = [runtime.names.step.finalZ, runtime.names.step.k, runtime.names.step.v];
+  if (runtime.names.step.length) fetches.push(runtime.names.step.length);
   const outputs = await runtime.sessions.step.run(
     {
       sample_noise: sampleNoise,
@@ -1028,20 +1156,29 @@ async function generateFrame() {
       actions: action,
       k_cache: runtime.cache.k,
       v_cache: runtime.cache.v,
-      cache_length: runtime.cache.length,
+      ...stepPositionFeeds(
+        runtime.specs.step,
+        cacheLengthBefore,
+        runtime.contextLength,
+        runtime.cache.length,
+      ),
     },
-    [runtime.names.stepFinalZ, runtime.names.stepK, runtime.names.stepV, runtime.names.stepLength],
+    fetches,
   );
   runtime.cacheUpdater.update(
     runtime.cache,
-    outputs[runtime.names.stepK],
-    outputs[runtime.names.stepV],
+    outputs[runtime.names.step.k],
+    outputs[runtime.names.step.v],
     runtime.cache.length,
   );
-  runtime.cache.length = outputs[runtime.names.stepLength];
-  disposeGpuTensor(outputs[runtime.names.stepK]);
-  disposeGpuTensor(outputs[runtime.names.stepV]);
-  const zOutput = outputs[runtime.names.stepFinalZ];
+  if (runtime.names.step.length) {
+    runtime.cache.length = outputs[runtime.names.step.length];
+  } else {
+    advanceCacheLength(runtime.cache.length, runtime.contextLength);
+  }
+  disposeGpuTensor(outputs[runtime.names.step.k]);
+  disposeGpuTensor(outputs[runtime.names.step.v]);
+  const zOutput = outputs[runtime.names.step.finalZ];
 
   const decoderOutputs = await runtime.sessions.decoder.run({ z: zOutput }, [runtime.names.patches]);
   disposeGpuTensor(zOutput);

@@ -23,6 +23,10 @@ from visionary.tokenizer import Tokenizer
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 
+MANIFEST_NAME = "breakout_onnx_manifest.json"
+DEFAULT_SAMPLE_STEPS = 2
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare pure JAX rollout with exported ONNX rollout.")
     parser.add_argument("--episode", type=Path, default=Path("episode_0.npz"))
@@ -34,17 +38,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prefix_frames", type=int, default=4)
     parser.add_argument("--generated_frames", type=int, default=4)
     parser.add_argument("--context_tau", type=float, default=29 / 32)
-    parser.add_argument("--sample_steps", type=int, default=4)
+    parser.add_argument("--sample_steps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=Path("webgpu_app/bench/results/rollout_compare.json"))
     return parser.parse_args()
 
 
-def pack_z(latents: np.ndarray, *, num_obs_tokens: int = 32) -> np.ndarray:
+def pack_z(latents: np.ndarray, num_obs_tokens: int = 32) -> np.ndarray:
     return rearrange(latents, "b t (n k) d -> b t n (k d)", n=num_obs_tokens).astype(np.float32)
 
 
-def unpack_z(z: np.ndarray, *, channel_dim: int = 16) -> np.ndarray:
+def unpack_z(z: np.ndarray, channel_dim: int = 16) -> np.ndarray:
     return rearrange(z, "b t n (k d) -> b t (n k) d", d=channel_dim).astype(np.float32)
 
 
@@ -65,10 +69,95 @@ def stats(actual: np.ndarray, expected: np.ndarray) -> dict[str, Any]:
     }
 
 
+def load_manifest(assets_dir: Path) -> dict[str, Any]:
+    path = assets_dir / MANIFEST_NAME
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        return json.load(f)
+
+
+def export_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        entry["name"]: entry
+        for entry in manifest.get("exports", [])
+        if isinstance(entry, dict) and entry.get("name")
+    }
+
+
+def manifest_sample_steps(manifest: dict[str, Any]) -> int | None:
+    demo = manifest.get("demo_generation") or {}
+    value = demo.get("sample_steps")
+    if value is None:
+        return None
+    return int(value)
+
+
+def resolve_sample_steps(manifest: dict[str, Any], requested: int | None) -> int:
+    if requested is not None:
+        return int(requested)
+    return manifest_sample_steps(manifest) or DEFAULT_SAMPLE_STEPS
+
+
+def resolve_named_export(
+    manifest: dict[str, Any],
+    demo_key: str,
+    fallback_name: str,
+) -> dict[str, Any]:
+    exports = export_map(manifest)
+    demo = manifest.get("demo_generation") or {}
+    name = demo.get(demo_key) or fallback_name
+    return exports.get(name) or {"name": name, "path": f"{name}.onnx"}
+
+
+def resolve_sample_export(manifest: dict[str, Any], sample_steps: int) -> dict[str, Any]:
+    exports = export_map(manifest)
+    for entry in exports.values():
+        name = str(entry.get("name", ""))
+        if (
+            entry.get("sample_steps") == sample_steps
+            and name.startswith("breakout_dynamics_cached_sample_step_b1_t1_s")
+            and "_slide_" not in name
+        ):
+            return entry
+    fallback_name = f"breakout_dynamics_cached_sample_step_b1_t1_s{sample_steps}"
+    if manifest_sample_steps(manifest) != sample_steps:
+        return exports.get(fallback_name) or {"name": fallback_name, "path": f"{fallback_name}.onnx"}
+    return resolve_named_export(manifest, "legacy_sample_step_export", fallback_name)
+
+
+def cache_shape_from_manifest(manifest: dict[str, Any]) -> tuple[int, ...] | None:
+    tensors = (manifest.get("cache_contract") or {}).get("tensors") or {}
+    spec = tensors.get("k_cache") or {}
+    shape = spec.get("shape")
+    if shape:
+        return tuple(int(dim) for dim in shape)
+    exports = export_map(manifest)
+    for export in exports.values():
+        input_spec = (export.get("inputs") or {}).get("k_cache") or {}
+        shape = input_spec.get("shape")
+        if shape:
+            return tuple(int(dim) for dim in shape)
+    return None
+
+
+def cache_shape_from_dynamics(dynamics: DynamicsModel) -> tuple[int, ...]:
+    num_groups = int(dynamics.num_layers) // int(dynamics.temporal_layer_period)
+    total_tokens = 1 + 1 + int(dynamics.num_registers) + int(dynamics.num_obs_tokens)
+    return (
+        num_groups,
+        1,
+        total_tokens,
+        int(dynamics.context_length),
+        int(dynamics.num_kv_heads),
+        int(dynamics.head_dim),
+    )
+
+
 def compare_jax_cached_wrapper(
-    *,
     dynamics_variables: Any,
     dynamics_cfg: Any,
+    cache_shape: tuple[int, ...],
     actions: np.ndarray,
     prefix_noised_z: np.ndarray,
     sample_noise_z: np.ndarray,
@@ -80,7 +169,6 @@ def compare_jax_cached_wrapper(
     generated_frames: int,
     sample_steps: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    cache_shape = (6, 1, 36, 64, 2, 64)
     cache = {
         "k": jnp.zeros(cache_shape, dtype=jnp.float32),
         "v": jnp.zeros(cache_shape, dtype=jnp.float32),
@@ -161,6 +249,8 @@ def compare_jax_cached_wrapper(
 
 def main() -> None:
     args = parse_args()
+    manifest = load_manifest(args.assets_dir)
+    sample_steps = resolve_sample_steps(manifest, args.sample_steps)
     data = np.load(args.episode)
     frames = np.asarray(data["frames"][: args.prefix_frames + args.generated_frames])
     actions = np.asarray(data["actions"][: args.prefix_frames + args.generated_frames], dtype=np.int32)[
@@ -189,6 +279,7 @@ def main() -> None:
     dynamics = instantiate(dynamics_cfg)
     if not isinstance(dynamics, DynamicsModel):
         raise TypeError(f"Expected DynamicsModel, got {type(dynamics)!r}")
+    cache_shape = cache_shape_from_manifest(manifest) or cache_shape_from_dynamics(dynamics)
 
     rollout_key = jax.random.key(args.seed)
     context_noise_key, sample_noise_key = jax.random.split(rollout_key)
@@ -218,7 +309,7 @@ def main() -> None:
                 jnp.asarray(sample_noise),
                 jnp.asarray(args.prefix_frames, dtype=jnp.int32),
                 context_tau=args.context_tau,
-                sample_steps=args.sample_steps,
+                sample_steps=sample_steps,
                 method=DynamicsModel.generate_rollout,
             )
         ),
@@ -228,12 +319,18 @@ def main() -> None:
         jax_rollout[:, args.prefix_frames : args.prefix_frames + args.generated_frames]
     )
 
+    step_export = resolve_named_export(
+        manifest,
+        "fallback_step_export",
+        "breakout_dynamics_step_cached_b1_t1",
+    )
+    sample_export = resolve_sample_export(manifest, sample_steps)
     step_session = ort.InferenceSession(
-        (args.assets_dir / "breakout_dynamics_step_cached_b1_t1.onnx").as_posix(),
+        (args.assets_dir / step_export["path"]).as_posix(),
         providers=["CPUExecutionProvider"],
     )
     sample_session = ort.InferenceSession(
-        (args.assets_dir / "breakout_dynamics_cached_sample_step_b1_t1_s4.onnx").as_posix(),
+        (args.assets_dir / sample_export["path"]).as_posix(),
         providers=["CPUExecutionProvider"],
     )
 
@@ -254,6 +351,7 @@ def main() -> None:
     jax_cached_sample_commit_z, jax_cached_context_append_z = compare_jax_cached_wrapper(
         dynamics_variables=dynamics_variables,
         dynamics_cfg=dynamics_cfg,
+        cache_shape=cache_shape,
         actions=actions,
         prefix_noised_z=prefix_noised_z,
         sample_noise_z=sample_noise_z,
@@ -263,10 +361,10 @@ def main() -> None:
         context_tau_used=context_tau_used,
         prefix_frames=args.prefix_frames,
         generated_frames=args.generated_frames,
-        sample_steps=args.sample_steps,
+        sample_steps=sample_steps,
     )
 
-    zero_cache = np.zeros((6, 1, 36, 64, 2, 64), dtype=np.float32)
+    zero_cache = np.zeros(cache_shape, dtype=np.float32)
 
     def append_context(cache: dict[str, np.ndarray], z: np.ndarray, action: int) -> dict[str, np.ndarray]:
         outputs = run_ort_named(
@@ -346,7 +444,10 @@ def main() -> None:
         "generated_frames": args.generated_frames,
         "context_tau_requested": args.context_tau,
         "context_tau_used": float(context_tau_used),
-        "sample_steps": args.sample_steps,
+        "sample_steps": sample_steps,
+        "step_artifact": step_export["name"],
+        "sample_artifact": sample_export["name"],
+        "cache_shape": list(cache_shape),
         "seed": args.seed,
         "comparisons": {
             "jax_cached_commit_sample_cache_vs_jax_full_rollout": stats(

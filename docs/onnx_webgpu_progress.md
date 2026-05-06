@@ -1932,3 +1932,96 @@ Validation:
 Conclusion:
 - This is the correct cache ABI for the public demo: one fixed GPU cache, a logical length scalar, and per-frame K/V entry updates.
 - It removes the need to download and instantiate both the fill full-cache graph and the steady-state entry graph for the website.
+
+## 2026-05-06 KST: Small Checkpoint Fast Path Restore
+
+Goal:
+- Re-export the new smaller tokenizer/dynamics checkpoints while keeping the browser rollout fast.
+- Preserve the 4-frame prefix cache-length demo behavior, but use the full-cache steady-state graph once the cache reaches 64 slots.
+
+Issue found:
+- The small checkpoint uses smaller attention head dimensions:
+  - tokenizer head dim: `8`.
+  - dynamics head dim: `32`.
+- Two post-export rewrites still assumed the previous larger model head dim:
+  - GQA repeat rewrite expected repeated K/V heads ending in `64`.
+  - head projection rewrite expected `head_dim == 64`.
+- Because those rewrites missed the small model, the hot graph kept `Expand` and `Reshape` nodes. ORT WebGPU could not capture the full graph and normal inference regressed to about `121 ms/frame`.
+
+Fix:
+- Generalized the GQA repeat rewrite to infer `kv_heads`, repeat count, and `head_dim` from static shapes.
+- Generalized the head projection layout rewrite to infer `head_count` and `head_dim` instead of requiring `64`.
+- Kept the demo/runtime policy:
+  - use cache-length entry graph while filling slots 4 through 63.
+  - use steady-state slide entry graph after the cache is full.
+
+Validation:
+- Re-exported:
+  - `tokenizer_small`
+  - `dynamics_small`
+  - `--sample_steps 2`
+- Export-time ONNX validation passed.
+- Entry-cache reconstruction passed:
+  - K cache max abs error: `4.0531e-6`.
+  - V cache max abs error: `1.0729e-6`.
+  - `final_z` max abs error: `1.1921e-7`.
+- Hot graph counts after export:
+  - `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2.onnx`: `Expand=0`, `Reshape=0`.
+  - `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2.onnx`: `Expand=0`, `Reshape=0`.
+  - `breakout_tokenizer_decode_z_b1_t1.onnx`: `Expand=0`, `Reshape=0`.
+- Browser checks:
+  - `bun run typecheck`: passed.
+  - `bun run build:webgpu:browser`: passed.
+  - `bun run demo:webgpu:smoke`: passed.
+  - `bun run benchmark:webgpu`: passed, including graph capture.
+
+Benchmark:
+- Normal WebGPU benchmark:
+  - Dynamics mean/median/p95: `15.61 / 15.49 / 17.08 ms`.
+  - Decoder mean/median/p95: `2.59 / 2.57 / 2.85 ms`.
+  - Streaming frame mean/median/p95: `18.24 / 18.14 / 19.79 ms`.
+  - Throughput: `54.83 fps`.
+- Graph-capture benchmark:
+  - Dynamics after warmup mean/median/p95: `8.02 / 10.25 / 11.27 ms`.
+  - Decoder after warmup mean/median/p95: `1.80 / 2.22 / 2.90 ms`.
+  - Streaming frame after warmup mean/median/p95: `10.07 / 12.90 / 13.97 ms`.
+  - Throughput: `99.30 fps`.
+
+Conclusion:
+- The slowdown was not caused by the cache-length demo logic itself. It came from small-model shape assumptions in post-export graph rewrites.
+- The small checkpoint is now faster than the previous accepted path and comfortably meets the live demo target.
+
+Follow-up: restored one-dynamics-artifact demo contract.
+- The temporary two-dynamics setup loaded:
+  - cache-length entry graph for filling a short prefix cache.
+  - slide-entry graph after the cache reached 64 slots.
+- That recovered speed, but it was the wrong deployment contract because it made the website download and compile a second dynamics model.
+- The demo and benchmark now use only:
+  - `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2.onnx`.
+- The browser derives `sample_position_index`, `context_position_index`, and `attention_mask` from the logical cache length each frame.
+- The physical K/V cache remains fixed-size, and the runtime writes the returned K/V entry into the fill/slide slot.
+- Validation after reverting to one dynamics artifact:
+  - `bun run typecheck`: passed.
+  - `bun run build:webgpu:browser`: passed.
+  - `bun run demo:webgpu:smoke`: passed.
+  - `bun run benchmark:webgpu`: passed, including graph capture.
+- Benchmark:
+  - Normal streaming frame mean/median/p95: `20.34 / 20.16 / 21.80 ms`.
+  - Normal throughput: `49.17 fps`.
+  - Graph-capture streaming after warmup mean/median/p95: `11.38 / 13.09 / 18.61 ms`.
+  - Graph-capture throughput after warmup: `87.89 fps`.
+
+Follow-up: pruned retired browser export paths.
+- Removed runtime and benchmark artifact fallback lists for the old slide/full-cache/layer variants.
+- The public demo now resolves only:
+  - `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2.onnx`.
+  - `breakout_tokenizer_decode_z_b1_t1.onnx`.
+  - precomputed context/cache artifacts.
+- The benchmark still keeps `breakout_dynamics_prefill_cached_b1_t64.onnx` only for the benchmark-only prefill timing mode.
+- Removed `scripts/webgpu/verify_entry_cache_update.py`; it validated the retired slide-entry vs full-cache path and is no longer part of the active demo path.
+- Validation after cleanup:
+  - `bun run typecheck`: passed.
+  - `bun run build:webgpu:browser`: passed.
+  - `bun run demo:webgpu:smoke`: passed.
+  - `bun run benchmark:webgpu`: passed, including graph capture.
+- Latest normal streaming frame mean/median/p95: `21.12 / 21.09 / 22.35 ms`.

@@ -380,7 +380,7 @@ def require_static_phase1_args(args: argparse.Namespace) -> None:
         )
 
 
-def ensure_output(path: Path, *, overwrite: bool) -> None:
+def ensure_output(path: Path, overwrite: bool) -> None:
     if path.exists() and not overwrite:
         raise FileExistsError(f"{path} already exists; pass --overwrite to replace it.")
 
@@ -389,7 +389,7 @@ def external_data_path(path: Path) -> Path:
     return path.with_name(path.name + ".data")
 
 
-def remove_existing_export(path: Path, *, overwrite: bool) -> None:
+def remove_existing_export(path: Path, overwrite: bool) -> None:
     ensure_output(path, overwrite=overwrite)
     sidecar = external_data_path(path)
     ensure_output(sidecar, overwrite=overwrite)
@@ -411,7 +411,6 @@ def version_or_unknown(module: Any) -> str:
 
 
 def seeded_inputs(
-    *,
     seed: int,
     tokenizer_shape: tuple[int, int, int, int],
     dynamics_shape: tuple[int, int, int, int],
@@ -451,7 +450,6 @@ def seeded_inputs(
 
 
 def export_to_onnx(
-    *,
     fn,
     inputs: tuple[jax.Array, ...],
     output_path: Path,
@@ -476,7 +474,7 @@ def export_to_onnx(
     onnx.checker.check_model(output_path.as_posix())
 
 
-def copy_onnx_artifact(src: Path, dst: Path, *, overwrite: bool) -> dict[str, Any]:
+def copy_onnx_artifact(src: Path, dst: Path, overwrite: bool) -> dict[str, Any]:
     ensure_output(dst, overwrite=overwrite)
     dst.parent.mkdir(parents=True, exist_ok=True)
     if overwrite:
@@ -505,7 +503,6 @@ def copy_onnx_artifact(src: Path, dst: Path, *, overwrite: bool) -> dict[str, An
 def snapshot_raw_artifacts(
     exported_paths: dict[str, Path],
     raw_out_dir: Path,
-    *,
     overwrite: bool,
 ) -> dict[str, Any]:
     raw_out_dir.mkdir(parents=True, exist_ok=True)
@@ -600,7 +597,7 @@ def prune_graph_to_outputs(model: onnx.ModelProto) -> dict[str, int]:
     }
 
 
-def rewrite_entry_final_z_only_for_webgpu(path: Path, *, enabled: bool = True) -> dict[str, Any]:
+def rewrite_entry_final_z_only_for_webgpu(path: Path, enabled: bool = True) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
         return {
@@ -1218,8 +1215,11 @@ def rewrite_singleton_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     model.graph.initializer.extend(new_initializers)
-    onnx.checker.check_model(model)
     external_data_path(path).unlink(missing_ok=True)
+    # ONNX checker does not know ORT's SimplifiedLayerNormalization schema.
+    # ORT validation is run separately by the export/accuracy checks.
+    if not any(node.op_type == "SimplifiedLayerNormalization" for node in model.graph.node):
+        onnx.checker.check_model(model)
     onnx.save_model(model, path.as_posix(), save_as_external_data=False)
 
     after = op_counts(path)
@@ -1239,7 +1239,7 @@ def rewrite_singleton_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
     }
 
 
-def rewrite_squeeze_concat_for_webgpu(path: Path, *, enabled: bool = True) -> dict[str, Any]:
+def rewrite_squeeze_concat_for_webgpu(path: Path, enabled: bool = True) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
         return {
@@ -1441,7 +1441,7 @@ def rewrite_squeeze_concat_for_webgpu(path: Path, *, enabled: bool = True) -> di
 
 
 def rewrite_unsqueeze_transpose_squeeze_for_webgpu(
-    path: Path, *, enabled: bool = True
+    path: Path, enabled: bool = True
 ) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
@@ -1576,7 +1576,7 @@ def rewrite_unsqueeze_transpose_squeeze_for_webgpu(
 
 
 def rewrite_spatial_qk_head_layout_for_webgpu(
-    path: Path, *, enabled: bool = True
+    path: Path, enabled: bool = True
 ) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
@@ -1794,7 +1794,7 @@ def rewrite_spatial_qk_head_layout_for_webgpu(
 
 
 def rewrite_temporal_attention_bhsd_for_webgpu(
-    path: Path, *, enabled: bool = True
+    path: Path, enabled: bool = True
 ) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
@@ -1860,7 +1860,6 @@ def rewrite_temporal_attention_bhsd_for_webgpu(
     def make_transpose(
         input_name: str,
         output_name: str,
-        *,
         owner: onnx.NodeProto,
         suffix: str,
     ) -> onnx.NodeProto:
@@ -2120,7 +2119,7 @@ def rewrite_temporal_attention_bhsd_for_webgpu(
     }
 
 
-def rewrite_entry_cache_io_bhntd_for_webgpu(path: Path, *, enabled: bool = True) -> dict[str, Any]:
+def rewrite_entry_cache_io_bhntd_for_webgpu(path: Path, enabled: bool = True) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
         return {
@@ -2292,7 +2291,7 @@ def rewrite_entry_cache_io_bhntd_for_webgpu(path: Path, *, enabled: bool = True)
 
 
 def rewrite_prefill_cache_outputs_bhntd_for_webgpu(
-    path: Path, *, enabled: bool = True
+    path: Path, enabled: bool = True
 ) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
@@ -2385,7 +2384,7 @@ def rewrite_prefill_cache_outputs_bhntd_for_webgpu(
 
 
 def fold_attention_scale_into_query_norm_for_webgpu(
-    path: Path, *, enabled: bool = True
+    path: Path, enabled: bool = True
 ) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
@@ -2443,7 +2442,7 @@ def fold_attention_scale_into_query_norm_for_webgpu(
             return node
         return None
 
-    def replace_uses(old_name: str, new_name: str, *, skip: set[str]) -> None:
+    def replace_uses(old_name: str, new_name: str, skip: set[str]) -> None:
         for node in model.graph.node:
             if node_key(node) in skip:
                 continue
@@ -2596,7 +2595,10 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
             continue
         if len(input_shape) < 4 or len(input_shape) != len(output_shape) + 1:
             continue
-        if input_shape[-3:] != (2, 4, 64) or output_shape[-2:] != (8, 64):
+        kv_heads, repeat_count, head_dim = input_shape[-3:]
+        if kv_heads <= 0 or repeat_count <= 1 or head_dim <= 0:
+            continue
+        if output_shape[-2:] != (kv_heads * repeat_count, head_dim):
             continue
         if input_shape[:-3] != output_shape[:-2]:
             continue
@@ -2618,15 +2620,15 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
             if (
                 source_shape is None
                 or source_shape[:-2] != output_shape[:-2]
-                or source_shape[-2:] != (2, 64)
+                or source_shape[-2:] != (kv_heads, head_dim)
             ):
                 continue
             skip_nodes.add(source_producer.name)
             rewrites["from_unsqueeze"] += 1
         elif source_producer.op_type == "Reshape":
-            if source_shape is None or source_shape[-1] != 128:
+            if source_shape is None or source_shape[-1] != kv_heads * head_dim:
                 continue
-            compact_shape = tuple(output_shape[:-2]) + (2, 64)
+            compact_shape = tuple(output_shape[:-2]) + (kv_heads, head_dim)
             if int(np.prod(source_shape)) != int(np.prod(compact_shape)):
                 continue
             compact_shape_name = f"{source_producer.name or node.name}__gqa_compact_shape"
@@ -2653,7 +2655,8 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
         indices_name = f"{node.name or node.output[0]}__gqa_indices"
         new_initializers.append(
             onnx.numpy_helper.from_array(
-                np.asarray([0, 0, 0, 0, 1, 1, 1, 1], dtype=np.int64), indices_name
+                np.repeat(np.arange(kv_heads, dtype=np.int64), repeat_count),
+                indices_name,
             )
         )
         replacement_nodes.append(
@@ -2702,8 +2705,11 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     model.graph.initializer.extend(new_initializers)
-    onnx.checker.check_model(model)
     external_data_path(path).unlink(missing_ok=True)
+    # ONNX checker does not know ORT's SimplifiedLayerNormalization schema.
+    # ORT validation is run separately by the export/accuracy checks.
+    if not any(node.op_type == "SimplifiedLayerNormalization" for node in model.graph.node):
+        onnx.checker.check_model(model)
     onnx.save_model(model, path.as_posix(), save_as_external_data=False)
 
     after = op_counts(path)
@@ -2727,7 +2733,6 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
 
 def rewrite_packed_qkv_head_projection_for_webgpu(
     path: Path,
-    *,
     enabled: bool,
 ) -> dict[str, Any]:
     before = op_counts(path)
@@ -2997,13 +3002,16 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
         # or [1,N,1,H,D].
         gemm = producer.get(reshape.input[0])
         prefix_shape = output_shape[:-2]
+        head_count = output_shape[-2] if len(output_shape) >= 2 else 0
+        head_dim = output_shape[-1] if len(output_shape) >= 1 else 0
         if (
             gemm is not None
             and can_rewrite_gemm(gemm)
             and len(input_shape) == 2
             and len(output_shape) in (4, 5, 6)
-            and output_shape[-1] == 64
-            and output_shape[-2] in (2, 8)
+            and head_count >= 2
+            and head_dim >= 8
+            and input_shape[-1] == head_count * head_dim
             and prefix_shape.count(input_shape[0]) == 1
             and all(dim in (1, input_shape[0]) for dim in prefix_shape)
         ):
@@ -3078,7 +3086,8 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
             and len(input_shape) == 4
             and len(output_shape) == 2
             and input_shape[:2].count(1) == 1
-            and input_shape[-2:] == (8, 64)
+            and input_shape[-2] >= 2
+            and input_shape[-1] >= 8
             and output_shape
             == (max(input_shape[0], input_shape[1]), input_shape[2] * input_shape[3])
         ):
@@ -3146,8 +3155,15 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
     ]
     del model.graph.initializer[:]
     model.graph.initializer.extend(retained_initializers)
-    onnx.checker.check_model(model)
     external_data_path(path).unlink(missing_ok=True)
+    # ONNX checker does not know ORT contrib/custom schemas that may already be
+    # present when this rewrite is applied to an optimized artifact.
+    if not any(
+        node.op_type in {"SimplifiedLayerNormalization", "SkipSimplifiedLayerNormalization"}
+        or node.domain == "com.microsoft"
+        for node in model.graph.node
+    ):
+        onnx.checker.check_model(model)
     onnx.save_model(model, path.as_posix(), save_as_external_data=False)
 
     after = op_counts(path)
@@ -3220,14 +3236,16 @@ def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> d
         # Reshape with static split/unsqueeze/concat layout ops.
         gemm = producer.get(reshape.input[0])
         prefix_shape = output_shape[:-2]
+        head_count = output_shape[-2] if len(output_shape) >= 2 else 0
+        head_dim = output_shape[-1] if len(output_shape) >= 1 else 0
         if (
             gemm is not None
             and can_rewrite_gemm(gemm)
             and len(input_shape) == 2
             and len(output_shape) in (4, 5, 6)
-            and output_shape[-1] == 64
-            and output_shape[-2] in (2, 8)
-            and input_shape[-1] == output_shape[-2] * output_shape[-1]
+            and head_count >= 2
+            and head_dim >= 8
+            and input_shape[-1] == head_count * head_dim
             and prefix_shape.count(input_shape[0]) == 1
             and all(dim in (1, input_shape[0]) for dim in prefix_shape)
         ):
@@ -3299,7 +3317,8 @@ def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> d
             and can_rewrite_gemm(gemm_consumer)
             and len(input_shape) in (4, 5, 6)
             and len(output_shape) == 2
-            and input_shape[-2:] == (8, 64)
+            and input_shape[-2] >= 2
+            and input_shape[-1] >= 8
             and input_shape[:-2].count(output_shape[0]) == 1
             and all(dim in (1, output_shape[0]) for dim in input_shape[:-2])
             and output_shape[1] == input_shape[-2] * input_shape[-1]
@@ -3385,8 +3404,15 @@ def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> d
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     model.graph.initializer.extend(new_initializers)
-    onnx.checker.check_model(model)
     external_data_path(path).unlink(missing_ok=True)
+    # ONNX checker does not know ORT contrib/custom schemas that may already be
+    # present when this rewrite is applied to an optimized artifact.
+    if not any(
+        node.op_type in {"SimplifiedLayerNormalization", "SkipSimplifiedLayerNormalization"}
+        or node.domain == "com.microsoft"
+        for node in model.graph.node
+    ):
+        onnx.checker.check_model(model)
     onnx.save_model(model, path.as_posix(), save_as_external_data=False)
 
     after = op_counts(path)
@@ -3715,7 +3741,6 @@ def fuse_skip_simplified_layer_norm_for_webgpu(path: Path) -> dict[str, Any]:
 
 def pack_sibling_gemms_for_webgpu(
     path: Path,
-    *,
     pack_qkv: bool,
     pack_swiglu: bool,
 ) -> dict[str, Any]:
@@ -4049,7 +4074,7 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
 
 
 def fuse_manual_gqa_attention_for_webgpu(
-    path: Path, *, enabled: bool, fuse_spatial: bool = False
+    path: Path, enabled: bool, fuse_spatial: bool = False
 ) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
@@ -4129,7 +4154,6 @@ def fuse_manual_gqa_attention_for_webgpu(
 
     def folded_output_merge(
         output_name: str,
-        *,
         num_heads: int,
         head_dim: int,
     ) -> tuple[str, set[str], tuple[int, ...]] | None:
@@ -4230,7 +4254,6 @@ def fuse_manual_gqa_attention_for_webgpu(
     def flatten_heads(
         source_name: str,
         shape: tuple[int, ...],
-        *,
         prefix: str,
     ) -> tuple[str, list[onnx.NodeProto]]:
         if len(shape) == 3:
@@ -4283,7 +4306,6 @@ def fuse_manual_gqa_attention_for_webgpu(
 
     def slice_axis(
         source_name: str,
-        *,
         axis: int,
         start: int,
         end: int,
@@ -4639,7 +4661,6 @@ def fuse_manual_gqa_attention_for_webgpu(
 
 def fuse_manual_mha_attention_for_webgpu(
     path: Path,
-    *,
     enabled: bool,
 ) -> dict[str, Any]:
     before = op_counts(path)
@@ -4720,7 +4741,6 @@ def fuse_manual_mha_attention_for_webgpu(
 
     def flattened_head_merge(
         output_name: str,
-        *,
         num_heads: int,
         head_dim: int,
     ) -> tuple[str, set[str], tuple[int, ...]] | None:
@@ -4809,7 +4829,6 @@ def fuse_manual_mha_attention_for_webgpu(
     def flatten_heads(
         source_name: str,
         shape: tuple[int, ...],
-        *,
         prefix: str,
     ) -> tuple[str, list[onnx.NodeProto]]:
         if len(shape) == 3:
@@ -4859,7 +4878,6 @@ def fuse_manual_mha_attention_for_webgpu(
     def transpose_kv_heads_for_mha(
         source_name: str,
         shape: tuple[int, ...],
-        *,
         prefix: str,
     ) -> tuple[str, list[onnx.NodeProto]]:
         if len(shape) != 4:
@@ -5398,7 +5416,7 @@ def run_ort(path: Path, feeds: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
 
 
 def compare_arrays(
-    expected: np.ndarray, actual: np.ndarray, *, atol: float, rtol: float
+    expected: np.ndarray, actual: np.ndarray, atol: float, rtol: float
 ) -> dict[str, Any]:
     expected = expected.astype(np.float32) if expected.dtype == np.float16 else expected
     actual = actual.astype(np.float32) if actual.dtype == np.float16 else actual
@@ -5439,7 +5457,7 @@ def export_file_metadata(path: Path) -> dict[str, Any]:
     return metadata
 
 
-def cache_contract(dyn_shapes, *, available: bool, dtype: str = "float32") -> dict[str, Any]:
+def cache_contract(dyn_shapes, available: bool, dtype: str = "float32") -> dict[str, Any]:
     cache_shape = list(dyn_shapes.cache)
     layer_cache_shape = list(dyn_shapes.layer_cache)
     return {
@@ -5483,7 +5501,6 @@ def cache_contract(dyn_shapes, *, available: bool, dtype: str = "float32") -> di
 
 
 def validate_single_output(
-    *,
     path: Path,
     feeds: dict[str, jax.Array],
     output_name: str,
@@ -5502,7 +5519,6 @@ def validate_single_output(
 
 
 def validate_outputs(
-    *,
     path: Path,
     feeds: dict[str, jax.Array],
     expected: dict[str, jax.Array],
@@ -5788,8 +5804,10 @@ def main() -> None:
         actions: jax.Array,
         k_cache: jax.Array,
         v_cache: jax.Array,
-        cache_length: jax.Array,
-    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        sample_position_index: jax.Array,
+        context_position_index: jax.Array,
+        attention_mask: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         return onnx_apply_dynamics_cached_sample_step_append_context_cache_length_entries(
             dynamics_variables,
             dynamics_cfg,
@@ -5798,9 +5816,13 @@ def main() -> None:
             actions,
             k_cache,
             v_cache,
-            cache_length,
-            context_tau=args.context_tau,
-            sample_steps=args.sample_steps,
+            jnp.asarray([dyn_shapes.context_length], dtype=jnp.int32),
+            args.context_tau,
+            args.sample_steps,
+            sample_position_index,
+            context_position_index,
+            attention_mask,
+            emit_cache_length=False,
         )
 
     def dynamics_sample_append_context_slide_full_cache_fn(
@@ -5914,6 +5936,13 @@ def main() -> None:
             "v_cache": jnp.zeros(dyn_shapes.cache, dtype=jnp.float32),
             "layer_cache": jnp.zeros(dyn_shapes.layer_cache, dtype=jnp.float32),
             "cache_length": jnp.asarray([dyn_shapes.context_length], dtype=jnp.int32),
+            "sample_position_index": jnp.asarray([dyn_shapes.context_length], dtype=jnp.int32),
+            "context_position_index": jnp.asarray(
+                [dyn_shapes.context_length - 1], dtype=jnp.int32
+            ),
+            "attention_mask": jnp.ones(
+                (1, 1, 1, dyn_shapes.context_length + 1), dtype=jnp.float32
+            ),
         }
         layer_count = dyn_shapes.temporal_blocks
         if layer_count != 6:
@@ -6173,7 +6202,9 @@ def main() -> None:
                 cached_inputs["actions_step"],
                 cached_inputs["k_cache"],
                 cached_inputs["v_cache"],
-                cached_inputs["cache_length"],
+                cached_inputs["sample_position_index"],
+                cached_inputs["context_position_index"],
+                cached_inputs["attention_mask"],
             ),
             output_path=dynamics_sample_append_context_entry_path,
             model_name=DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
@@ -6184,14 +6215,15 @@ def main() -> None:
                 "actions",
                 "k_cache",
                 "v_cache",
-                "cache_length",
+                "sample_position_index",
+                "context_position_index",
+                "attention_mask",
             ),
             output_names=(
                 "final_z",
                 "pred_z",
                 "candidate_k_entry",
                 "candidate_v_entry",
-                "candidate_cache_length",
             ),
             overwrite=args.overwrite,
         )
@@ -6774,7 +6806,9 @@ def main() -> None:
                 cached_inputs["actions_step"],
                 cached_inputs["k_cache"],
                 cached_inputs["v_cache"],
-                cached_inputs["cache_length"],
+                cached_inputs["sample_position_index"],
+                cached_inputs["context_position_index"],
+                cached_inputs["attention_mask"],
             )
             cache_length_entry_final_z_aliases_pred_z = bool(
                 final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME].get(
@@ -6787,7 +6821,6 @@ def main() -> None:
                 ],
                 "candidate_k_entry": sample_append_context_entry_expected[2],
                 "candidate_v_entry": sample_append_context_entry_expected[3],
-                "candidate_cache_length": sample_append_context_entry_expected[4],
             }
             if not cache_length_entry_final_z_aliases_pred_z:
                 cache_length_entry_expected["pred_z"] = sample_append_context_entry_expected[1]
@@ -6799,7 +6832,9 @@ def main() -> None:
                     "actions": cached_inputs["actions_step"],
                     "k_cache": cached_inputs["k_cache"],
                     "v_cache": cached_inputs["v_cache"],
-                    "cache_length": cached_inputs["cache_length"],
+                    "sample_position_index": cached_inputs["sample_position_index"],
+                    "context_position_index": cached_inputs["context_position_index"],
+                    "attention_mask": cached_inputs["attention_mask"],
                 },
                 expected=cache_length_entry_expected,
                 atol=args.atol,
@@ -6942,17 +6977,21 @@ def main() -> None:
         if args.export_cached
         else None
     )
-    cache_length_entry_manifest_final_z_aliases_pred_z = bool(
-        final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME].get(
-            "final_z_aliases_pred_z", False
+    cache_length_entry_manifest_final_z_aliases_pred_z = False
+    entry_manifest_final_z_aliases_pred_z = False
+    if args.export_cached:
+        cache_length_entry_manifest_final_z_aliases_pred_z = bool(
+            final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME].get(
+                "final_z_aliases_pred_z", False
+            )
         )
-    )
-    entry_manifest_final_z_aliases_pred_z = bool(
-        final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME].get(
-            "final_z_aliases_pred_z", False
+        entry_manifest_final_z_aliases_pred_z = bool(
+            final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME].get(
+                "final_z_aliases_pred_z", False
+            )
         )
-    )
-    def entry_manifest_output_specs(*, include_cache_length: bool, final_z_aliases_pred_z: bool):
+
+    def entry_manifest_output_specs(include_cache_length: bool, final_z_aliases_pred_z: bool):
         outputs = {
             "final_z": tensor_spec("float32", dyn_shapes.step_z),
             "candidate_k_entry": tensor_spec(
@@ -6984,13 +7023,21 @@ def main() -> None:
             outputs["pred_z"] = tensor_spec("float32", dyn_shapes.step_z)
         return outputs
 
-    cache_length_entry_manifest_outputs = entry_manifest_output_specs(
-        include_cache_length=True,
-        final_z_aliases_pred_z=cache_length_entry_manifest_final_z_aliases_pred_z,
+    cache_length_entry_manifest_outputs = (
+        entry_manifest_output_specs(
+            include_cache_length=False,
+            final_z_aliases_pred_z=cache_length_entry_manifest_final_z_aliases_pred_z,
+        )
+        if args.export_cached
+        else {}
     )
-    entry_manifest_outputs = entry_manifest_output_specs(
-        include_cache_length=False,
-        final_z_aliases_pred_z=entry_manifest_final_z_aliases_pred_z,
+    entry_manifest_outputs = (
+        entry_manifest_output_specs(
+            include_cache_length=False,
+            final_z_aliases_pred_z=entry_manifest_final_z_aliases_pred_z,
+        )
+        if args.export_cached
+        else {}
     )
     exports = [
         {
@@ -7303,7 +7350,11 @@ def main() -> None:
                         "actions": tensor_spec("int32", dyn_shapes.step_levels),
                         "k_cache": tensor_spec("float32", dyn_shapes.cache),
                         "v_cache": tensor_spec("float32", dyn_shapes.cache),
-                        "cache_length": tensor_spec("int32", (1,)),
+                        "sample_position_index": tensor_spec("int32", (1,)),
+                        "context_position_index": tensor_spec("int32", (1,)),
+                        "attention_mask": tensor_spec(
+                            "float32", (1, 1, 1, dyn_shapes.context_length + 1)
+                        ),
                     },
                     "outputs": cache_length_entry_manifest_outputs,
                     "validation": validation[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME],
@@ -7572,6 +7623,26 @@ def main() -> None:
         ]
         entry["final_z_only_rewrite"] = final_z_only_rewrite[entry["name"]]
 
+    demo_generation = None
+    if args.export_cached:
+        demo_generation = {
+            "sample_steps": args.sample_steps,
+            "context_tau": args.context_tau,
+            "sample_cache_policy": "sample_then_append_generated_context",
+            "preferred_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
+            "preferred_prefill_export": DYNAMICS_CACHED_PREFILL_NAME,
+            "decode_z": {
+                "source": "final_z_after_velocity_update",
+                "dynamics_shape": list(dyn_shapes.step_z),
+                "decoder_latent_shape": [
+                    args.batch_size,
+                    1,
+                    tok_shapes.num_latents,
+                    tok_shapes.channel_dim,
+                ],
+            },
+        }
+
     manifest = {
         "schema_version": 1,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -7648,38 +7719,7 @@ def main() -> None:
             available=args.export_cached,
             dtype="float32",
         ),
-        "demo_generation": {
-            "sample_steps": args.sample_steps,
-            "context_tau": args.context_tau,
-            "sample_cache_policy": "sample_then_append_generated_context",
-            "preferred_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
-            "preferred_prefill_export": DYNAMICS_CACHED_PREFILL_NAME,
-            "preferred_steady_state_step_export": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
-            ),
-            "fallback_steady_state_step_export": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
-            ),
-            "legacy_full_candidate_cache_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
-            "legacy_steady_state_entry_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
-            "experimental_layer_prefill_export": DYNAMICS_CACHED_PREFILL_LAYER_NAME,
-            "experimental_layer_steady_state_step_export": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
-            ),
-            "legacy_sample_step_export": DYNAMICS_CACHED_SAMPLE_STEP_NAME,
-            "legacy_steady_state_sample_step_export": DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME,
-            "fallback_step_export": DYNAMICS_CACHED_STEP_NAME,
-            "decode_z": {
-                "source": "final_z_after_velocity_update",
-                "dynamics_shape": list(dyn_shapes.step_z),
-                "decoder_latent_shape": [
-                    args.batch_size,
-                    1,
-                    tok_shapes.num_latents,
-                    tok_shapes.channel_dim,
-                ],
-            },
-        },
+        "demo_generation": demo_generation,
     }
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

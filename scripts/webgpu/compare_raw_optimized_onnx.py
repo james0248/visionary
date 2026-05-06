@@ -76,9 +76,6 @@ def default_artifacts(manifest: dict[str, Any]) -> list[str]:
     names = [
         demo.get("preferred_prefill_export"),
         demo.get("preferred_step_export"),
-        demo.get("preferred_steady_state_step_export"),
-        demo.get("experimental_layer_prefill_export"),
-        demo.get("experimental_layer_steady_state_step_export"),
     ]
     decode_z = demo.get("decode_z")
     if isinstance(decode_z, dict):
@@ -185,7 +182,6 @@ def run_ort(path: Path, feeds: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
 def compare_arrays(
     raw: np.ndarray,
     optimized: np.ndarray,
-    *,
     atol: float,
     rtol: float,
 ) -> dict[str, Any]:
@@ -212,7 +208,6 @@ def compare_arrays(
 
 
 def compare_artifact(
-    *,
     name: str,
     entry: dict[str, Any],
     raw_entry: dict[str, Any],

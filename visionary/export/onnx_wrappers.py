@@ -90,13 +90,13 @@ class DynamicsShapes:
         return (1,)
 
 
-def create_tokenizer(cfg: DictConfig, *, dtype: Any | None = jnp.float32) -> Tokenizer:
+def create_tokenizer(cfg: DictConfig, dtype: Any | None = jnp.float32) -> Tokenizer:
     if dtype is None:
         return instantiate(cfg)
     return instantiate(cfg, dtype=dtype)
 
 
-def create_dynamics(cfg: DictConfig, *, dtype: Any | None = jnp.float32) -> DynamicsModel:
+def create_dynamics(cfg: DictConfig, dtype: Any | None = jnp.float32) -> DynamicsModel:
     if dtype is None:
         return instantiate(cfg)
     return instantiate(cfg, dtype=dtype)
@@ -104,7 +104,6 @@ def create_dynamics(cfg: DictConfig, *, dtype: Any | None = jnp.float32) -> Dyna
 
 def tokenizer_shapes(
     cfg: DictConfig,
-    *,
     batch_size: int,
     seq_len: int,
 ) -> TokenizerShapes:
@@ -128,7 +127,6 @@ def tokenizer_shapes(
 def dynamics_shapes(
     cfg: DictConfig,
     tokenizer: TokenizerShapes,
-    *,
     batch_size: int,
     seq_len: int,
 ) -> DynamicsShapes:
@@ -169,7 +167,6 @@ def validate_sample_steps(sample_steps: int) -> int:
 def flow_update_z(
     current_z: jnp.ndarray,
     pred_z: jnp.ndarray,
-    *,
     signal_level: int,
     sample_steps: int,
 ) -> jnp.ndarray:
@@ -184,7 +181,6 @@ def _export_dot_product_attention(
     query: jnp.ndarray,
     key: jnp.ndarray,
     value: jnp.ndarray,
-    *,
     bias: jnp.ndarray | None = None,
     mask: jnp.ndarray | None = None,
     scale: float | jnp.ndarray | None = None,
@@ -250,7 +246,6 @@ def _attention_for_export(
     query: jnp.ndarray,
     key: jnp.ndarray,
     value: jnp.ndarray,
-    *,
     mask: jnp.ndarray | None = None,
     scale: float | jnp.ndarray | None = None,
 ) -> jnp.ndarray:
@@ -518,7 +513,6 @@ def _attention_for_export_bnsh(
     query: jnp.ndarray,
     key: jnp.ndarray,
     value: jnp.ndarray,
-    *,
     mask: jnp.ndarray | None = None,
     scale: float | jnp.ndarray | None = None,
 ) -> jnp.ndarray:
@@ -648,6 +642,7 @@ class _CachedTemporalStepAttention(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
+        attention_mask: jnp.ndarray | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         q = nn.Dense(self.num_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
         k = nn.Dense(self.num_kv_heads * self.head_dim, use_bias=False, dtype=self.dtype)(x)
@@ -681,12 +676,15 @@ class _CachedTemporalStepAttention(nn.Module):
             k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
             keys = jnp.concatenate([k_cache.astype(k.dtype), k], axis=1)
             values = jnp.concatenate([v_cache.astype(v.dtype), v], axis=1)
-        cache_positions = jnp.arange(self.context_length + 1, dtype=jnp.int32)
-        current_position = jnp.asarray(self.context_length, dtype=jnp.int32)
-        valid_cache = cache_positions < cache_length[0]
-        valid_current = cache_positions == current_position
-        valid = jnp.logical_or(valid_cache, valid_current)
-        mask = valid[None, None, None, :]
+        if attention_mask is None:
+            cache_positions = jnp.arange(self.context_length + 1, dtype=jnp.int32)
+            current_position = jnp.asarray(self.context_length, dtype=jnp.int32)
+            valid_cache = cache_positions < cache_length[0]
+            valid_current = cache_positions == current_position
+            valid = jnp.logical_or(valid_cache, valid_current)
+            mask = valid[None, None, None, :]
+        else:
+            mask = attention_mask
 
         if _ATTENTION_EXPORT_LAYOUT == "bnsh":
             out = _attention_for_export_bnsh(
@@ -764,6 +762,7 @@ class _CachedStepTransformerBlock(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
+        attention_mask: jnp.ndarray | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         residual = x
         x = _ExportRMSNorm(dtype=self.dtype, name="RMSNorm_0")(x)
@@ -775,7 +774,7 @@ class _CachedStepTransformerBlock(nn.Module):
             context_length=self.context_length,
             dtype=self.dtype,
             name="Attention_0",
-        )(x, rope_emb, k_cache, v_cache, cache_length)
+        )(x, rope_emb, k_cache, v_cache, cache_length, attention_mask)
         x = residual + attn_out
 
         residual = x
@@ -1050,6 +1049,7 @@ class _CachedSpatioTemporalTransformer(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
+        attention_mask: jnp.ndarray | None = None,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         batch_size = x.shape[0]
         block_idx = 0
@@ -1090,7 +1090,14 @@ class _CachedSpatioTemporalTransformer(nn.Module):
                 context_length=self.context_length,
                 dtype=self.dtype,
                 name=f"TransformerBlock_{block_idx}",
-            )(x, temporal_rope_emb, block_k_cache, block_v_cache, cache_length)
+            )(
+                x,
+                temporal_rope_emb,
+                block_k_cache,
+                block_v_cache,
+                cache_length,
+                attention_mask,
+            )
             entry_ks.append(
                 rearrange(k, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens)
             )
@@ -1114,6 +1121,7 @@ class _CachedSpatioTemporalTransformer(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
+        attention_mask: jnp.ndarray | None = None,
     ) -> jnp.ndarray:
         batch_size = x.shape[0]
         block_idx = 0
@@ -1152,7 +1160,14 @@ class _CachedSpatioTemporalTransformer(nn.Module):
                 context_length=self.context_length,
                 dtype=self.dtype,
                 name=f"TransformerBlock_{block_idx}",
-            )(x, temporal_rope_emb, block_k_cache, block_v_cache, cache_length)
+            )(
+                x,
+                temporal_rope_emb,
+                block_k_cache,
+                block_v_cache,
+                cache_length,
+                attention_mask,
+            )
             block_idx += 1
             temporal_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
@@ -1220,7 +1235,6 @@ def _append_cache_entry(
     cache: jnp.ndarray,
     entry: jnp.ndarray,
     cache_length: jnp.ndarray,
-    *,
     update: str,
 ) -> jnp.ndarray:
     if update == "slide":
@@ -1233,7 +1247,6 @@ def _append_cache_entry(
 
 def _slide_rebased_key_cache(
     cache: jnp.ndarray,
-    *,
     base: float,
     head_dim: int,
 ) -> jnp.ndarray:
@@ -1472,6 +1485,8 @@ class _CachedDynamicsModel(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
+        attention_mask: jnp.ndarray | None = None,
+        clamp_position_index: bool = True,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         _, _, _, token_dim = z.shape
         tokens, total_tokens, observation_offset = self._tokens(
@@ -1485,7 +1500,11 @@ class _CachedDynamicsModel(nn.Module):
             int(self.cfg.head_dim),
             int(self.cfg.context_length) + 1,
         )
-        pos = jnp.minimum(position_index[0], int(self.cfg.context_length))
+        pos = (
+            jnp.minimum(position_index[0], int(self.cfg.context_length))
+            if clamp_position_index
+            else position_index[0]
+        )
         temporal_rope = (
             jnp.take(full_temporal_rope[0], pos, axis=0)[None],
             jnp.take(full_temporal_rope[1], pos, axis=0)[None],
@@ -1500,6 +1519,7 @@ class _CachedDynamicsModel(nn.Module):
             k_cache,
             v_cache,
             cache_length,
+            attention_mask,
         )
         pred_z = self._project_output(hidden, observation_offset, token_dim)
         return pred_z, entry_k.astype(jnp.float32), entry_v.astype(jnp.float32)
@@ -1562,6 +1582,8 @@ class _CachedDynamicsModel(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
+        attention_mask: jnp.ndarray | None = None,
+        clamp_position_index: bool = True,
     ) -> jnp.ndarray:
         _, _, _, token_dim = z.shape
         tokens, total_tokens, observation_offset = self._tokens(
@@ -1575,7 +1597,11 @@ class _CachedDynamicsModel(nn.Module):
             int(self.cfg.head_dim),
             int(self.cfg.context_length) + 1,
         )
-        pos = jnp.minimum(position_index[0], int(self.cfg.context_length))
+        pos = (
+            jnp.minimum(position_index[0], int(self.cfg.context_length))
+            if clamp_position_index
+            else position_index[0]
+        )
         temporal_rope = (
             jnp.take(full_temporal_rope[0], pos, axis=0)[None],
             jnp.take(full_temporal_rope[1], pos, axis=0)[None],
@@ -1590,6 +1616,7 @@ class _CachedDynamicsModel(nn.Module):
             k_cache,
             v_cache,
             cache_length,
+            attention_mask,
         )
         return self._project_output(hidden, observation_offset, token_dim)
 
@@ -1644,7 +1671,6 @@ class _CachedDynamicsModel(nn.Module):
         k_caches: tuple[jnp.ndarray, ...],
         v_caches: tuple[jnp.ndarray, ...],
         cache_length: jnp.ndarray,
-        *,
         sample_steps: int,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         sample_step_level = validate_sample_steps(sample_steps)
@@ -1682,8 +1708,9 @@ class _CachedDynamicsModel(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
-        *,
         sample_steps: int,
+        attention_mask: jnp.ndarray | None = None,
+        clamp_position_index: bool = True,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         sample_step_level = validate_sample_steps(sample_steps)
         current_z = z.astype(jnp.float32)
@@ -1701,6 +1728,8 @@ class _CachedDynamicsModel(nn.Module):
                 k_cache,
                 v_cache,
                 cache_length,
+                attention_mask,
+                clamp_position_index=clamp_position_index,
             )
             current_z = flow_update_z(
                 current_z,
@@ -1720,7 +1749,6 @@ class _CachedDynamicsModel(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
-        *,
         sample_steps: int,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         sample_step_level = validate_sample_steps(sample_steps)
@@ -1780,7 +1808,6 @@ class _CachedDynamicsModel(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
-        *,
         context_tau: float,
         sample_steps: int,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -1846,7 +1873,6 @@ class _CachedDynamicsModel(nn.Module):
         actions: jnp.ndarray,
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
-        *,
         context_tau: float,
         sample_steps: int,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -1875,7 +1901,6 @@ class _CachedDynamicsModel(nn.Module):
         actions: jnp.ndarray,
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
-        *,
         context_tau: float,
         sample_steps: int,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -1935,15 +1960,21 @@ class _CachedDynamicsModel(nn.Module):
         k_cache: jnp.ndarray,
         v_cache: jnp.ndarray,
         cache_length: jnp.ndarray,
-        *,
         context_tau: float,
         sample_steps: int,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        sample_position_index: jnp.ndarray | None = None,
+        context_position_index: jnp.ndarray | None = None,
+        attention_mask: jnp.ndarray | None = None,
+        emit_cache_length: bool = True,
+    ) -> tuple[jnp.ndarray, ...]:
         context_length = int(self.cfg.context_length)
-        max_sample_position = jnp.asarray([context_length], dtype=jnp.int32)
-        max_context_position = jnp.asarray([context_length - 1], dtype=jnp.int32)
-        sample_position_index = jnp.minimum(cache_length, max_sample_position)
-        context_position_index = jnp.minimum(cache_length, max_context_position)
+        clamp_position_index = sample_position_index is None or context_position_index is None
+        if sample_position_index is None:
+            max_sample_position = jnp.asarray([context_length], dtype=jnp.int32)
+            sample_position_index = jnp.minimum(cache_length, max_sample_position)
+        if context_position_index is None:
+            max_context_position = jnp.asarray([context_length - 1], dtype=jnp.int32)
+            context_position_index = jnp.minimum(cache_length, max_context_position)
         final_z, pred_z = self.sample_step_predict_only(
             sample_noise,
             actions,
@@ -1952,6 +1983,8 @@ class _CachedDynamicsModel(nn.Module):
             v_cache,
             cache_length,
             sample_steps=sample_steps,
+            attention_mask=attention_mask,
+            clamp_position_index=clamp_position_index,
         )
 
         context_step_level = int(self.cfg.max_step_size) - 1
@@ -1983,18 +2016,22 @@ class _CachedDynamicsModel(nn.Module):
             k_cache,
             v_cache,
             cache_length,
+            attention_mask,
+            clamp_position_index=clamp_position_index,
         )
-        candidate_cache_length = jnp.minimum(
-            cache_length + 1,
-            jnp.asarray([context_length], dtype=jnp.int32),
-        ).astype(jnp.int32)
-        return (
+        outputs = (
             final_z,
             pred_z,
             entry_k.astype(jnp.float32),
             entry_v.astype(jnp.float32),
-            candidate_cache_length,
         )
+        if not emit_cache_length:
+            return outputs
+        candidate_cache_length = jnp.minimum(
+            cache_length + 1,
+            jnp.asarray([context_length], dtype=jnp.int32),
+        ).astype(jnp.int32)
+        return (*outputs, candidate_cache_length)
 
     @nn.compact
     def sample_step_append_context_layer_cache(
@@ -2006,7 +2043,6 @@ class _CachedDynamicsModel(nn.Module):
         k_caches: tuple[jnp.ndarray, ...],
         v_caches: tuple[jnp.ndarray, ...],
         cache_length: jnp.ndarray,
-        *,
         context_tau: float,
         sample_steps: int,
     ) -> tuple[
@@ -2102,7 +2138,6 @@ def onnx_apply_tokenizer_decoder(
     variables: Any,
     cfg: DictConfig,
     latent: jnp.ndarray,
-    *,
     dtype: Any | None = jnp.float32,
 ) -> jnp.ndarray:
     model = create_tokenizer(cfg, dtype=dtype)
@@ -2114,7 +2149,6 @@ def onnx_apply_tokenizer_decode_z(
     variables: Any,
     cfg: DictConfig,
     z: jnp.ndarray,
-    *,
     num_obs_tokens: int | None = None,
     dtype: Any | None = jnp.float32,
 ) -> jnp.ndarray:
@@ -2146,9 +2180,19 @@ def onnx_apply_tokenizer_decode_z(
                 f"expected_latents={int(cfg.num_latents)}, channel_dim={channel_dim}."
             )
 
-        # Avoid ONNX Reshape in the browser hot path. For the demo shape this is
-        # equivalent to einops "b t n (k d) -> b t (n k) d".
-        latent = jnp.concatenate(jnp.split(z, latents_per_obs, axis=-1), axis=2)
+        # Invert the dynamics packing used by create_demo_context:
+        # "b t (n k) d -> b t n (k d)". This avoids ONNX Reshape because
+        # ORT WebGPU graph capture currently rejects this decoder graph when
+        # the unpack is emitted as Reshape.
+        chunks = jnp.split(z, latents_per_obs, axis=-1)
+        latent = jnp.concatenate(
+            [
+                chunk[:, :, obs_index : obs_index + 1, :]
+                for obs_index in range(token_count)
+                for chunk in chunks
+            ],
+            axis=2,
+        )
         return model.apply(variables, latent, method=Tokenizer.decode)
 
 
@@ -2159,7 +2203,6 @@ def onnx_apply_dynamics_uncached(
     actions: jnp.ndarray,
     step_levels: jnp.ndarray,
     signal_levels: jnp.ndarray,
-    *,
     dtype: Any | None = jnp.float32,
 ) -> jnp.ndarray:
     model = create_dynamics(cfg, dtype=dtype)
@@ -2181,7 +2224,6 @@ def onnx_apply_dynamics_cached_prefill(
     actions: jnp.ndarray,
     step_levels: jnp.ndarray,
     signal_levels: jnp.ndarray,
-    *,
     dtype: Any | None = jnp.float32,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     model = _CachedDynamicsModel(
@@ -2206,7 +2248,6 @@ def onnx_apply_dynamics_cached_prefill_layer_cache(
     actions: jnp.ndarray,
     step_levels: jnp.ndarray,
     signal_levels: jnp.ndarray,
-    *,
     dtype: Any | None = jnp.float32,
 ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
     model = _CachedDynamicsModel(cfg, dtype=dtype or jnp.float32)
@@ -2232,7 +2273,6 @@ def onnx_apply_dynamics_cached_step(
     k_cache: jnp.ndarray,
     v_cache: jnp.ndarray,
     cache_length: jnp.ndarray,
-    *,
     dtype: Any | None = jnp.float32,
     cache_update: str = "fill",
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -2265,7 +2305,6 @@ def onnx_apply_dynamics_cached_sample_step(
     k_cache: jnp.ndarray,
     v_cache: jnp.ndarray,
     cache_length: jnp.ndarray,
-    *,
     sample_steps: int,
     dtype: Any | None = jnp.float32,
     cache_update: str = "fill",
@@ -2299,7 +2338,6 @@ def onnx_apply_dynamics_cached_sample_step_append_context(
     k_cache: jnp.ndarray,
     v_cache: jnp.ndarray,
     cache_length: jnp.ndarray,
-    *,
     context_tau: float,
     sample_steps: int,
     dtype: Any | None = jnp.float32,
@@ -2336,7 +2374,6 @@ def onnx_apply_dynamics_cached_sample_step_append_context_layer_cache(
     k_caches: tuple[jnp.ndarray, ...],
     v_caches: tuple[jnp.ndarray, ...],
     cache_length: jnp.ndarray,
-    *,
     context_tau: float,
     sample_steps: int,
     dtype: Any | None = jnp.float32,
@@ -2371,7 +2408,6 @@ def onnx_apply_dynamics_cached_sample_step_append_context_full_cache(
     actions: jnp.ndarray,
     k_cache: jnp.ndarray,
     v_cache: jnp.ndarray,
-    *,
     context_tau: float,
     sample_steps: int,
     dtype: Any | None = jnp.float32,
@@ -2403,7 +2439,6 @@ def onnx_apply_dynamics_cached_sample_step_append_context_full_cache_entries(
     actions: jnp.ndarray,
     k_cache: jnp.ndarray,
     v_cache: jnp.ndarray,
-    *,
     context_tau: float,
     sample_steps: int,
     dtype: Any | None = jnp.float32,
@@ -2436,11 +2471,14 @@ def onnx_apply_dynamics_cached_sample_step_append_context_cache_length_entries(
     k_cache: jnp.ndarray,
     v_cache: jnp.ndarray,
     cache_length: jnp.ndarray,
-    *,
     context_tau: float,
     sample_steps: int,
+    sample_position_index: jnp.ndarray | None = None,
+    context_position_index: jnp.ndarray | None = None,
+    attention_mask: jnp.ndarray | None = None,
+    emit_cache_length: bool = True,
     dtype: Any | None = jnp.float32,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> tuple[jnp.ndarray, ...]:
     model = _CachedDynamicsModel(
         cfg,
         dtype=dtype or jnp.float32,
@@ -2455,8 +2493,12 @@ def onnx_apply_dynamics_cached_sample_step_append_context_cache_length_entries(
             k_cache,
             v_cache,
             cache_length,
-            context_tau=context_tau,
-            sample_steps=sample_steps,
+            context_tau,
+            sample_steps,
+            sample_position_index,
+            context_position_index,
+            attention_mask,
+            emit_cache_length=emit_cache_length,
             method=_CachedDynamicsModel.sample_step_append_context_cache_length_entries,
         )
 

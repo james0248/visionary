@@ -28,27 +28,9 @@ const DEFAULT_CONFIG = {
   stepArtifact: null,
 };
 const REQUIRED_ARTIFACTS = {
-  prefill: ['breakout_dynamics_prefill_cached_b1_t64', 'breakout_dynamics_prefill_layer_cached_b1_t64'],
-  step: [
-    'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2',
-    'breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2',
-    'breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2',
-    'breakout_dynamics_sample_append_context_slide_b1_t1_s2',
-    'breakout_dynamics_sample_append_context_slide_layer_b1_t1_s2',
-    'breakout_dynamics_sample_append_context_b1_t1_s2',
-    'breakout_dynamics_cached_sample_step_slide_b1_t1_s2',
-    'breakout_dynamics_cached_sample_step_b1_t1_s2',
-    'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s4',
-    'breakout_dynamics_sample_append_context_slide_entry_b1_t1_s4',
-    'breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s4',
-    'breakout_dynamics_sample_append_context_slide_b1_t1_s4',
-    'breakout_dynamics_sample_append_context_slide_layer_b1_t1_s4',
-    'breakout_dynamics_sample_append_context_b1_t1_s4',
-    'breakout_dynamics_cached_sample_step_slide_b1_t1_s4',
-    'breakout_dynamics_cached_sample_step_b1_t1_s4',
-    'breakout_dynamics_step_cached_b1_t1',
-  ],
-  decoder: ['breakout_tokenizer_decode_z_b1_t1', 'breakout_tokenizer_decoder_b1_t1', 'breakout_decoder_b1_t1'],
+  prefill: ['breakout_dynamics_prefill_cached_b1_t64'],
+  step: ['breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2'],
+  decoder: ['breakout_tokenizer_decode_z_b1_t1'],
 };
 
 function setStatus(message) {
@@ -175,6 +157,16 @@ function makeScalarFillTensor(dtype, shape, value) {
       : dtype === 'float16'
         ? new Uint16Array(length).fill(float32ToFloat16Bits(value))
         : new Int32Array(length).fill(value);
+  return new ort.Tensor(dtype, values, shape);
+}
+
+function makeCacheAttentionMaskTensor(dtype, shape, cacheLength) {
+  const contextLength = shape[shape.length - 1] - 1;
+  const validLength = Math.min(Math.max(cacheLength, 0), contextLength);
+  const values = makeFloatData(dtype, mul(shape), (index) => {
+    const position = index % (contextLength + 1);
+    return position < validLength || position === contextLength ? 1 : 0;
+  });
   return new ort.Tensor(dtype, values, shape);
 }
 
@@ -459,10 +451,7 @@ function resolveDemoSpecs(manifest, config = DEFAULT_CONFIG) {
   const prefillNames = config.prefillArtifact
     ? [config.prefillArtifact, ...REQUIRED_ARTIFACTS.prefill]
     : REQUIRED_ARTIFACTS.prefill;
-  const manifestStepNames = [
-    manifest.demo_generation?.preferred_step_export,
-    manifest.demo_generation?.preferred_steady_state_step_export,
-  ].filter(Boolean);
+  const manifestStepNames = [manifest.demo_generation?.preferred_step_export].filter(Boolean);
   const stepNames = config.stepArtifact
     ? [config.stepArtifact, ...REQUIRED_ARTIFACTS.step]
     : [...manifestStepNames, ...REQUIRED_ARTIFACTS.step];
@@ -668,9 +657,25 @@ function blockedResult({ config, manifest, gpu, missing }) {
   };
 }
 
-function makeFeedForInput(name, spec, seed) {
-  const shape = spec.shape;
-  const dtype = spec.dtype;
+function contextLengthFromStepSpec(spec) {
+  const maskShape = spec.inputs?.attention_mask?.shape;
+  if (maskShape?.length) return maskShape[maskShape.length - 1] - 1;
+  return spec.inputs?.k_cache?.shape?.[3] ?? 64;
+}
+
+function makeFeedForInput(name, inputSpec, seed, graphSpec = null) {
+  const shape = inputSpec.shape;
+  const dtype = inputSpec.dtype;
+  const contextLength = graphSpec ? contextLengthFromStepSpec(graphSpec) : 64;
+  if (name === 'attention_mask') {
+    return makeCacheAttentionMaskTensor(dtype, shape, contextLength);
+  }
+  if (name === 'sample_position_index') {
+    return makeScalarFillTensor('int32', shape, contextLength);
+  }
+  if (name === 'context_position_index') {
+    return makeScalarFillTensor('int32', shape, Math.max(contextLength - 1, 0));
+  }
   if (dtype === 'float32' || dtype === 'float16') {
     if (name === 'cache_length') return makeScalarFillTensor('float32', shape, 64);
     return makeFloatTensor(shape, seed, dtype);
@@ -691,7 +696,7 @@ function makeFeedsFromSpec(spec, seedBase = 100) {
   const feeds = {};
   let index = 0;
   for (const [name, inputSpec] of Object.entries(spec.inputs ?? {})) {
-    feeds[name] = makeFeedForInput(name, inputSpec, seedBase + index * 13);
+    feeds[name] = makeFeedForInput(name, inputSpec, seedBase + index * 13, spec);
     index += 1;
   }
   return feeds;
@@ -790,8 +795,8 @@ function setStepInputs(feeds, { z, contextNoise, action, stepLevel, signalLevel,
   if (Object.keys(next).some((name) => name.includes('signal_level'))) {
     next = replaceNamedFeed(next, ['signal_level'], signalLevel);
   }
-  if (Object.keys(next).some((name) => name.includes('position_index'))) {
-    next = replaceNamedFeed(next, ['position_index'], positionIndex);
+  if (Object.keys(next).some((name) => name === 'position_index')) {
+    next.position_index = positionIndex;
   }
   return next;
 }
@@ -849,6 +854,9 @@ function findInputName(spec, patterns) {
 
 function createFixedGpuScalarInputs(device, spec) {
   const fixed = {};
+  const maskSpec = spec.inputs?.attention_mask ?? null;
+  const cacheSpec = spec.inputs?.k_cache ?? null;
+  const contextLength = contextLengthFromStepSpec(spec);
   const cacheLengthName = findInputName(spec, ['cache_length']);
   if (cacheLengthName) {
     const inputSpec = spec.inputs[cacheLengthName];
@@ -857,7 +865,29 @@ function createFixedGpuScalarInputs(device, spec) {
       makeScalarFillTensor(inputSpec.dtype, inputSpec.shape, 64),
     );
   }
-  const positionIndexName = findInputName(spec, ['position_index']);
+  const samplePositionName = findInputName(spec, ['sample_position_index']);
+  if (samplePositionName) {
+    const inputSpec = spec.inputs[samplePositionName];
+    fixed.samplePositionIndex = createGpuTensorFromCpu(
+      device,
+      makeScalarFillTensor(inputSpec.dtype, inputSpec.shape, contextLength),
+    );
+  }
+  const contextPositionName = findInputName(spec, ['context_position_index']);
+  if (contextPositionName) {
+    const inputSpec = spec.inputs[contextPositionName];
+    fixed.contextPositionIndex = createGpuTensorFromCpu(
+      device,
+      makeScalarFillTensor(inputSpec.dtype, inputSpec.shape, Math.max(contextLength - 1, 0)),
+    );
+  }
+  if (maskSpec) {
+    fixed.attentionMask = createGpuTensorFromCpu(
+      device,
+      makeCacheAttentionMaskTensor(maskSpec.dtype, maskSpec.shape, contextLength),
+    );
+  }
+  const positionIndexName = spec.inputs?.position_index ? 'position_index' : null;
   if (positionIndexName) {
     const inputSpec = spec.inputs[positionIndexName];
     fixed.positionIndex = createGpuTensorFromCpu(
@@ -879,6 +909,9 @@ function fixedInputPinnedTensors(fixedInputs, fixedScalars) {
     fixedInputs?.contextNoise,
     fixedInputs?.action,
     fixedScalars?.cacheLength,
+    fixedScalars?.samplePositionIndex,
+    fixedScalars?.contextPositionIndex,
+    fixedScalars?.attentionMask,
     fixedScalars?.positionIndex,
   ].filter(Boolean);
 }
@@ -1375,7 +1408,7 @@ async function runDemoBenchmark({ config, specs, manifest }) {
   const stepLevelTensor = makeScalarFillTensor('int32', [1, 1], SAMPLE_STEP_LEVEL);
   const stepInputs = specs.step.inputs ?? {};
   const needsSignalLevelInput = Object.keys(stepInputs).some((name) => name.includes('signal_level'));
-  const needsPositionIndexInput = Object.keys(stepInputs).some((name) => name.includes('position_index'));
+  const needsPositionIndexInput = Object.keys(stepInputs).some((name) => name === 'position_index');
 
   setStatus('demo benchmark: first prefill');
   const prefillFirst = await timeAsync(() => prefill.session.run(prefillFeeds, prefillFetches));
@@ -1419,6 +1452,15 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       });
       if (graphCaptureFixedScalars?.cacheLength) {
         feeds.cache_length = graphCaptureFixedScalars.cacheLength;
+      }
+      if (graphCaptureFixedScalars?.samplePositionIndex) {
+        feeds.sample_position_index = graphCaptureFixedScalars.samplePositionIndex;
+      }
+      if (graphCaptureFixedScalars?.contextPositionIndex) {
+        feeds.context_position_index = graphCaptureFixedScalars.contextPositionIndex;
+      }
+      if (graphCaptureFixedScalars?.attentionMask) {
+        feeds.attention_mask = graphCaptureFixedScalars.attentionMask;
       }
       if (graphCaptureFixedScalars?.positionIndex) {
         feeds.position_index = graphCaptureFixedScalars.positionIndex;
@@ -1533,6 +1575,15 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       });
       if (graphCaptureFixedScalars?.cacheLength) {
         feeds.cache_length = graphCaptureFixedScalars.cacheLength;
+      }
+      if (graphCaptureFixedScalars?.samplePositionIndex) {
+        feeds.sample_position_index = graphCaptureFixedScalars.samplePositionIndex;
+      }
+      if (graphCaptureFixedScalars?.contextPositionIndex) {
+        feeds.context_position_index = graphCaptureFixedScalars.contextPositionIndex;
+      }
+      if (graphCaptureFixedScalars?.attentionMask) {
+        feeds.attention_mask = graphCaptureFixedScalars.attentionMask;
       }
       if (graphCaptureFixedScalars?.positionIndex) {
         feeds.position_index = graphCaptureFixedScalars.positionIndex;
@@ -1728,7 +1779,7 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       cache: {
         commit_policy: usesFusedSampleStep
           ? usesEntryCacheStep
-            ? 'cache is updated in-place from per-frame K/V entry outputs; cache_length stays fixed at full context'
+            ? 'cache is updated in-place from per-frame K/V entry outputs; logical cache_length controls the attention mask and advances until full context'
             : 'cache_length advances once per generated frame from fused final candidate cache'
           : 'cache_length advances once per generated frame',
       },

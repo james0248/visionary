@@ -82,6 +82,7 @@ def main() -> None:
     prefix_frames = frames[args.start : args.start + args.prefix_frames]
     prefix_actions = actions[args.start : args.start + args.prefix_frames]
     patches = preprocessor.preprocess_video(prefix_frames)[None]
+    display_pixels = np.asarray(preprocessor.patches_to_images(patches), dtype=np.uint8)[0]
 
     @jax.jit
     def encode_step(variables, patch_batch):
@@ -150,6 +151,9 @@ def main() -> None:
         "arrays": {
             "z": write_array(prefix.with_suffix(".z.f32.bin"), z),
             "display_z": write_array(prefix.with_suffix(".display_z.f32.bin"), display_z),
+            "display_pixels": write_array(
+                prefix.with_suffix(".display_pixels.u8.bin"), display_pixels
+            ),
             "actions": write_array(prefix.with_suffix(".actions.i32.bin"), context_actions),
             "step_levels": write_array(prefix.with_suffix(".step_levels.i32.bin"), step_levels),
             "signal_levels": write_array(prefix.with_suffix(".signal_levels.i32.bin"), signal_levels),
@@ -169,6 +173,7 @@ def main() -> None:
             "The artifact pads the first context slots with zeros and places the real prefix at the end.",
             "Unless clean_context is true, stored prefix latents are noised using the same tau convention as dynamics rollout.",
             "display_z stores the clean prefix latents for the initial browser preview only.",
+            "display_pixels stores the raw preprocessed prefix frames for the initial browser preview.",
             "Dynamics context z is packed from tokenizer latents with shape [1,64,32,32].",
         ],
     }

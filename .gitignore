@@ -47,3 +47,4 @@ webgpu_app/bench/benchmark.js
 webgpu_app/bench/benchmark.js.map
 webgpu_app/demo/main.js
 webgpu_app/demo/main.js.map
+webgpu_app/dist/
