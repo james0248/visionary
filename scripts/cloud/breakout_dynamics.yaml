@@ -10,7 +10,7 @@ job:
 
 repo:
   url: https://github.com/james0248/visionary.git
-  branch: refactor-and-perf
+  branch: main
 
 setup:
   accelerator: tpu

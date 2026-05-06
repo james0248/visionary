@@ -6,7 +6,10 @@ import jax.numpy as jnp
 from einops import rearrange
 
 from visionary.dataset import DynamicsBatch
-from visionary.transformer import SpatioTemporalTransformer, create_temporal_rope
+from visionary.transformer import (
+    SpatioTemporalTransformer,
+    create_temporal_rope,
+)
 
 
 class ActionEmbedding(nn.Module):
@@ -135,7 +138,11 @@ class DynamicsModel(nn.Module):
             self.register_tokens.astype(self.dtype),
             (batch_size, seq_len, self.num_registers, self.model_dim),
         )
-        observation_tokens = nn.Dense(self.model_dim, dtype=self.dtype)(z.astype(self.dtype))
+        observation_tokens = nn.Dense(
+            self.model_dim,
+            dtype=self.dtype,
+            name="Dense_0",
+        )(z.astype(self.dtype))
 
         num_tokens = 1 + 1 + self.num_registers + num_obs_tokens
         tokens = jnp.concatenate(
@@ -173,6 +180,7 @@ class DynamicsModel(nn.Module):
             dtype=self.dtype,
             kernel_init=nn.initializers.zeros,
             bias_init=nn.initializers.zeros,
+            name="Dense_1",
         )(observation_hidden)
 
     def generate_next(
