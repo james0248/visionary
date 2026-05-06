@@ -10,7 +10,7 @@ dataset:
   train_dir: /mnt/data/train/
   eval_dir: /mnt/data/eval/
   frame_length: 64
-  batch_size: 4
+  batch_size: 8
   worker_count: 0
   num_threads: 8
   prefetch_buffer_size: 16
@@ -20,11 +20,11 @@ dataset:
 
 tokenizer:
   _target_: visionary.tokenizer.Tokenizer
-  num_layers: 4
+  num_layers: 8
   num_latents: 64
   num_heads: 8
   num_kv_heads: 2
-  temporal_layer_period: 2
+  temporal_layer_period: 4
   model_dim: 128
   mlp_hidden_dim: 384
   head_dim: 32
