@@ -30,10 +30,8 @@ from visionary.common.wandb import WandbLogger
 logger = logging.getLogger(__name__)
 
 
-def _scaled_init(scale: float = 1.0):
-    # Avoid orthogonal initialization here: JAX implements it through QR, which
-    # can require a cuSolver FFI path that is unavailable in some CUDA builds.
-    return nn.initializers.variance_scaling(scale**2, "fan_avg", "truncated_normal")
+def _orthogonal(scale: float = 1.0):
+    return nn.initializers.orthogonal(scale)
 
 
 class ActorCritic(nn.Module):
@@ -48,7 +46,7 @@ class ActorCritic(nn.Module):
             (8, 8),
             strides=(4, 4),
             padding="VALID",
-            kernel_init=_scaled_init(np.sqrt(2)),
+            kernel_init=_orthogonal(np.sqrt(2)),
         )(x)
         x = nn.relu(x)
         x = nn.Conv(
@@ -56,7 +54,7 @@ class ActorCritic(nn.Module):
             (4, 4),
             strides=(2, 2),
             padding="VALID",
-            kernel_init=_scaled_init(np.sqrt(2)),
+            kernel_init=_orthogonal(np.sqrt(2)),
         )(x)
         x = nn.relu(x)
         x = nn.Conv(
@@ -64,31 +62,31 @@ class ActorCritic(nn.Module):
             (3, 3),
             strides=(1, 1),
             padding="VALID",
-            kernel_init=_scaled_init(np.sqrt(2)),
+            kernel_init=_orthogonal(np.sqrt(2)),
         )(x)
         x = nn.relu(x)
         x = rearrange(x, "b h w c -> b (h w c)")
-        x = nn.Dense(256, kernel_init=_scaled_init(np.sqrt(2)))(x)
+        x = nn.Dense(256, kernel_init=_orthogonal(np.sqrt(2)))(x)
         x = nn.relu(x)
-        x = nn.Dense(448, kernel_init=_scaled_init(np.sqrt(2)))(x)
+        x = nn.Dense(448, kernel_init=_orthogonal(np.sqrt(2)))(x)
         x = nn.relu(x)
 
         value_features = x + nn.relu(
-            nn.Dense(448, kernel_init=_scaled_init(np.sqrt(0.1)), name="extra_value_fc")(x)
+            nn.Dense(448, kernel_init=_orthogonal(np.sqrt(0.1)), name="extra_value_fc")(x)
         )
         policy_features = x + nn.relu(
-            nn.Dense(448, kernel_init=_scaled_init(np.sqrt(0.1)), name="extra_policy_fc")(x)
+            nn.Dense(448, kernel_init=_orthogonal(np.sqrt(0.1)), name="extra_policy_fc")(x)
         )
 
         logits = nn.Dense(
             self.action_size,
-            kernel_init=_scaled_init(np.sqrt(0.01)),
+            kernel_init=_orthogonal(np.sqrt(0.01)),
             name="policy",
         )(policy_features)
-        int_value = nn.Dense(1, kernel_init=_scaled_init(np.sqrt(0.01)), name="int_value")(
+        int_value = nn.Dense(1, kernel_init=_orthogonal(np.sqrt(0.01)), name="int_value")(
             value_features
         )
-        ext_value = nn.Dense(1, kernel_init=_scaled_init(np.sqrt(0.01)), name="ext_value")(
+        ext_value = nn.Dense(1, kernel_init=_orthogonal(np.sqrt(0.01)), name="ext_value")(
             value_features
         )
         return logits, int_value.squeeze(-1), ext_value.squeeze(-1)
@@ -103,7 +101,7 @@ class RNDTarget(nn.Module):
             (8, 8),
             strides=(4, 4),
             padding="VALID",
-            kernel_init=_scaled_init(np.sqrt(2)),
+            kernel_init=_orthogonal(np.sqrt(2)),
         )(x)
         x = nn.leaky_relu(x)
         x = nn.Conv(
@@ -111,7 +109,7 @@ class RNDTarget(nn.Module):
             (4, 4),
             strides=(2, 2),
             padding="VALID",
-            kernel_init=_scaled_init(np.sqrt(2)),
+            kernel_init=_orthogonal(np.sqrt(2)),
         )(x)
         x = nn.leaky_relu(x)
         x = nn.Conv(
@@ -119,11 +117,11 @@ class RNDTarget(nn.Module):
             (3, 3),
             strides=(1, 1),
             padding="VALID",
-            kernel_init=_scaled_init(np.sqrt(2)),
+            kernel_init=_orthogonal(np.sqrt(2)),
         )(x)
         x = nn.leaky_relu(x)
         x = rearrange(x, "b h w c -> b (h w c)")
-        return nn.Dense(512, kernel_init=_scaled_init(np.sqrt(2)))(x)
+        return nn.Dense(512, kernel_init=_orthogonal(np.sqrt(2)))(x)
 
 
 class RNDPredictor(nn.Module):
@@ -135,7 +133,7 @@ class RNDPredictor(nn.Module):
             (8, 8),
             strides=(4, 4),
             padding="VALID",
-            kernel_init=_scaled_init(np.sqrt(2)),
+            kernel_init=_orthogonal(np.sqrt(2)),
         )(x)
         x = nn.leaky_relu(x)
         x = nn.Conv(
@@ -143,7 +141,7 @@ class RNDPredictor(nn.Module):
             (4, 4),
             strides=(2, 2),
             padding="VALID",
-            kernel_init=_scaled_init(np.sqrt(2)),
+            kernel_init=_orthogonal(np.sqrt(2)),
         )(x)
         x = nn.leaky_relu(x)
         x = nn.Conv(
@@ -151,15 +149,15 @@ class RNDPredictor(nn.Module):
             (3, 3),
             strides=(1, 1),
             padding="VALID",
-            kernel_init=_scaled_init(np.sqrt(2)),
+            kernel_init=_orthogonal(np.sqrt(2)),
         )(x)
         x = nn.leaky_relu(x)
         x = rearrange(x, "b h w c -> b (h w c)")
-        x = nn.Dense(512, kernel_init=_scaled_init(np.sqrt(2)))(x)
+        x = nn.Dense(512, kernel_init=_orthogonal(np.sqrt(2)))(x)
         x = nn.relu(x)
-        x = nn.Dense(512, kernel_init=_scaled_init(np.sqrt(2)))(x)
+        x = nn.Dense(512, kernel_init=_orthogonal(np.sqrt(2)))(x)
         x = nn.relu(x)
-        return nn.Dense(512, kernel_init=_scaled_init(np.sqrt(2)))(x)
+        return nn.Dense(512, kernel_init=_orthogonal(np.sqrt(2)))(x)
 
 
 class PPORNDTrainState(TrainState):
