@@ -481,6 +481,7 @@ def main(cfg: DictConfig):
     episode_lengths = np.zeros(cfg.n_envs, dtype=np.int32)
     global_step = 0
     last_checkpoint_step: int | None = None
+    next_eval_step = int(cfg.eval_steps)
     start_time = time.time()
 
     for _ in range(int(cfg.steps_initial_normalization)):
@@ -652,7 +653,7 @@ def main(cfg: DictConfig):
             checkpoint_manager.save(step=global_step, state=state, force=True)
             last_checkpoint_step = global_step
 
-        if cfg.eval_steps > 0 and global_step % cfg.eval_steps < cfg.n_envs:
+        if cfg.eval_steps > 0 and global_step >= next_eval_step:
             steps, reward, video_path = record_eval_rollout(
                 eval_env,
                 policy_model,
@@ -662,6 +663,7 @@ def main(cfg: DictConfig):
             )
             wb.log({"eval/steps": steps, "eval/reward": reward}, step=global_step)
             wb.log_video("eval/rollout", video_path, step=global_step)
+            next_eval_step = (global_step // int(cfg.eval_steps) + 1) * int(cfg.eval_steps)
 
         if rollout_idx % cfg.log_interval_rollouts == 0:
             elapsed = max(time.time() - start_time, 1e-6)
