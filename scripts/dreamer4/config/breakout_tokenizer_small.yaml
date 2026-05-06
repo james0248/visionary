@@ -1,0 +1,51 @@
+seed: 42
+learning_rate: 3e-4
+lpips_weight: 0.4
+log_interval: 100
+eval_steps: 1000
+total_steps: 1000000
+exp_name: ???
+
+dataset:
+  train_dir: /mnt/data/train/
+  eval_dir: /mnt/data/eval/
+  frame_length: 64
+  batch_size: 8
+  worker_count: 0
+  num_threads: 8
+  prefetch_buffer_size: 16
+  eval:
+    max_batches: 16
+    log_frames: 8
+
+tokenizer:
+  _target_: visionary.tokenizer.Tokenizer
+  num_layers: 8
+  num_latents: 64
+  num_heads: 8
+  num_kv_heads: 2
+  temporal_layer_period: 4
+  model_dim: 128
+  mlp_hidden_dim: 384
+  head_dim: 32
+  channel_dim: 16
+  resize_shape: [128, 96]
+  pad_width: [0, 0]
+  patch_size: 8
+  base: 10000.0
+  independent_prob: 0.3
+
+checkpoint:
+  manager:
+    _target_: visionary.common.checkpoint.CheckpointManager
+    directory: gs://visionary-exp/breakout/checkpoints/${exp_name}
+    options:
+      _target_: orbax.checkpoint.CheckpointManagerOptions
+      save_interval_steps: 10000
+      max_to_keep: 5
+      enable_async_checkpointing: true
+  resume_step: null
+
+wandb:
+  enabled: true
+  project: visionary

@@ -1,6 +1,7 @@
 seed: 42
 env: ALE/Breakout-v5
 n_envs: 8
+fire_reset: true
 
 # Preprocessing
 frame_skip: 4
