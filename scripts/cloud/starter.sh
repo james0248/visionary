@@ -101,17 +101,17 @@ export HOME
 
 run_setup() {
     local accelerator="$1"
-    local jax_spec="jax"
+    local jax_extra=""
     local jax_label="CPU"
 
     case "$accelerator" in
         cpu) ;;
         gpu)
-            jax_spec="jax[cuda12]"
+            jax_extra="[cuda12]"
             jax_label="GPU (CUDA 12)"
             ;;
         tpu)
-            jax_spec="jax[tpu]"
+            jax_extra="[tpu]"
             jax_label="TPU"
             ;;
         *)
@@ -134,8 +134,11 @@ run_setup() {
     info "Installing visionary package"
     uv pip install --python .venv/bin/python .
 
+    local jax_version
+    jax_version="$(.venv/bin/python -c 'import importlib.metadata as md; print(md.version("jax"))')"
+    local jax_spec="jax${jax_extra}==${jax_version}"
     info "Installing ${jax_label} JAX package (${jax_spec})"
-    uv pip install --python .venv/bin/python --upgrade "$jax_spec"
+    uv pip install --python .venv/bin/python "$jax_spec"
 }
 
 if [[ "$MODE" == "setup-only" ]]; then
