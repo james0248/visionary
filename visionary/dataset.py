@@ -24,7 +24,6 @@ class DynamicsDataset(DynamicsBatch):
 
 def align_actions_to_frames(
     actions: np.ndarray,
-    *,
     prev_action: np.ndarray | None = None,
 ) -> np.ndarray:
     aligned = np.empty_like(actions)

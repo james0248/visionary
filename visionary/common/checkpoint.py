@@ -200,7 +200,6 @@ def load_model_export_config(
 def _restore_model_variables(
     directory: str | PathLike[str],
     step: int,
-    *,
     target_variables: Any | None = None,
     fallback_sharding: jax.sharding.Sharding | None = None,
 ) -> Any:
@@ -220,9 +219,8 @@ def _restore_model_variables(
 
 def restore_model_export(
     directory: str | PathLike[str],
-    step: int | None = None,
-    *,
     target_variables: Any,
+    step: int | None = None,
 ) -> Any:
     step = resolve_model_export_step(directory, step)
     return _restore_model_variables(

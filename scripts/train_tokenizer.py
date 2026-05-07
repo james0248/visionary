@@ -43,7 +43,7 @@ def cfg_select(cfg: DictConfig, path: str, default: Any) -> Any:
     return default if value is None else value
 
 
-def parse_auto_bool(value: Any, *, auto_value: bool) -> bool:
+def parse_auto_bool(value: Any, auto_value: bool) -> bool:
     if isinstance(value, bool):
         return value
     value = str(value).strip().lower()
@@ -88,20 +88,8 @@ def batch_partition_spec() -> P:
     return P((DATA_AXIS, FSDP_AXIS))
 
 
-def choose_data_worker_count(
-    configured_worker_count: int,
-    *,
-    fsdp_enabled: bool,
-    local_device_count: int,
-) -> int:
-    if configured_worker_count != 0 or not fsdp_enabled:
-        return configured_worker_count
-    return max(1, local_device_count // 2)
-
-
 def choose_fsdp_partition_spec(
     value: Any,
-    *,
     enabled: bool,
     fsdp_axis_size: int,
 ) -> P:
@@ -129,7 +117,6 @@ def choose_fsdp_partition_spec(
 
 def make_array_shardings(
     tree,
-    *,
     mesh: Mesh,
     fsdp_enabled: bool,
     fsdp_axis_size: int,
@@ -175,7 +162,7 @@ def host_local_batch(batch, mesh: Mesh, pspec: P):
     return multihost_utils.global_array_to_host_local_array(batch, mesh, pspec)
 
 
-def log_sharding_summary(tree, shardings, *, prefix: str, max_entries: int = 12) -> None:
+def log_sharding_summary(tree, shardings, prefix: str, max_entries: int = 12) -> None:
     leaves = []
 
     def visit(path, value, sharding):
@@ -469,7 +456,7 @@ def build_reconstruction_grid(
     )
 
 
-@hydra.main(config_path="config", version_base=None)
+@hydra.main(config_path="config", config_name="tokenizer", version_base=None)
 def main(cfg: DictConfig):
     maybe_initialize_distributed(logger=logger)
 
@@ -534,19 +521,13 @@ def main(cfg: DictConfig):
         batch_size_per_process // local_device_count if fsdp_enabled else batch_size_per_process,
         batch_size_per_process * process_count,
     )
-    configured_worker_count = int(cfg.dataset.worker_count)
-    worker_count = choose_data_worker_count(
-        configured_worker_count,
-        fsdp_enabled=fsdp_enabled,
-        local_device_count=local_device_count,
-    )
+    worker_count = int(cfg.dataset.worker_count)
     num_threads = int(cfg.dataset.num_threads)
     prefetch_buffer_size = int(cfg.dataset.prefetch_buffer_size)
     effective_read_threads = max(worker_count, 1) * num_threads
     logger.info(
-        "Data loader settings: configured_worker_count=%d effective_worker_count=%d "
-        "num_threads=%d prefetch_buffer_size=%d effective_read_threads=%d",
-        configured_worker_count,
+        "Data loader settings: worker_count=%d num_threads=%d "
+        "prefetch_buffer_size=%d effective_read_threads=%d",
         worker_count,
         num_threads,
         prefetch_buffer_size,
@@ -690,6 +671,10 @@ def main(cfg: DictConfig):
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
     train_iterator = iter(train_dataloader)
     last_checkpoint_step: int | None = None
+    export_interval_steps = int(cfg.checkpoint.export_interval_steps)
+
+    def should_export_model(step: int, force: bool) -> bool:
+        return force or (export_interval_steps > 0 and step % export_interval_steps == 0)
 
     def save_checkpoint(step: int, force: bool = False) -> None:
         nonlocal last_checkpoint_step
@@ -702,8 +687,10 @@ def main(cfg: DictConfig):
         if not saved:
             return
         last_checkpoint_step = int(step)
-        save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
-        if is_primary_process:
+        export_model = should_export_model(step, force=force)
+        if export_model:
+            save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
+        if is_primary_process and export_model:
             save_preprocessor_export(
                 checkpoint_manager.directory,
                 step,
