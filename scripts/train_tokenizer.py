@@ -469,7 +469,7 @@ def build_reconstruction_grid(
     )
 
 
-@hydra.main(config_path="config", version_base=None)
+@hydra.main(config_path="config", config_name="tokenizer", version_base=None)
 def main(cfg: DictConfig):
     maybe_initialize_distributed(logger=logger)
 

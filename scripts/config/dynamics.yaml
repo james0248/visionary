@@ -5,6 +5,7 @@ eval_steps: 1000
 total_steps: 500000
 overfit_single_batch: false
 exp_name: ???
+tokenizer_exp_name: ???
 
 loss:
   bootstrap_ratio: 0.25
@@ -16,9 +17,9 @@ video_eval:
   sample_steps: 4
   context_tau: 0.9
   fps: 20
-  output_dir: artifacts/dreamer4_dynamics_eval
+  output_dir: artifacts/dynamics_eval/${exp_name}
   tokenizer:
-    checkpoint_dir: gs://visionary-exp/dream-arcade/checkpoints/breakout_tokenizer_l8p8
+    checkpoint_dir: gs://visionary-exp/dream-arcade/checkpoints/${tokenizer_exp_name}
     checkpoint_step: null
 
 dataset:
@@ -46,7 +47,7 @@ dynamics:
   num_kv_heads: 2
   num_registers: 2
   num_obs_tokens: 32
-  num_actions: 4
+  num_actions: ???
   max_step_size: 6
   model_dim: 128
   head_dim: 32
@@ -58,7 +59,7 @@ dynamics:
 checkpoint:
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
-    directory: gs://visionary-exp/dream-arcade/checkpoints/breakout_${exp_name}
+    directory: gs://visionary-exp/dream-arcade/checkpoints/${exp_name}
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
       save_interval_steps: 10000

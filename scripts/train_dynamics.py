@@ -258,7 +258,7 @@ def log_video_eval(
         )
 
 
-@hydra.main(config_path="config", config_name="breakout_dynamics", version_base=None)
+@hydra.main(config_path="config", config_name="dynamics", version_base=None)
 def main(cfg: DictConfig):
     maybe_initialize_distributed(logger=logger)
 
