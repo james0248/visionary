@@ -49,9 +49,9 @@ Create the demo artifacts with:
 
 ```bash
 uv run python scripts/webgpu/export_dreamer4_onnx.py \
-  --tokenizer_dir gs://visionary-exp/breakout/checkpoints/tokenizer_l8p8 \
+  --tokenizer_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_tokenizer_l8p8 \
   --tokenizer_step 1000000 \
-  --dynamics_dir gs://visionary-exp/breakout/checkpoints/dynamics_l24 \
+  --dynamics_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_dynamics_l24 \
   --dynamics_step 1000000 \
   --out_dir webgpu_app/assets \
   --seq_len 64 \
