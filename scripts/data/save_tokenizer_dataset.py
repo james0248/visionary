@@ -106,7 +106,6 @@ def iter_encoded_episodes(
 
 def write_shards(
     files: list[epath.Path],
-    *,
     output_dir: epath.Path,
     chunk_length: int,
     overlap: int,

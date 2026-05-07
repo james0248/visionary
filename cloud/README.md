@@ -1,5 +1,5 @@
 **Overview**
-`watcher.py` keeps exactly one queued TPU resource alive from an allowlisted TRC machine spec. `starter.sh` now contains the full setup logic as well as the TPU VM startup flow: it clones the repo, installs the right JAX build, mounts the data disk, fetches the W&B secret, and launches training with `checkpoint.resume_step=latest`. The repo-root [setup.sh](/Users/hyeonseok/Documents/Sources/visionary/setup.sh) is only a thin wrapper around `starter.sh --mode setup-only`.
+`watcher.py` keeps exactly one queued TPU resource alive from an allowlisted TRC machine spec. `starter.sh` now contains the full setup logic as well as the TPU VM startup flow: it clones the repo, installs the right JAX build, mounts the data disk, fetches the W&B secret, and launches training with `checkpoint.resume_step=latest`. The repo-root [setup.sh](/Users/hyeonseok/Documents/Sources/visionary/setup.sh) is only a thin wrapper around `cloud/starter.sh --mode setup-only`.
 
 **One-Time Setup**
 
@@ -19,7 +19,7 @@
     - permission to use the data disk, typically `roles/compute.storageAdmin`
     - read access to the marker objects, typically `roles/storage.objectViewer` on the marker bucket or prefix
     - `roles/iam.serviceAccountUser` on the starter service account
-- Fill in [example_watcher.yaml](/Users/hyeonseok/Documents/Sources/visionary/scripts/cloud/example_watcher.yaml).
+- Fill in [example_watcher.yaml](/Users/hyeonseok/Documents/Sources/visionary/cloud/example_watcher.yaml).
   The simplest path is to set a single `machine` block with `family`, `chips`, and `region` or `zone`. The watcher derives `accelerator_type` and the TPU runtime version from the family. Advanced fallback rotation is still available through `candidates`.
 
 **Repeated Use**
@@ -27,7 +27,7 @@
 - Start the watcher:
 
 ```bash
-uv run python scripts/cloud/watcher.py --config scripts/cloud/example_watcher.yaml
+uv run python cloud/watcher.py --config cloud/example_watcher.yaml
 ```
 
 - The watcher will:
