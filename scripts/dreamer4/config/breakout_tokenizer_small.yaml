@@ -9,22 +9,7 @@ exp_name: ???
 fsdp:
   enabled: auto
   data_axis_size: 1
-  min_shard_size: 4096
   log_sharding: true
-
-profile:
-  enabled: true
-  output_dir: /tmp/visionary-tokenizer-profiles/${exp_name}/json
-  flush_every_records: 1
-  collect_memory_stats: true
-  blocking_timing: false
-  trace_enabled: true
-  trace_start_step: 20
-  trace_num_steps: 5
-  trace_dir: /tmp/visionary-tokenizer-profiles/${exp_name}/traces
-  sync_trace_steps: true
-  create_perfetto_trace: true
-  save_device_memory_profile: false
 
 dataset:
   train_dir: /mnt/data/train/
