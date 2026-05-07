@@ -28,7 +28,7 @@ training:
     - dynamics.num_actions=9
     - checkpoint.manager.directory=${checkpoint_dir}
     - total_steps=1000000
-    - wandb.group=enduro
+    - wandb.group=enduro_dynamics
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json

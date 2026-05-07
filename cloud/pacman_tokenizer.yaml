@@ -24,7 +24,7 @@ training:
     - dataset.train_dir=/mnt/data/pacman_tokenizer/train
     - dataset.eval_dir=/mnt/data/pacman_tokenizer/eval
     - checkpoint.manager.directory=${checkpoint_dir}
-    - wandb.group=pacman
+    - wandb.group=pacman_tokenizer
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json
