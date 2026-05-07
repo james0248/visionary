@@ -1,5 +1,5 @@
 project: visionary-491008
-exp_name: breakout_tokenizer_l8p8
+exp_name: breakout_tokenizer_small_2x
 checkpoint_dir: gs://visionary-exp/dream-arcade/checkpoints/${exp_name}
 
 job:
@@ -10,7 +10,7 @@ job:
 
 repo:
   url: https://github.com/james0248/visionary.git
-  branch: refactor-and-perf
+  branch: main
 
 setup:
   accelerator: tpu
@@ -21,8 +21,8 @@ training:
   auto_resume: true
   overrides:
     - exp_name=${exp_name}
-    - dataset.train_dir=/mnt/data/train
-    - dataset.eval_dir=/mnt/data/eval
+    - dataset.train_dir=/mnt/data/breakout_tokenizer/train
+    - dataset.eval_dir=/mnt/data/breakout_tokenizer/eval
     - checkpoint.manager.directory=${checkpoint_dir}
 
 markers:
@@ -66,7 +66,7 @@ watcher:
 # - v4 spot or on-demand: region us-central2; chips 4, 8, 16, 32
 machine:
   family: v6e
-  chips: 1
+  chips: 8
   region: us-east1
   spot: true
   data_disk:

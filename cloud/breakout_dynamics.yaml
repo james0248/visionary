@@ -11,7 +11,7 @@ job:
 
 repo:
   url: https://github.com/james0248/visionary.git
-  branch: main
+  branch: refactor-project-struct
 
 setup:
   accelerator: tpu
@@ -70,7 +70,7 @@ watcher:
 # - v4 spot or on-demand: region us-central2; chips 4, 8, 16, 32
 machine:
   family: v6e
-  chips: 1
+  chips: 8
   region: us-east1
   spot: true
   data_disk:

@@ -673,6 +673,10 @@ def main(cfg: DictConfig):
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
     train_iterator = iter(train_dataloader)
     last_checkpoint_step: int | None = None
+    export_interval_steps = int(cfg.checkpoint.export_interval_steps)
+
+    def should_export_model(step: int, *, force: bool) -> bool:
+        return force or (export_interval_steps > 0 and step % export_interval_steps == 0)
 
     def save_checkpoint(step: int, force: bool = False) -> None:
         nonlocal last_checkpoint_step
@@ -685,8 +689,10 @@ def main(cfg: DictConfig):
         if not saved:
             return
         last_checkpoint_step = int(step)
-        save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
-        if is_primary_process:
+        export_model = should_export_model(step, force=force)
+        if export_model:
+            save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
+        if is_primary_process and export_model:
             save_preprocessor_export(
                 checkpoint_manager.directory,
                 step,

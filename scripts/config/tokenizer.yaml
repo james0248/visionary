@@ -41,6 +41,7 @@ tokenizer:
   independent_prob: 0.3
 
 checkpoint:
+  export_interval_steps: 50000
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
     directory: gs://visionary-exp/dream-arcade/checkpoints/${exp_name}

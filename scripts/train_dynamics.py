@@ -544,6 +544,11 @@ def main(cfg: DictConfig):
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
     checkpoint_manager.save_metadata({"dynamics_config": OmegaConf.to_container(cfg, resolve=False)})
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
+    export_interval_steps = int(cfg.checkpoint.export_interval_steps)
+
+    def should_export_model(step: int, *, force: bool) -> bool:
+        return force or (export_interval_steps > 0 and step % export_interval_steps == 0)
+
     train_iterators = {
         sequence_length: iter(loader) for sequence_length, loader in train_loaders.items()
     }
@@ -707,7 +712,8 @@ def main(cfg: DictConfig):
         if checkpoint_manager.should_save(step):
             host_state = to_host(state)
             checkpoint_manager.save(step=step, state=host_state, extra_items=iterator_items())
-            save_model_export(checkpoint_manager.directory, step, cfg.dynamics, host_state.params)
+            if should_export_model(step, force=False):
+                save_model_export(checkpoint_manager.directory, step, cfg.dynamics, host_state.params)
 
         if timing_stats is not None:
             logger.info(
@@ -735,7 +741,8 @@ def main(cfg: DictConfig):
             extra_items=iterator_items(),
             force=True,
         )
-        save_model_export(checkpoint_manager.directory, step, cfg.dynamics, host_state.params)
+        if should_export_model(step, force=True):
+            save_model_export(checkpoint_manager.directory, step, cfg.dynamics, host_state.params)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()
