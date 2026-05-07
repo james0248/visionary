@@ -6,6 +6,11 @@ eval_steps: 1000
 total_steps: 1000000
 exp_name: ???
 
+fsdp:
+  enabled: auto
+  data_axis_size: 1
+  log_sharding: true
+
 dataset:
   train_dir: /mnt/data/train/
   eval_dir: /mnt/data/eval/

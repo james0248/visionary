@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 
-BRANCH="refactor-and-perf"
-TRAIN_FILE="scripts/dreamer4/train_dynamics.py"
-DATA_DISK_SOURCE="projects/visionary-491008/zones/us-east1-d/disks/visionary-data-dynamics-ue1d"
-CONFIG_NAME="breakout_dynamics"
-EXP_NAME="breakout-dynamics-debug"
+BRANCH="fsdp"
+TRAIN_FILE="scripts/dreamer4/train_tokenizer.py"
+DATA_DISK_SOURCE="projects/visionary-491008/zones/us-east1-d/disks/visionary-data-tokenizer-ue1d"
+CONFIG_NAME="breakout_tokenizer_small"
+EXP_NAME="tokenizer-fsdp-debug"
 
-gcloud compute tpus queued-resources create "visionary-debug-v6e1" \
+gcloud compute tpus queued-resources create "visionary-debug-v6e8" \
   --zone="us-east1-d" \
-  --accelerator-type="v6e-1" \
+  --accelerator-type="v6e-8" \
   --runtime-version="v2-alpha-tpuv6e" \
-  --node-id="visionary-debug-v6e1" \
+  --node-id="visionary-debug-v6e8" \
   --service-account="visionary-starter@visionary-491008.iam.gserviceaccount.com" \
   --scopes="https://www.googleapis.com/auth/cloud-platform" \
   --data-disk="source=$DATA_DISK_SOURCE,mode=read-only" \
   --spot
 
 echo "ssh:
-gcloud compute tpus queued-resources ssh \"visionary-debug-v6e1\" --zone=\"us-east1-d\"
+gcloud compute tpus queued-resources ssh \"visionary-debug-v6e8\" --zone=\"us-east1-d\"
 
 train:
 git clone --branch \"$BRANCH\" \"https://github.com/james0248/visionary.git\" ~/visionary && \\
