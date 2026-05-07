@@ -1,9 +1,16 @@
 import itertools
+import json
 import logging
+import os
+import re
 import time
+from contextlib import nullcontext
+from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
+import fsspec
 import grain.python as grain
 import hydra
 import jax
@@ -41,6 +48,61 @@ FSDP_AXIS = "fsdp"
 def cfg_select(cfg: DictConfig, path: str, default: Any) -> Any:
     value = OmegaConf.select(cfg, path, default=default)
     return default if value is None else value
+
+
+def uri_join(base: str, *parts: str) -> str:
+    base = str(base).rstrip("/")
+    suffix = "/".join(str(part).strip("/") for part in parts if str(part).strip("/"))
+    if not suffix:
+        return base
+    return f"{base}/{suffix}"
+
+
+def sanitize_path_component(value: Any, default: str = "run") -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9_.-]+", "-", str(value)).strip("-._")
+    return sanitized or default
+
+
+def ensure_artifact_parent(uri: str) -> None:
+    if "://" not in uri:
+        Path(uri).parent.mkdir(parents=True, exist_ok=True)
+        return
+
+    fs, _, paths = fsspec.get_fs_token_paths(uri)
+    if not paths:
+        return
+    parent = os.path.dirname(paths[0])
+    if parent:
+        fs.makedirs(parent, exist_ok=True)
+
+
+def write_text_artifact(uri: str, payload: str) -> None:
+    ensure_artifact_parent(uri)
+    with fsspec.open(uri, "w") as handle:
+        handle.write(payload)
+
+
+def write_bytes_artifact(uri: str, payload: bytes) -> None:
+    ensure_artifact_parent(uri)
+    with fsspec.open(uri, "wb") as handle:
+        handle.write(payload)
+
+
+def jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if hasattr(value, "shape") and hasattr(value, "dtype"):
+        array = np.asarray(jax.device_get(value))
+        return array.item() if array.shape == () else array.tolist()
+    if isinstance(value, (Path, P)):
+        return str(value)
+    return value
 
 
 def parse_auto_bool(value: Any, *, auto_value: bool) -> bool:
@@ -209,6 +271,275 @@ def log_sharding_summary(tree, shardings, *, prefix: str, max_entries: int = 12)
         )
 
 
+def collect_local_memory_stats() -> list[dict[str, Any]]:
+    stats = []
+    for device in jax.local_devices():
+        memory_stats = None
+        if hasattr(device, "memory_stats"):
+            try:
+                memory_stats = device.memory_stats()
+            except Exception as exc:  # pragma: no cover - backend-specific diagnostic path.
+                memory_stats = {"error": f"{type(exc).__name__}: {exc}"}
+        stats.append(
+            {
+                "id": str(device),
+                "platform": getattr(device, "platform", ""),
+                "memory_stats": jsonable(memory_stats),
+            }
+        )
+    return stats
+
+
+def aggregate_float(records: list[dict[str, Any]], key: str) -> dict[str, float] | None:
+    values = [float(record[key]) for record in records if key in record and record[key] is not None]
+    if not values:
+        return None
+    return {
+        "mean": float(np.mean(values)),
+        "median": float(np.median(values)),
+        "min": float(np.min(values)),
+        "max": float(np.max(values)),
+        "last": values[-1],
+    }
+
+
+class TrainingProfiler:
+    def __init__(
+        self,
+        cfg: DictConfig,
+        *,
+        metadata: dict[str, Any],
+        process_index: int,
+    ) -> None:
+        self.enabled = bool(cfg_select(cfg, "profile.enabled", False))
+        self.process_index = process_index
+        self.records: list[dict[str, Any]] = []
+        self.metadata = jsonable(metadata)
+        self.flush_every_records = max(int(cfg_select(cfg, "profile.flush_every_records", 1)), 1)
+        self.collect_memory_stats = bool(cfg_select(cfg, "profile.collect_memory_stats", False))
+        self.blocking_timing = bool(cfg_select(cfg, "profile.blocking_timing", False))
+        self.trace_enabled = self.enabled and bool(cfg_select(cfg, "profile.trace_enabled", False))
+        self.trace_start_step = max(int(cfg_select(cfg, "profile.trace_start_step", 20)), 1)
+        self.trace_num_steps = max(int(cfg_select(cfg, "profile.trace_num_steps", 5)), 0)
+        self.trace_end_step = self.trace_start_step + self.trace_num_steps - 1
+        self.sync_trace_steps = bool(cfg_select(cfg, "profile.sync_trace_steps", True))
+        self.create_perfetto_trace = bool(cfg_select(cfg, "profile.create_perfetto_trace", True))
+        self.save_device_memory_profile = bool(
+            cfg_select(cfg, "profile.save_device_memory_profile", False)
+        )
+        self._trace_started = False
+        self._trace_stopped = False
+        self._flush_warning_logged = False
+
+        exp_name = sanitize_path_component(cfg_select(cfg, "exp_name", "tokenizer"))
+        local_profile_root = f"/tmp/visionary-tokenizer-profiles/{exp_name}"
+        default_output_dir = uri_join(local_profile_root, "json")
+        self.output_dir = str(cfg_select(cfg, "profile.output_dir", default_output_dir))
+        self.events_path = uri_join(
+            self.output_dir,
+            f"tokenizer_profile_process_{process_index}.jsonl",
+        )
+        self.summary_path = uri_join(
+            self.output_dir,
+            f"tokenizer_profile_process_{process_index}.json",
+        )
+        self.memory_profile_path = uri_join(
+            self.output_dir,
+            f"tokenizer_device_memory_process_{process_index}.prof",
+        )
+
+        trace_dir = cfg_select(cfg, "profile.trace_dir", None)
+        if trace_dir:
+            self.trace_dir = uri_join(str(trace_dir), f"process_{process_index}")
+        else:
+            self.trace_dir = uri_join(local_profile_root, "traces", f"process_{process_index}")
+
+    def log_configuration(self) -> None:
+        if not self.enabled:
+            logger.info("Tokenizer profiler disabled.")
+            return
+        logger.info(
+            "Tokenizer profiler enabled: events=%s summary=%s trace_enabled=%s "
+            "trace_steps=%s..%s trace_dir=%s blocking_timing=%s",
+            self.events_path,
+            self.summary_path,
+            self.trace_enabled,
+            self.trace_start_step,
+            self.trace_end_step if self.trace_num_steps else "disabled",
+            self.trace_dir,
+            self.blocking_timing,
+        )
+
+    def should_trace_step(self, step: int) -> bool:
+        return (
+            self.trace_enabled
+            and self.trace_num_steps > 0
+            and self.trace_start_step <= step <= self.trace_end_step
+        )
+
+    def should_sync_step(self, step: int) -> bool:
+        return self.blocking_timing or (self.sync_trace_steps and self.should_trace_step(step))
+
+    def maybe_start_trace(self, step: int) -> None:
+        if not self.should_trace_step(step) or self._trace_started:
+            return
+        Path(self.trace_dir).mkdir(parents=True, exist_ok=True)
+        jax.profiler.start_trace(
+            self.trace_dir,
+            create_perfetto_trace=self.create_perfetto_trace,
+        )
+        self._trace_started = True
+        self.record(
+            {
+                "type": "trace_start",
+                "step": step,
+                "trace_dir": self.trace_dir,
+                "create_perfetto_trace": self.create_perfetto_trace,
+            },
+            flush=True,
+        )
+        logger.info("Started JAX profiler trace at step %d: %s", step, self.trace_dir)
+
+    def maybe_stop_trace(self, step: int) -> None:
+        if not self._trace_started or self._trace_stopped or step < self.trace_end_step:
+            return
+        jax.profiler.stop_trace()
+        self._trace_stopped = True
+        self.record(
+            {
+                "type": "trace_stop",
+                "step": step,
+                "trace_dir": self.trace_dir,
+            },
+            flush=True,
+        )
+        logger.info("Stopped JAX profiler trace at step %d: %s", step, self.trace_dir)
+
+    def step_context(self, step: int):
+        if self.should_trace_step(step):
+            return jax.profiler.StepTraceAnnotation("tokenizer_train", step_num=step)
+        return nullcontext()
+
+    def annotation(self, name: str, step: int):
+        if self.should_trace_step(step):
+            return jax.profiler.TraceAnnotation(name)
+        return nullcontext()
+
+    def record(self, record: dict[str, Any], *, flush: bool = False) -> None:
+        if not self.enabled:
+            return
+        payload = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "process_index": self.process_index,
+            **jsonable(record),
+        }
+        self.records.append(payload)
+        if flush or len(self.records) % self.flush_every_records == 0:
+            self.flush()
+
+    def build_summary(self) -> dict[str, Any]:
+        train_windows = [record for record in self.records if record.get("type") == "train_window"]
+        step_records = [record for record in self.records if record.get("type") == "train_step"]
+        event_counts: dict[str, int] = {}
+        for record in self.records:
+            event_type = str(record.get("type", "unknown"))
+            event_counts[event_type] = event_counts.get(event_type, 0) + 1
+        return {
+            "metadata": self.metadata,
+            "paths": {
+                "events": self.events_path,
+                "summary": self.summary_path,
+                "trace_dir": self.trace_dir if self.trace_enabled else None,
+                "device_memory_profile": self.memory_profile_path
+                if self.save_device_memory_profile
+                else None,
+            },
+            "event_counts": event_counts,
+            "latest_train_window": train_windows[-1] if train_windows else None,
+            "latest_train_step": step_records[-1] if step_records else None,
+            "aggregates": {
+                "train_windows": {
+                    key: aggregate_float(train_windows, key)
+                    for key in (
+                        "steps_per_second",
+                        "examples_per_second",
+                        "data_seconds_per_step",
+                        "transfer_seconds_per_step",
+                        "dispatch_seconds_per_step",
+                        "sync_seconds_per_step",
+                        "compute_seconds_per_step",
+                        "wall_seconds_per_step",
+                    )
+                },
+                "train_steps": {
+                    key: aggregate_float(step_records, key)
+                    for key in (
+                        "total_seconds",
+                        "data_seconds",
+                        "transfer_seconds",
+                        "dispatch_seconds",
+                        "sync_seconds",
+                    )
+                },
+            },
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def flush(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            write_text_artifact(
+                self.events_path,
+                "".join(
+                    json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+                    for record in self.records
+                ),
+            )
+            write_text_artifact(
+                self.summary_path,
+                json.dumps(self.build_summary(), indent=2, sort_keys=True) + "\n",
+            )
+        except Exception as exc:  # pragma: no cover - depends on cloud/local filesystems.
+            if not self._flush_warning_logged:
+                logger.warning(
+                    "Failed to flush tokenizer profile artifacts to %s: %s",
+                    self.output_dir,
+                    exc,
+                )
+                self._flush_warning_logged = True
+
+    def close(self, *, final_step: int) -> None:
+        if not self.enabled:
+            return
+        if self._trace_started and not self._trace_stopped:
+            jax.profiler.stop_trace()
+            self._trace_stopped = True
+            self.record(
+                {
+                    "type": "trace_stop",
+                    "step": final_step,
+                    "trace_dir": self.trace_dir,
+                    "reason": "training_end",
+                },
+            )
+        if self.save_device_memory_profile:
+            try:
+                write_bytes_artifact(
+                    self.memory_profile_path,
+                    jax.profiler.device_memory_profile(),
+                )
+            except Exception as exc:  # pragma: no cover - backend-specific diagnostic path.
+                self.record(
+                    {
+                        "type": "device_memory_profile_error",
+                        "step": final_step,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+        self.record({"type": "profile_close", "step": final_step}, flush=True)
+
+
 def make_host_seed(*values: int) -> int:
     seed_sequence = np.random.SeedSequence([int(value) for value in values])
     return int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
@@ -222,20 +553,25 @@ def log_train_timing(
     data_time: float,
     transfer_time: float,
     dispatch_time: float,
-) -> dict[str, float]:
+    sync_time: float,
+    global_batch_size: int,
+) -> tuple[dict[str, float], dict[str, float], float]:
     window_steps = step - start_step
     avg_steps = max(window_steps, 1)
     sync_start = time.monotonic()
     train_metrics = jax.device_get(metrics)
-    sync_time = time.monotonic() - sync_start
+    sync_time += time.monotonic() - sync_start
+    wall_time = data_time + transfer_time + dispatch_time + sync_time
 
-    total_time = data_time + transfer_time + dispatch_time + sync_time
     stats = {
-        "sps": window_steps / max(total_time, 1e-8),
+        "sps": window_steps / max(wall_time, 1e-8),
+        "examples_per_second": window_steps * global_batch_size / max(wall_time, 1e-8),
         "data_time": data_time / avg_steps,
         "transfer_time": transfer_time / avg_steps,
         "compute_time": (dispatch_time + sync_time) / avg_steps,
-        "wall_time": total_time / avg_steps,
+        "dispatch_time": dispatch_time / avg_steps,
+        "sync_time": sync_time / avg_steps,
+        "wall_time": wall_time / avg_steps,
     }
     wb.log(
         {
@@ -244,7 +580,7 @@ def log_train_timing(
         },
         step=step,
     )
-    return stats
+    return stats, {k: float(v) for k, v in train_metrics.items()}, sync_time
 
 
 @lru_cache(maxsize=1)
@@ -530,6 +866,7 @@ def main(cfg: DictConfig):
         batch_size_per_process // local_device_count if fsdp_enabled else batch_size_per_process,
         batch_size_per_process * process_count,
     )
+    global_batch_size = batch_size_per_process * process_count
     effective_read_threads = max(int(cfg.dataset.worker_count), 1) * int(cfg.dataset.num_threads)
     logger.info(
         "Data loader settings: worker_count=%d num_threads=%d "
@@ -539,6 +876,55 @@ def main(cfg: DictConfig):
         int(cfg.dataset.prefetch_buffer_size),
         effective_read_threads,
     )
+    profiler = TrainingProfiler(
+        cfg,
+        metadata={
+            "schema_version": 1,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "jax": {
+                "version": jax.__version__,
+                "backend": jax.default_backend(),
+                "process_index": process_index,
+                "process_count": process_count,
+                "local_device_count": local_device_count,
+                "global_device_count": jax.device_count(),
+                "local_devices": [str(device) for device in jax.local_devices()],
+            },
+            "fsdp": {
+                "enabled": fsdp_enabled,
+                "mesh_shape": dict(mesh.shape),
+                "data_axis_size": int(mesh.shape[DATA_AXIS]),
+                "fsdp_axis_size": int(mesh.shape[FSDP_AXIS]),
+                "batch_partition_spec": str(batch_pspec),
+                "min_shard_size": min_shard_size,
+            },
+            "batch": {
+                "per_process": batch_size_per_process,
+                "global": global_batch_size,
+                "per_device": batch_size_per_process // local_device_count
+                if fsdp_enabled
+                else batch_size_per_process,
+            },
+            "dataset": {
+                "train_dir": str(cfg.dataset.train_dir),
+                "eval_dir": str(cfg.dataset.eval_dir),
+                "frame_length": int(cfg.dataset.frame_length),
+                "worker_count": int(cfg.dataset.worker_count),
+                "num_threads": int(cfg.dataset.num_threads),
+                "prefetch_buffer_size": int(cfg.dataset.prefetch_buffer_size),
+            },
+            "training": {
+                "learning_rate": float(cfg.learning_rate),
+                "lpips_weight": float(cfg.lpips_weight),
+                "log_interval": int(cfg.log_interval),
+                "eval_steps": int(cfg.eval_steps),
+                "total_steps": total_steps,
+            },
+            "tokenizer": OmegaConf.to_container(cfg.tokenizer, resolve=True),
+        },
+        process_index=process_index,
+    )
+    profiler.log_configuration()
     preprocessor = TokenizerPreprocessor(
         resize_shape=tuple(cfg.tokenizer.resize_shape),
         pad_width=tuple(cfg.tokenizer.pad_width),
@@ -729,48 +1115,84 @@ def main(cfg: DictConfig):
             step,
             total_steps,
         )
+        profiler.close(final_step=step)
         checkpoint_manager.wait_until_finished()
         checkpoint_manager.close()
         wb.finish()
         return
 
     timing_start_step = step
-    timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
+    timing_data_time = timing_transfer_time = timing_dispatch_time = timing_sync_time = 0.0
     logger.info(
         "Asynchronous timing mode enabled for tokenizer training; timing logs are averaged "
         "over each logging window."
     )
     while True:
-        step_start = time.monotonic()
         current_step = step
-        try:
-            batch = next(train_iterator)
-        except StopIteration:
-            train_iterator = iter(train_dataloader)
-            batch = next(train_iterator)
-        data_done = time.monotonic()
+        profile_step = current_step + 1
+        profiler.maybe_start_trace(profile_step)
+        step_start = time.monotonic()
+        sync_time = 0.0
+        with profiler.step_context(profile_step):
+            with profiler.annotation("tokenizer_data", profile_step):
+                try:
+                    batch = next(train_iterator)
+                except StopIteration:
+                    train_iterator = iter(train_dataloader)
+                    batch = next(train_iterator)
+                data_done = time.monotonic()
 
-        batch = put_global_batch(batch, batch_sharding)
-        transfer_done = time.monotonic()
+            with profiler.annotation("tokenizer_host_to_global_array", profile_step):
+                batch = put_global_batch(batch, batch_sharding)
+                transfer_done = time.monotonic()
 
-        state, metrics = jit_train_step(
-            state,
-            batch,
-            train_key,
-            jnp.asarray(current_step, dtype=jnp.int32),
-            float(cfg.lpips_weight),
-            preprocessor,
-        )
-        train_dispatched = time.monotonic()
+            with profiler.annotation("tokenizer_jit_train_step", profile_step):
+                state, metrics = jit_train_step(
+                    state,
+                    batch,
+                    train_key,
+                    jnp.asarray(current_step, dtype=jnp.int32),
+                    float(cfg.lpips_weight),
+                    preprocessor,
+                )
+                train_dispatched = time.monotonic()
+
+            if profiler.should_sync_step(profile_step):
+                with profiler.annotation("tokenizer_sync", profile_step):
+                    sync_start = time.monotonic()
+                    metrics = jax.block_until_ready(metrics)
+                    sync_time = time.monotonic() - sync_start
+        step_total_time = time.monotonic() - step_start
+        profiler.maybe_stop_trace(profile_step)
 
         step = current_step + 1
         timing_data_time += data_done - step_start
         timing_transfer_time += transfer_done - data_done
         timing_dispatch_time += train_dispatched - transfer_done
+        timing_sync_time += sync_time
+
+        if profiler.blocking_timing or profiler.should_trace_step(profile_step):
+            step_record = {
+                "type": "train_step",
+                "step": step,
+                "data_seconds": data_done - step_start,
+                "transfer_seconds": transfer_done - data_done,
+                "dispatch_seconds": train_dispatched - transfer_done,
+                "sync_seconds": sync_time,
+                "total_seconds": step_total_time,
+                "global_batch_size": global_batch_size,
+            }
+            if profiler.collect_memory_stats:
+                step_record["memory"] = collect_local_memory_stats()
+            if profiler.should_sync_step(profile_step):
+                step_record["metrics"] = {
+                    k: float(v) for k, v in jax.device_get(metrics).items()
+                }
+            profiler.record(step_record)
 
         timing_stats = None
         if step % cfg.log_interval == 0:
-            timing_stats = log_train_timing(
+            timing_stats, train_metrics, timing_sync_time = log_train_timing(
                 wb,
                 step=step,
                 start_step=timing_start_step,
@@ -778,9 +1200,34 @@ def main(cfg: DictConfig):
                 data_time=timing_data_time,
                 transfer_time=timing_transfer_time,
                 dispatch_time=timing_dispatch_time,
+                sync_time=timing_sync_time,
+                global_batch_size=global_batch_size,
+            )
+            profile_record = {
+                "type": "train_window",
+                "step": step,
+                "start_step": timing_start_step,
+                "window_steps": step - timing_start_step,
+                "global_batch_size": global_batch_size,
+                "steps_per_second": timing_stats["sps"],
+                "examples_per_second": timing_stats["examples_per_second"],
+                "data_seconds_per_step": timing_stats["data_time"],
+                "transfer_seconds_per_step": timing_stats["transfer_time"],
+                "dispatch_seconds_per_step": timing_stats["dispatch_time"],
+                "sync_seconds_per_step": timing_stats["sync_time"],
+                "compute_seconds_per_step": timing_stats["compute_time"],
+                "wall_seconds_per_step": timing_stats["wall_time"],
+                "metrics": train_metrics,
+            }
+            if profiler.collect_memory_stats:
+                profile_record["memory"] = collect_local_memory_stats()
+            profiler.record(
+                profile_record,
+                flush=True,
             )
             timing_start_step = step
             timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
+            timing_sync_time = 0.0
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -847,12 +1294,13 @@ def main(cfg: DictConfig):
         if timing_stats is not None:
             logger.info(
                 "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, compute: %.3fs, "
-                "wall: %.3fs, eval: %.3fs",
+                "sync: %.3fs, wall: %.3fs, eval: %.3fs",
                 step,
                 timing_stats["sps"],
                 timing_stats["data_time"],
                 timing_stats["transfer_time"],
                 timing_stats["compute_time"],
+                timing_stats["sync_time"],
                 timing_stats["wall_time"],
                 t_eval,
             )
@@ -862,6 +1310,7 @@ def main(cfg: DictConfig):
 
     if step >= total_steps and last_checkpoint_step != step:
         save_checkpoint(step, force=True)
+    profiler.close(final_step=step)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()
