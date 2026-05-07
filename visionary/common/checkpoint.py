@@ -17,6 +17,10 @@ METADATA_FILENAME = "metadata.json"
 MODEL_EXPORT_DIRNAME = "model"
 PREPROCESSOR_EXPORT_DIRNAME = "preprocessor"
 PREPROCESSOR_CONFIG_FIELDS = ("resize_shape", "pad_width", "patch_size")
+GRAIN_ITERATOR_RESTORE_MISMATCHES = (
+    "DataSource in checkpoint does not match datasource in dataloader",
+    "Sampler in checkpoint does not match dataloader sampler",
+)
 
 
 def model_export_dir(directory: str | PathLike[str]) -> epath.Path:
@@ -363,8 +367,7 @@ class CheckpointManager:
         except ValueError as err:
             should_retry_without_iterators = (
                 extra_items
-                and "DataSource in checkpoint does not match datasource in dataloader"
-                in str(err)
+                and any(message in str(err) for message in GRAIN_ITERATOR_RESTORE_MISMATCHES)
             )
             if not should_retry_without_iterators:
                 raise
