@@ -88,17 +88,6 @@ def batch_partition_spec() -> P:
     return P((DATA_AXIS, FSDP_AXIS))
 
 
-def choose_data_worker_count(
-    configured_worker_count: int,
-    *,
-    fsdp_enabled: bool,
-    local_device_count: int,
-) -> int:
-    if configured_worker_count != 0 or not fsdp_enabled:
-        return configured_worker_count
-    return max(1, local_device_count // 2)
-
-
 def choose_fsdp_partition_spec(
     value: Any,
     *,
@@ -534,19 +523,13 @@ def main(cfg: DictConfig):
         batch_size_per_process // local_device_count if fsdp_enabled else batch_size_per_process,
         batch_size_per_process * process_count,
     )
-    configured_worker_count = int(cfg.dataset.worker_count)
-    worker_count = choose_data_worker_count(
-        configured_worker_count,
-        fsdp_enabled=fsdp_enabled,
-        local_device_count=local_device_count,
-    )
+    worker_count = int(cfg.dataset.worker_count)
     num_threads = int(cfg.dataset.num_threads)
     prefetch_buffer_size = int(cfg.dataset.prefetch_buffer_size)
     effective_read_threads = max(worker_count, 1) * num_threads
     logger.info(
-        "Data loader settings: configured_worker_count=%d effective_worker_count=%d "
-        "num_threads=%d prefetch_buffer_size=%d effective_read_threads=%d",
-        configured_worker_count,
+        "Data loader settings: worker_count=%d num_threads=%d "
+        "prefetch_buffer_size=%d effective_read_threads=%d",
         worker_count,
         num_threads,
         prefetch_buffer_size,
