@@ -55,3 +55,4 @@ checkpoint:
 wandb:
   enabled: true
   project: visionary
+  group: null

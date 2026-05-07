@@ -6,8 +6,10 @@ class WandbLogger:
     def __init__(self, cfg: DictConfig, enabled: bool | None = None):
         self.enabled = cfg.wandb.enabled if enabled is None else bool(enabled)
         if self.enabled:
+            group = OmegaConf.select(cfg, "wandb.group", default=None)
             wandb.init(
                 project=cfg.wandb.project,
+                group=None if group in (None, "") else str(group),
                 config=OmegaConf.to_container(cfg, resolve=True),
             )
 

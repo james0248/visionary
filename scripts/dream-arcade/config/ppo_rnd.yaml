@@ -42,3 +42,4 @@ eval_temperature: 1.0
 wandb:
   enabled: true
   project: visionary
+  group: null

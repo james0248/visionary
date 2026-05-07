@@ -33,3 +33,4 @@ eval_steps: 100_000
 wandb:
   enabled: true
   project: visionary
+  group: null
