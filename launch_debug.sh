@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 BRANCH="fsdp"
-TRAIN_FILE="scripts/dreamer4/train_tokenizer.py"
+TRAIN_FILE="scripts/train_tokenizer.py"
 DATA_DISK_SOURCE="projects/visionary-491008/zones/us-east1-d/disks/visionary-data-tokenizer-ue1d"
 CONFIG_NAME="breakout_tokenizer_small"
 EXP_NAME="tokenizer-fsdp-debug"

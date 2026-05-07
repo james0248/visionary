@@ -32,7 +32,7 @@ playwright-report/
 outputs/
 wandb/
 artifacts/
-data/
+/data/
 
 # Generated WebGPU/ONNX artifacts
 webgpu_app/assets/*.onnx

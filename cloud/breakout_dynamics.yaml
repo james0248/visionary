@@ -16,7 +16,7 @@ setup:
   accelerator: tpu
 
 training:
-  script: scripts/dreamer4/train_dynamics.py
+  script: scripts/train_dynamics.py
   config_name: breakout_dynamics
   auto_resume: true
   overrides:

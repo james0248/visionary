@@ -16,7 +16,7 @@ setup:
   accelerator: tpu
 
 training:
-  script: scripts/dreamer4/train_tokenizer.py
+  script: scripts/train_tokenizer.py
   config_name: breakout_tokenizer
   auto_resume: true
   overrides:

@@ -78,7 +78,7 @@ def main():
     parser.add_argument("--num_episodes", type=int, default=8)
     parser.add_argument(
         "--config",
-        default=str(Path(__file__).resolve().parent / "config" / "breakout.yaml"),
+        default=str(Path(__file__).resolve().parent / "config" / "breakout_tokenizer.yaml"),
     )
     args = parser.parse_args()
 

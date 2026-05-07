@@ -2,4 +2,4 @@
 
 set -euo pipefail
 
-exec "$(dirname "$0")/scripts/cloud/starter.sh" --mode setup-only "$@"
+exec "$(dirname "$0")/cloud/starter.sh" --mode setup-only "$@"

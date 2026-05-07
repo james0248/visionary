@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--mask_prob", type=float, default=0.1)
     args = parser.parse_args()
 
-    run_cfg = OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout.yaml")
+    run_cfg = OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout_tokenizer.yaml")
     rng = np.random.default_rng(args.seed)
     shard_paths = sorted(Path(args.dataset_dir).glob("*.arecord"))
     shard_indices = rng.choice(
