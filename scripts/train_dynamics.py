@@ -546,7 +546,7 @@ def main(cfg: DictConfig):
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
     export_interval_steps = int(cfg.checkpoint.export_interval_steps)
 
-    def should_export_model(step: int, *, force: bool) -> bool:
+    def should_export_model(step: int, force: bool) -> bool:
         return force or (export_interval_steps > 0 and step % export_interval_steps == 0)
 
     train_iterators = {

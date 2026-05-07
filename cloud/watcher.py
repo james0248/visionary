@@ -111,7 +111,7 @@ def allowed_zones_for_family(family: str, spot: bool) -> list[str]:
     )
 
 
-def resolve_zone(*, family: str, spot: bool, region: str | None, zone: str | None) -> str:
+def resolve_zone(family: str, spot: bool, region: str | None, zone: str | None) -> str:
     allowed_zones = allowed_zones_for_family(family, spot)
     if zone is not None:
         if zone not in allowed_zones:
@@ -144,7 +144,7 @@ def resolve_zone(*, family: str, spot: bool, region: str | None, zone: str | Non
     return matching_zones[0]
 
 
-def normalize_machine(machine: dict[str, Any], *, default_spot: bool) -> dict[str, Any]:
+def normalize_machine(machine: dict[str, Any], default_spot: bool) -> dict[str, Any]:
     machine = dict(machine)
     family = normalize_family(str(machine["family"]))
     chip_count = int(machine["chips"])
@@ -271,7 +271,6 @@ def is_transient_gcloud_failure(
 
 def run_subprocess(
     cmd: list[str],
-    *,
     cfg: dict[str, Any] | None = None,
     capture_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
@@ -306,7 +305,6 @@ def run_subprocess(
 
 def run_command(
     cmd: list[str],
-    *,
     cfg: dict[str, Any] | None = None,
     capture_output: bool = True,
     check: bool = True,
@@ -326,7 +324,7 @@ def command_failure_detail(exc: subprocess.CalledProcessError) -> str:
     return (exc.stderr or exc.output or "").strip()
 
 
-def log_command_failure(exc: subprocess.CalledProcessError, *, message: str) -> None:
+def log_command_failure(exc: subprocess.CalledProcessError, message: str) -> None:
     command = " ".join(str(part) for part in exc.cmd)
     print(f"[watcher] {message}: {command}", file=sys.stderr)
     detail = command_failure_detail(exc)
@@ -346,7 +344,7 @@ def gcloud_command(cfg: dict[str, Any], *args: str, json_output: bool = False) -
 
 
 def maybe_describe_queued_resource(
-    cfg: dict[str, Any], *, queued_resource_name: str, zone: str
+    cfg: dict[str, Any], queued_resource_name: str, zone: str
 ) -> dict[str, Any] | None:
     cmd = gcloud_command(
         cfg,
@@ -368,7 +366,7 @@ def maybe_describe_queued_resource(
         raise
 
 
-def delete_queued_resource(cfg: dict[str, Any], *, queued_resource_name: str, zone: str) -> None:
+def delete_queued_resource(cfg: dict[str, Any], queued_resource_name: str, zone: str) -> None:
     cmd = gcloud_command(
         cfg,
         "compute",
@@ -515,7 +513,7 @@ def gcs_write_text(cfg: dict[str, Any], uri: str, text: str) -> None:
         payload_path.unlink(missing_ok=True)
 
 
-def sanitize_name(value: str, *, max_len: int = 40) -> str:
+def sanitize_name(value: str, max_len: int = 40) -> str:
     value = re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-")
     return value[:max_len].strip("-")
 
@@ -535,7 +533,6 @@ def disk_name_from_source(source: str) -> str:
 def build_job_payload(
     cfg: dict[str, Any],
     candidate: dict[str, Any],
-    *,
     queued_resource_name_value: str,
     candidate_index: int,
     attempt_id: int | None = None,
@@ -707,7 +704,6 @@ def next_failure_event_uri(cfg: dict[str, Any], failure_prefix: str, last_proces
 
 def failure_candidate_index(
     payload: dict[str, Any] | None,
-    *,
     existing_index: int | None,
     fallback_index: int,
     candidate_count: int,
@@ -769,7 +765,6 @@ def print_failure_details(cfg: dict[str, Any], failure_uri: str) -> dict[str, An
 def create_queued_resource(
     cfg: dict[str, Any],
     candidate: dict[str, Any],
-    *,
     candidate_index: int,
     attempt_id: int,
     starter_script: Path,

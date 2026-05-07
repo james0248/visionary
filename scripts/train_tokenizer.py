@@ -43,7 +43,7 @@ def cfg_select(cfg: DictConfig, path: str, default: Any) -> Any:
     return default if value is None else value
 
 
-def parse_auto_bool(value: Any, *, auto_value: bool) -> bool:
+def parse_auto_bool(value: Any, auto_value: bool) -> bool:
     if isinstance(value, bool):
         return value
     value = str(value).strip().lower()
@@ -90,7 +90,6 @@ def batch_partition_spec() -> P:
 
 def choose_fsdp_partition_spec(
     value: Any,
-    *,
     enabled: bool,
     fsdp_axis_size: int,
 ) -> P:
@@ -118,7 +117,6 @@ def choose_fsdp_partition_spec(
 
 def make_array_shardings(
     tree,
-    *,
     mesh: Mesh,
     fsdp_enabled: bool,
     fsdp_axis_size: int,
@@ -164,7 +162,7 @@ def host_local_batch(batch, mesh: Mesh, pspec: P):
     return multihost_utils.global_array_to_host_local_array(batch, mesh, pspec)
 
 
-def log_sharding_summary(tree, shardings, *, prefix: str, max_entries: int = 12) -> None:
+def log_sharding_summary(tree, shardings, prefix: str, max_entries: int = 12) -> None:
     leaves = []
 
     def visit(path, value, sharding):
@@ -675,7 +673,7 @@ def main(cfg: DictConfig):
     last_checkpoint_step: int | None = None
     export_interval_steps = int(cfg.checkpoint.export_interval_steps)
 
-    def should_export_model(step: int, *, force: bool) -> bool:
+    def should_export_model(step: int, force: bool) -> bool:
         return force or (export_interval_steps > 0 and step % export_interval_steps == 0)
 
     def save_checkpoint(step: int, force: bool = False) -> None:
