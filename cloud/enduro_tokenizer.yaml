@@ -24,7 +24,7 @@ training:
     - dataset.train_dir=/mnt/data/enduro_tokenizer/train
     - dataset.eval_dir=/mnt/data/enduro_tokenizer/eval
     - checkpoint.manager.directory=${checkpoint_dir}
-    - wandb.group=enduro
+    - wandb.group=enduro_tokenizer
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json

@@ -28,7 +28,7 @@ training:
     - dynamics.num_actions=6
     - checkpoint.manager.directory=${checkpoint_dir}
     - total_steps=1000000
-    - wandb.group=qbert
+    - wandb.group=qbert_dynamics
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json

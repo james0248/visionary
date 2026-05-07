@@ -24,7 +24,7 @@ training:
     - dataset.train_dir=/mnt/data/space_invaders_tokenizer/train
     - dataset.eval_dir=/mnt/data/space_invaders_tokenizer/eval
     - checkpoint.manager.directory=${checkpoint_dir}
-    - wandb.group=space-invaders
+    - wandb.group=space_invaders_tokenizer
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json

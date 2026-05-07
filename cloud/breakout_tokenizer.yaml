@@ -24,6 +24,7 @@ training:
     - dataset.train_dir=/mnt/data/breakout_tokenizer/train
     - dataset.eval_dir=/mnt/data/breakout_tokenizer/eval
     - checkpoint.manager.directory=${checkpoint_dir}
+    - wandb.group=breakout_tokenizer
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json
