@@ -150,6 +150,17 @@ def batch_partition_spec() -> P:
     return P((DATA_AXIS, FSDP_AXIS))
 
 
+def choose_data_worker_count(
+    configured_worker_count: int,
+    *,
+    fsdp_enabled: bool,
+    local_device_count: int,
+) -> int:
+    if configured_worker_count != 0 or not fsdp_enabled:
+        return configured_worker_count
+    return max(1, local_device_count // 2)
+
+
 def choose_fsdp_partition_spec(
     value: Any,
     *,
@@ -867,13 +878,22 @@ def main(cfg: DictConfig):
         batch_size_per_process * process_count,
     )
     global_batch_size = batch_size_per_process * process_count
-    effective_read_threads = max(int(cfg.dataset.worker_count), 1) * int(cfg.dataset.num_threads)
+    configured_worker_count = int(cfg.dataset.worker_count)
+    worker_count = choose_data_worker_count(
+        configured_worker_count,
+        fsdp_enabled=fsdp_enabled,
+        local_device_count=local_device_count,
+    )
+    num_threads = int(cfg.dataset.num_threads)
+    prefetch_buffer_size = int(cfg.dataset.prefetch_buffer_size)
+    effective_read_threads = max(worker_count, 1) * num_threads
     logger.info(
-        "Data loader settings: worker_count=%d num_threads=%d "
-        "prefetch_buffer_size=%d effective_read_threads=%d",
-        int(cfg.dataset.worker_count),
-        int(cfg.dataset.num_threads),
-        int(cfg.dataset.prefetch_buffer_size),
+        "Data loader settings: configured_worker_count=%d effective_worker_count=%d "
+        "num_threads=%d prefetch_buffer_size=%d effective_read_threads=%d",
+        configured_worker_count,
+        worker_count,
+        num_threads,
+        prefetch_buffer_size,
         effective_read_threads,
     )
     profiler = TrainingProfiler(
@@ -909,9 +929,10 @@ def main(cfg: DictConfig):
                 "train_dir": str(cfg.dataset.train_dir),
                 "eval_dir": str(cfg.dataset.eval_dir),
                 "frame_length": int(cfg.dataset.frame_length),
-                "worker_count": int(cfg.dataset.worker_count),
-                "num_threads": int(cfg.dataset.num_threads),
-                "prefetch_buffer_size": int(cfg.dataset.prefetch_buffer_size),
+                "configured_worker_count": configured_worker_count,
+                "worker_count": worker_count,
+                "num_threads": num_threads,
+                "prefetch_buffer_size": prefetch_buffer_size,
             },
             "training": {
                 "learning_rate": float(cfg.learning_rate),
@@ -947,8 +968,8 @@ def main(cfg: DictConfig):
             seed=seed,
         )
         read_options = grain.ReadOptions(
-            num_threads=int(cfg.dataset.num_threads),
-            prefetch_buffer_size=int(cfg.dataset.prefetch_buffer_size),
+            num_threads=num_threads,
+            prefetch_buffer_size=prefetch_buffer_size,
         )
         return grain.DataLoader(
             data_source=source,
@@ -961,7 +982,7 @@ def main(cfg: DictConfig):
                     drop_remainder=drop_remainder,
                 ),
             ],
-            worker_count=cfg.dataset.worker_count,
+            worker_count=worker_count,
             read_options=read_options,
         )
 
