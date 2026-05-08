@@ -99,6 +99,52 @@ PY
 HOME="${HOME:-$(resolve_home_dir)}"
 export HOME
 
+raise_open_file_limit() {
+    local requested_limit="${VISIONARY_NOFILE_LIMIT:-1048576}"
+    if ! [[ "$requested_limit" =~ ^[0-9]+$ ]] || (( requested_limit <= 0 )); then
+        error "VISIONARY_NOFILE_LIMIT must be a positive integer; got '${requested_limit}'."
+        return 0
+    fi
+
+    local soft_limit
+    local hard_limit
+    soft_limit="$(ulimit -S -n)"
+    hard_limit="$(ulimit -H -n)"
+
+    if [[ "$soft_limit" == "unlimited" ]]; then
+        info "Open file limit is already unlimited."
+        return 0
+    fi
+    if ! [[ "$soft_limit" =~ ^[0-9]+$ ]]; then
+        error "Could not parse open file soft limit '${soft_limit}'."
+        return 0
+    fi
+
+    local target_limit="$requested_limit"
+    if [[ "$hard_limit" != "unlimited" ]]; then
+        if ! [[ "$hard_limit" =~ ^[0-9]+$ ]]; then
+            error "Could not parse open file hard limit '${hard_limit}'."
+            return 0
+        fi
+        if (( target_limit > hard_limit )); then
+            target_limit="$hard_limit"
+        fi
+    fi
+
+    if (( soft_limit >= target_limit )); then
+        info "Open file limit is ${soft_limit}; target is ${target_limit}."
+        return 0
+    fi
+
+    if ulimit -S -n "$target_limit"; then
+        info "Raised open file limit from ${soft_limit} to $(ulimit -S -n) (hard limit: ${hard_limit})."
+    else
+        error "Could not raise open file limit from ${soft_limit} to ${target_limit} (hard limit: ${hard_limit})."
+    fi
+}
+
+raise_open_file_limit
+
 run_setup() {
     local accelerator="$1"
     local jax_extra=""
