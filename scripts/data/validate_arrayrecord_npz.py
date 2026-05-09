@@ -1,10 +1,13 @@
 import argparse
 import io
+import itertools
 import json
 import logging
+import os
 import shutil
 import sys
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,6 +26,16 @@ class ValidationSummary:
     valid_records: int = 0
     corrupt_records: int = 0
     replaced_records: int = 0
+    shard_failures: int = 0
+    corrupt_examples: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ShardValidationResult:
+    shard_path: Path
+    total_records: int = 0
+    valid_records: int = 0
+    corrupt_records: int = 0
     shard_failures: int = 0
     corrupt_examples: list[dict[str, Any]] = field(default_factory=list)
 
@@ -55,6 +68,119 @@ def prepare_output_dir(output_dir: Path, overwrite: bool) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
+def merge_shard_result(summary: ValidationSummary, result: ShardValidationResult) -> None:
+    summary.total_records += result.total_records
+    summary.valid_records += result.valid_records
+    summary.corrupt_records += result.corrupt_records
+    summary.shard_failures += result.shard_failures
+    summary.corrupt_examples.extend(result.corrupt_examples)
+
+
+def trim_report_examples(summary: ValidationSummary, max_report_records: int) -> None:
+    if max_report_records < 0:
+        return
+    del summary.corrupt_examples[max_report_records:]
+
+
+def validate_shard(
+    shard_path: Path,
+    keys: tuple[str, ...] | None,
+    max_report_records: int,
+    max_failures: int | None,
+) -> ShardValidationResult:
+    result = ShardValidationResult(shard_path=shard_path)
+    reader: ArrayRecordReader | None = None
+    try:
+        reader = ArrayRecordReader(str(shard_path))
+        num_records = int(reader.num_records())
+    except Exception:
+        logger.exception("Could not open shard %s", shard_path)
+        if reader is not None:
+            reader.close()
+        result.shard_failures += 1
+        return result
+
+    logger.info("Checking %s (%d records)", shard_path, num_records)
+    try:
+        for record_idx in range(num_records):
+            result.total_records += 1
+            try:
+                record = reader.read([record_idx])[0]
+                validate_npz_payload(record, keys)
+            except Exception as exc:
+                result.corrupt_records += 1
+                logger.error(
+                    "Corrupt record: shard=%s record=%d error=%s: %s",
+                    shard_path,
+                    record_idx,
+                    type(exc).__name__,
+                    exc,
+                )
+                if len(result.corrupt_examples) < max_report_records:
+                    result.corrupt_examples.append(
+                        {
+                            "shard": shard_path.as_posix(),
+                            "record": record_idx,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    )
+                if max_failures is not None and result.corrupt_records >= max_failures:
+                    logger.error("Stopping %s after %d corrupt records", shard_path, max_failures)
+                    break
+                continue
+
+            result.valid_records += 1
+    finally:
+        reader.close()
+    return result
+
+
+def iter_validated_shards(
+    shards: list[Path],
+    keys: tuple[str, ...] | None,
+    max_report_records: int,
+    max_failures: int | None,
+    workers: int,
+):
+    if workers == 1:
+        for shard_path in shards:
+            yield validate_shard(shard_path, keys, max_report_records, max_failures)
+        return
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        yield from executor.map(
+            validate_shard,
+            shards,
+            itertools.repeat(keys),
+            itertools.repeat(max_report_records),
+            itertools.repeat(max_failures),
+        )
+
+
+def validate_dir_parallel(
+    data_dir: Path,
+    keys: tuple[str, ...] | None,
+    max_failures: int | None,
+    max_report_records: int,
+    workers: int,
+) -> ValidationSummary:
+    summary = ValidationSummary(input_dir=data_dir)
+    for result in iter_validated_shards(
+        iter_shards(data_dir),
+        keys=keys,
+        max_report_records=max_report_records,
+        max_failures=max_failures,
+        workers=workers,
+    ):
+        merge_shard_result(summary, result)
+        trim_report_examples(summary, max_report_records)
+        if max_failures is not None and summary.corrupt_records >= max_failures:
+            logger.error("Stopping %s after %d corrupt records", data_dir, max_failures)
+            break
+    return summary
+
+
 def validate_dir(
     data_dir: Path,
     output_dir: Path | None,
@@ -62,7 +188,17 @@ def validate_dir(
     replace_corrupt_with_previous: bool,
     max_failures: int | None,
     max_report_records: int,
+    workers: int,
 ) -> ValidationSummary:
+    if output_dir is None:
+        return validate_dir_parallel(
+            data_dir=data_dir,
+            keys=keys,
+            max_failures=max_failures,
+            max_report_records=max_report_records,
+            workers=workers,
+        )
+
     summary = ValidationSummary(input_dir=data_dir)
     last_valid_record: bytes | None = None
 
@@ -132,6 +268,7 @@ def validate_dir(
             if writer is not None:
                 writer.close()
                 logger.info("Wrote cleaned shard %s", output_path)
+        trim_report_examples(summary, max_report_records)
 
     return summary
 
@@ -202,6 +339,15 @@ def main() -> int:
         help="Exit 0 after reporting corrupt records. Infrastructure errors still raise.",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=min(8, os.cpu_count() or 1),
+        help=(
+            "Number of shard validation threads. Rewriting with --output_root remains serial "
+            "to preserve record replacement semantics."
+        ),
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Replace existing cleaned output directories that contain .arecord files.",
@@ -218,6 +364,8 @@ def main() -> int:
 
     if args.replace_corrupt_with_previous and args.output_root is None:
         raise ValueError("--replace_corrupt_with_previous requires --output_root")
+    if args.workers <= 0:
+        raise ValueError("--workers must be positive")
 
     output_dirs: dict[Path, Path | None] = {}
     for data_dir in args.data_dirs:
@@ -237,6 +385,7 @@ def main() -> int:
             replace_corrupt_with_previous=bool(args.replace_corrupt_with_previous),
             max_failures=args.max_failures,
             max_report_records=max(args.max_report_records, 0),
+            workers=args.workers,
         )
         for data_dir, output_dir in output_dirs.items()
     ]

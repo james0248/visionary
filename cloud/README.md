@@ -82,3 +82,4 @@ uv run python cloud/watcher.py --config cloud/tokenizer_dataset_inspect.yaml
 ```
 
 The job writes its full startup log under `gs://visionary-exp/dream-arcade/checkpoints/tokenizer_dataset_inspect/logs/` and a structured corruption report to `gs://visionary-exp/dream-arcade/checkpoints/tokenizer_dataset_inspect/inspection_report.json`.
+The validator parallelizes read-only inspection across ArrayRecord shards with `--workers 32`; repair/rewrite mode remains serial to keep replacement semantics stable.
