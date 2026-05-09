@@ -11,8 +11,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import grain.python as grain
 from array_record.python.array_record_module import ArrayRecordReader
 from etils import epath
+
+from visionary.dataset import DynamicsDataSource, RandomDynamicsCrop
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +176,79 @@ def write_report(path: str, payload: dict[str, Any]) -> None:
     logger.info("Wrote report to %s", path)
 
 
+def stress_dynamics_loader(args) -> dict[str, Any]:
+    summaries = []
+    total_batches = 0
+    total_examples = 0
+    for data_dir in args.data_dirs:
+        source = DynamicsDataSource(data_dir.as_posix())
+        sampler = grain.IndexSampler(
+            num_records=len(source),
+            shard_options=grain.NoSharding(),
+            shuffle=True,
+            seed=int(args.seed),
+        )
+        loader = grain.DataLoader(
+            data_source=source,
+            sampler=sampler,
+            operations=[
+                RandomDynamicsCrop(int(args.sequence_length)),
+                grain.Batch(batch_size=int(args.batch_size), drop_remainder=True),
+            ],
+            worker_count=int(args.worker_count),
+            read_options=grain.ReadOptions(
+                num_threads=int(args.num_threads),
+                prefetch_buffer_size=int(args.prefetch_buffer_size),
+            ),
+        )
+        batches = 0
+        examples = 0
+        logger.info(
+            "Stress reading %s: records=%d batches=%d batch_size=%d length=%d "
+            "worker_count=%d num_threads=%d prefetch=%d",
+            data_dir,
+            len(source),
+            args.batches,
+            args.batch_size,
+            args.sequence_length,
+            args.worker_count,
+            args.num_threads,
+            args.prefetch_buffer_size,
+        )
+        iterator = iter(loader)
+        for _ in range(int(args.batches)):
+            batch = next(iterator)
+            batches += 1
+            examples += int(batch["video"].shape[0])
+        total_batches += batches
+        total_examples += examples
+        summaries.append(
+            {
+                "data_dir": data_dir.as_posix(),
+                "records": len(source),
+                "batches": batches,
+                "examples": examples,
+            }
+        )
+    return {
+        "mode": "stress_dynamics_loader",
+        "settings": {
+            "batch_size": int(args.batch_size),
+            "sequence_length": int(args.sequence_length),
+            "batches": int(args.batches),
+            "worker_count": int(args.worker_count),
+            "num_threads": int(args.num_threads),
+            "prefetch_buffer_size": int(args.prefetch_buffer_size),
+            "seed": int(args.seed),
+        },
+        "totals": {
+            "batches": total_batches,
+            "examples": total_examples,
+        },
+        "summaries": summaries,
+    }
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     parser = argparse.ArgumentParser(
@@ -182,6 +258,18 @@ def main() -> int:
         )
     )
     parser.add_argument("data_dirs", nargs="+", type=Path)
+    parser.add_argument(
+        "--stress_dynamics_loader",
+        action="store_true",
+        help="Use DynamicsDataSource plus Grain DataLoader to reproduce training-style reads.",
+    )
+    parser.add_argument("--sequence_length", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batches", type=int, default=1000)
+    parser.add_argument("--worker_count", type=int, default=4)
+    parser.add_argument("--num_threads", type=int, default=8)
+    parser.add_argument("--prefetch_buffer_size", type=int, default=16)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--keys", nargs="+", help="NPZ keys to force-read.")
     parser.add_argument("--report_path", help="Optional local or gs:// JSON report path.")
     parser.add_argument(
@@ -214,6 +302,17 @@ def main() -> int:
         raise ValueError("--max_bad_records_per_shard must be positive")
 
     data_dirs = [Path(data_dir) for data_dir in args.data_dirs]
+    if args.stress_dynamics_loader:
+        payload = stress_dynamics_loader(args)
+        if args.report_path:
+            write_report(args.report_path, payload)
+        logger.info(
+            "Stress summary: batches=%d examples=%d",
+            payload["totals"]["batches"],
+            payload["totals"]["examples"],
+        )
+        return 0
+
     shards = [shard for data_dir in data_dirs for shard in iter_shards(data_dir)]
     keys = tuple(args.keys) if args.keys else None
 
