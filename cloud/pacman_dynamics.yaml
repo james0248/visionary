@@ -60,7 +60,7 @@ watcher:
 
 machine:
   family: v6e
-  chips: 16
+  chips: 8
   zone: europe-west4-a
   spot: true
   data_disk:
