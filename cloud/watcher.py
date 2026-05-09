@@ -400,6 +400,25 @@ def queued_resource_state(desc: dict[str, Any]) -> str:
     return str(state or "UNKNOWN")
 
 
+def queued_resource_state_details(desc: dict[str, Any]) -> str:
+    state = desc.get("state")
+    if isinstance(state, dict):
+        details = {
+            key: value
+            for key, value in state.items()
+            if key != "state" and value not in (None, "", [], {})
+        }
+        if details:
+            return json.dumps(details, sort_keys=True)
+
+    for key in ("stateDetails", "state_details", "error", "status"):
+        value = desc.get(key)
+        if value not in (None, "", [], {}):
+            return json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value)
+
+    return ""
+
+
 def queued_resource_create_time(desc: dict[str, Any]) -> datetime | None:
     raw = desc.get("createTime")
     if not raw:
@@ -1043,6 +1062,9 @@ def main() -> None:
         print(f"[watcher] {queued_resource_name(cfg['job']['name'], index)} state={queued_state}")
 
         if queued_state in TERMINAL_RETRY_STATES:
+            state_details = queued_resource_state_details(desc)
+            if state_details:
+                print(f"[watcher] Terminal queued resource details: {state_details}")
             print(f"[watcher] Deleting terminal queued resource in state {queued_state}.")
             delete_queued_resource(
                 cfg,
