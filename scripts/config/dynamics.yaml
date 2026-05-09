@@ -9,7 +9,7 @@ tokenizer_exp_name: ???
 
 fsdp:
   enabled: auto
-  data_axis_size: 1
+  data_axis_size: 8
   log_sharding: true
 
 loss:
