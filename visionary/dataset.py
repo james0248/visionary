@@ -58,15 +58,20 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
 
     def __getitem__(self, idx: int) -> DynamicsDataset:
         record_bytes = self._source[idx]
-        with np.load(io.BytesIO(record_bytes)) as data:
-            video = np.asarray(data["frames"])
-            actions = np.asarray(data["actions"])
-            rewards = np.asarray(data["rewards"])
-            prev_action = (
-                np.asarray(data["prev_action"])
-                if "prev_action" in data
-                else np.full(actions.shape[1:], -1, dtype=actions.dtype)
-            )
+        try:
+            with np.load(io.BytesIO(record_bytes)) as data:
+                video = np.asarray(data["frames"])
+                actions = np.asarray(data["actions"])
+                rewards = np.asarray(data["rewards"])
+                prev_action = (
+                    np.asarray(data["prev_action"])
+                    if "prev_action" in data
+                    else np.full(actions.shape[1:], -1, dtype=actions.dtype)
+                )
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to decode dynamics record idx={idx} from {self._data_dir}"
+            ) from exc
         return DynamicsDataset(
             video=video,
             actions=actions,
@@ -88,8 +93,13 @@ class VideoDataSource(grain.RandomAccessDataSource):
 
     def __getitem__(self, idx: int) -> VideoDataset:
         record_bytes = self._source[idx]
-        with np.load(io.BytesIO(record_bytes)) as data:
-            video = np.asarray(data["frames"])
+        try:
+            with np.load(io.BytesIO(record_bytes)) as data:
+                video = np.asarray(data["frames"])
+        except Exception as exc:
+            raise ValueError(
+                f"Failed to decode video record idx={idx} from {self._data_dir}"
+            ) from exc
         return VideoDataset(video=video)
 
 
