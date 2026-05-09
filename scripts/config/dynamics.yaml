@@ -7,6 +7,11 @@ overfit_single_batch: false
 exp_name: ???
 tokenizer_exp_name: ???
 
+fsdp:
+  enabled: auto
+  data_axis_size: 1
+  log_sharding: true
+
 loss:
   bootstrap_ratio: 0.25
   bootstrap_start_step: 10000

@@ -411,5 +411,6 @@ class DynamicsModel(nn.Module):
             ),
             "bootstrap_active_fraction": jnp.mean(bootstrap_row_mask.astype(jnp.float32)),
             "bootstrap_active_rows": jnp.asarray(bootstrap_rows, dtype=jnp.float32),
+            "bootstrap_active_rows_global": jnp.asarray(bootstrap_rows, dtype=jnp.float32),
         }
         return total_loss, metrics
