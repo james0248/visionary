@@ -23,8 +23,8 @@ training:
   overrides:
     - exp_name=${exp_name}
     - tokenizer_exp_name=${tokenizer_exp_name}
-    - dataset.train_dir=/mnt/data/train
-    - dataset.eval_dir=/mnt/data/eval
+    - dataset.train_dir=/mnt/data/breakout_dynamics/train
+    - dataset.eval_dir=/mnt/data/breakout_dynamics/eval
     - dynamics.num_actions=4
     - checkpoint.manager.directory=${checkpoint_dir}
     - wandb.group=breakout_dynamics
