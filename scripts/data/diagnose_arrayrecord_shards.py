@@ -45,6 +45,11 @@ class ShardReport:
 
 
 def iter_shards(data_dir: Path) -> list[Path]:
+    if data_dir.is_file():
+        if data_dir.suffix != ".arecord":
+            raise ValueError(f"Expected an .arecord file or directory, got {data_dir}")
+        return [data_dir]
+
     shards = sorted(data_dir.glob("*.arecord"))
     if not shards:
         raise FileNotFoundError(f"No .arecord shards found in {data_dir}")
@@ -74,6 +79,7 @@ def diagnose_shard(
     keys: tuple[str, ...] | None,
     max_bad_records: int,
     hash_files: bool,
+    records: tuple[int, ...] | None = None,
 ) -> ShardReport:
     report = ShardReport(path=shard_path.as_posix())
     try:
@@ -95,9 +101,20 @@ def diagnose_shard(
             reader.close()
         return report
 
-    logger.info("Checking %s (%d records)", shard_path, report.num_records)
+    record_indices = range(report.num_records) if records is None else records
+    logger.info(
+        "Checking %s (%d records%s)",
+        shard_path,
+        report.num_records,
+        "" if records is None else f"; selected={list(records)}",
+    )
     try:
-        for record_idx in range(report.num_records):
+        for record_idx in record_indices:
+            if record_idx < 0 or record_idx >= report.num_records:
+                raise ValueError(
+                    f"Requested record {record_idx} outside [0, {report.num_records}) "
+                    f"for {shard_path}"
+                )
             report.records_checked += 1
             try:
                 record = reader.read([record_idx])[0]
@@ -271,6 +288,12 @@ def main() -> int:
     parser.add_argument("--prefetch_buffer_size", type=int, default=16)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--keys", nargs="+", help="NPZ keys to force-read.")
+    parser.add_argument(
+        "--records",
+        nargs="+",
+        type=int,
+        help="Only read these record indices from each selected shard/file.",
+    )
     parser.add_argument("--report_path", help="Optional local or gs:// JSON report path.")
     parser.add_argument(
         "--workers",
@@ -315,6 +338,7 @@ def main() -> int:
 
     shards = [shard for data_dir in data_dirs for shard in iter_shards(data_dir)]
     keys = tuple(args.keys) if args.keys else None
+    records = tuple(args.records) if args.records is not None else None
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         reports = list(
@@ -324,6 +348,7 @@ def main() -> int:
                 [keys] * len(shards),
                 [args.max_bad_records_per_shard] * len(shards),
                 [bool(args.sha256)] * len(shards),
+                [records] * len(shards),
             )
         )
 
