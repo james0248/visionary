@@ -27,7 +27,6 @@ training:
     - dataset.eval_dir=/mnt/data/space_invaders_dynamics/eval
     - dynamics.num_actions=6
     - checkpoint.manager.directory=${checkpoint_dir}
-    - total_steps=1000000
     - wandb.group=space_invaders_dynamics
 
 markers:
@@ -61,10 +60,10 @@ watcher:
 
 machine:
   family: v6e
-  chips: 8
-  region: us-east1
+  chips: 16
+  zone: europe-west4-a
   spot: true
   data_disk:
-    source: projects/visionary-491008/zones/us-east1-d/disks/visionary-data-dynamics-ue1d
+    source: projects/visionary-491008/zones/europe-west4-a/disks/visionary-data-dynamics-ew4a
     mode: read-only
     mount_path: /mnt/data
