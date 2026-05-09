@@ -236,10 +236,17 @@ def restore_model_export_single_device(
 ) -> tuple[DictConfig, Any]:
     step = resolve_model_export_step(directory, step)
     config = load_model_export_config(directory, step=step)
+    single_device_sharding = jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
     variables = _restore_model_variables(
         directory,
         step,
-        fallback_sharding=jax.sharding.SingleDeviceSharding(jax.local_devices()[0]),
+        fallback_sharding=single_device_sharding,
+    )
+    variables = jax.tree_util.tree_map(
+        lambda value: jax.device_put(jax.device_get(value), single_device_sharding)
+        if hasattr(value, "shape")
+        else value,
+        variables,
     )
     return config, variables
 
