@@ -11,7 +11,7 @@ DISK_NAME=""
 ZONE=""
 SIZE_GB=""
 THROUGHPUT=""
-GCS_PATH=""
+GCS_PATHS=()
 
 usage() {
     cat <<'EOF'
@@ -21,7 +21,7 @@ Usage:
     --zone ZONE \
     --size-gb SIZE_GB \
     --throughput THROUGHPUT_MIBPS \
-    --gcs-path GCS_PATH
+    --gcs-path GCS_PATH [--gcs-path GCS_PATH ...]
 
 Example:
   cloud/setup_hdml.sh \
@@ -30,6 +30,15 @@ Example:
     --size-gb 200 \
     --throughput 2000 \
     --gcs-path 'gs://visionary-exp/dream-arcade/data/*_tokenizer'
+
+Example with exact sources:
+  cloud/setup_hdml.sh \
+    --disk-name visionary-data-dynamics-ue1d \
+    --zone us-east1-d \
+    --size-gb 200 \
+    --throughput 2000 \
+    --gcs-path gs://visionary-exp/dream-arcade/data/qbert_dynamics/ \
+    --gcs-path gs://visionary-exp/dream-arcade/data/seaquest_dynamics/
 
 The script:
   1. Deletes an existing detached disk with the same name, if present.
@@ -157,10 +166,15 @@ lsblk -f
 copy_command() {
     printf 'set -eu
 test -d /mnt/data
-gcloud storage cp --recursive %s /mnt/data/
-find /mnt/data -maxdepth 2 -type d | sort
+'
+    local path
+    for path in "${GCS_PATHS[@]}"; do
+        printf 'gcloud storage cp --recursive %s /mnt/data/
+' "$(shell_quote "$path")"
+    done
+    printf 'find /mnt/data -maxdepth 2 -type d | sort
 df -h /mnt/data
-' "$(shell_quote "$GCS_PATH")"
+'
 }
 
 unmount_command() {
@@ -216,11 +230,11 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         --gcs-path)
             require_value "$1" "${2:-}"
-            GCS_PATH="$2"
+            GCS_PATHS+=("$2")
             shift 2
             ;;
         --gcs-path=*)
-            GCS_PATH="${1#*=}"
+            GCS_PATHS+=("${1#*=}")
             shift
             ;;
         *)
@@ -235,7 +249,10 @@ command -v gcloud >/dev/null 2>&1 || die "gcloud is not installed or is not on P
 SIZE_GB="$(normalize_size_gb "$SIZE_GB")"
 [[ "$SIZE_GB" =~ ^[0-9]+$ ]] || die "SIZE_GB must be an integer GB value."
 [[ "$THROUGHPUT" =~ ^[0-9]+$ ]] || die "THROUGHPUT_MIBPS must be an integer."
-[[ "$GCS_PATH" == gs://* ]] || die "GCS_PATH must start with gs://."
+((${#GCS_PATHS[@]} > 0)) || die "At least one --gcs-path is required."
+for gcs_path in "${GCS_PATHS[@]}"; do
+    [[ "$gcs_path" == gs://* ]] || die "GCS_PATH must start with gs://: $gcs_path"
+done
 
 if ! gcloud_quiet compute machine-types describe "$MACHINE_TYPE" \
     --zone="$ZONE" \
@@ -252,7 +269,9 @@ done
 info "Project: $PROJECT_ID"
 info "Zone: $ZONE"
 info "Disk: $DISK_NAME (${SIZE_GB}GB, ${THROUGHPUT} MiB/s)"
-info "Source: $GCS_PATH"
+for gcs_path in "${GCS_PATHS[@]}"; do
+    info "Source: $gcs_path"
+done
 info "Temporary VM: $VM_NAME"
 
 if gcloud_quiet compute instances describe "$VM_NAME" \
