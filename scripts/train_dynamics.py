@@ -1,21 +1,20 @@
 import itertools
 import logging
 import time
-from functools import partial
 from pathlib import Path
+from typing import Any
 
 import grain.python as grain
-import flax.jax_utils as flax_jax_utils
 import hydra
 import imageio
 import jax
-import jax.lax as lax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import wandb
 from hydra.utils import instantiate, to_absolute_path
-from jax.experimental import multihost_utils
+from jax.experimental import mesh_utils, multihost_utils
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from omegaconf import DictConfig, OmegaConf
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
@@ -35,7 +34,175 @@ from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 logger = logging.getLogger(__name__)
 
 
-PMAP_AXIS_NAME = "data"
+DATA_AXIS = "data"
+FSDP_AXIS = "fsdp"
+
+
+def cfg_select(cfg: DictConfig, path: str, default: Any) -> Any:
+    value = OmegaConf.select(cfg, path, default=default)
+    return default if value is None else value
+
+
+def parse_auto_bool(value: Any, auto_value: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    value = str(value).strip().lower()
+    if value == "auto":
+        return auto_value
+    if value in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if value in {"0", "false", "no", "off", "disabled"}:
+        return False
+    raise ValueError(f"Expected a boolean or 'auto', got {value!r}")
+
+
+def build_fsdp_mesh(cfg: DictConfig) -> tuple[Mesh, bool, int]:
+    device_count = jax.device_count()
+    auto_enabled = device_count > 1 or jax.process_count() > 1
+    fsdp_enabled = parse_auto_bool(
+        cfg_select(cfg, "fsdp.enabled", "auto"),
+        auto_value=auto_enabled,
+    )
+    data_axis_size = int(cfg_select(cfg, "fsdp.data_axis_size", 1))
+    if data_axis_size < 1:
+        raise ValueError(f"fsdp.data_axis_size must be >= 1, got {data_axis_size}")
+    if device_count % data_axis_size != 0:
+        raise ValueError(
+            "fsdp.data_axis_size must divide jax.device_count(); got "
+            f"{data_axis_size=} and device_count={device_count}"
+        )
+
+    fsdp_axis_size = device_count // data_axis_size
+    devices = mesh_utils.create_device_mesh((data_axis_size, fsdp_axis_size))
+    mesh = Mesh(devices, (DATA_AXIS, FSDP_AXIS))
+    if fsdp_enabled and fsdp_axis_size < 1:
+        raise ValueError("FSDP requested but no devices are available.")
+    return mesh, fsdp_enabled, fsdp_axis_size
+
+
+def replicated_sharding(mesh: Mesh) -> NamedSharding:
+    return NamedSharding(mesh, P())
+
+
+def batch_partition_spec() -> P:
+    return P((DATA_AXIS, FSDP_AXIS))
+
+
+def choose_fsdp_partition_spec(
+    value: Any,
+    enabled: bool,
+    fsdp_axis_size: int,
+) -> P:
+    if not hasattr(value, "shape"):
+        if not np.isscalar(value):
+            return P()
+        dtype = np.int32 if isinstance(value, (int, np.integer)) else None
+        value = np.asarray(value, dtype=dtype)
+    shape = tuple(int(dim) for dim in value.shape)
+    if not enabled or fsdp_axis_size <= 1 or not shape:
+        return P()
+
+    ranked_dims = sorted(range(len(shape)), key=lambda axis: shape[axis], reverse=True)
+    for axis in ranked_dims:
+        if shape[axis] >= fsdp_axis_size and shape[axis] % fsdp_axis_size == 0:
+            spec = [None] * len(shape)
+            spec[axis] = FSDP_AXIS
+            return P(*spec)
+    return P()
+
+
+def make_array_shardings(
+    tree,
+    mesh: Mesh,
+    fsdp_enabled: bool,
+    fsdp_axis_size: int,
+):
+    return jax.tree_util.tree_map(
+        lambda value: NamedSharding(
+            mesh,
+            choose_fsdp_partition_spec(
+                value,
+                enabled=fsdp_enabled,
+                fsdp_axis_size=fsdp_axis_size,
+            ),
+        ),
+        tree,
+    )
+
+
+def make_global_array_from_host(value, sharding: NamedSharding):
+    if not hasattr(value, "shape") and not np.isscalar(value):
+        return value
+    dtype = np.int32 if isinstance(value, (int, np.integer)) else None
+    value = np.asarray(jax.device_get(value), dtype=dtype)
+    return jax.make_array_from_callback(
+        value.shape,
+        sharding,
+        lambda index: value[index],
+        dtype=value.dtype,
+    )
+
+
+def put_replicated(value, mesh: Mesh):
+    return jax.device_put(value, replicated_sharding(mesh))
+
+
+def put_single_device_tree(tree):
+    sharding = jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
+    return jax.tree_util.tree_map(
+        lambda value: jax.device_put(jax.device_get(value), sharding)
+        if hasattr(value, "shape")
+        else value,
+        tree,
+    )
+
+
+def put_global_batch(batch: DynamicsBatch, batch_sharding: NamedSharding) -> DynamicsBatch:
+    return jax.tree_util.tree_map(
+        lambda value: jax.make_array_from_process_local_data(batch_sharding, value),
+        batch,
+    )
+
+
+def log_sharding_summary(tree, shardings, prefix: str, max_entries: int = 12) -> None:
+    leaves = []
+
+    def visit(path, value, sharding):
+        if not hasattr(value, "shape"):
+            return
+        spec = sharding.spec if isinstance(sharding, NamedSharding) else P()
+        leaves.append(
+            (
+                spec != P(),
+                int(np.prod(value.shape)) if value.shape else 1,
+                jax.tree_util.keystr(path, simple=True, separator="/"),
+                tuple(int(dim) for dim in value.shape),
+                spec,
+            )
+        )
+
+    jax.tree_util.tree_map_with_path(visit, tree, shardings)
+    num_leaves = len(leaves)
+    num_sharded = sum(1 for sharded, *_ in leaves if sharded)
+    total_values = sum(size for _, size, *_ in leaves)
+    sharded_values = sum(size for sharded, size, *_ in leaves if sharded)
+    logger.info(
+        "%s sharding: %d/%d leaves sharded, %.1f%% of values in sharded leaves",
+        prefix,
+        num_sharded,
+        num_leaves,
+        100.0 * sharded_values / max(total_values, 1),
+    )
+    for sharded, size, path, shape, spec in sorted(leaves, reverse=True)[:max_entries]:
+        logger.info(
+            "%s sharding leaf: sharded=%s values=%d path=%s shape=%s spec=%s",
+            prefix,
+            sharded,
+            size,
+            path,
+            shape,
+            spec,
+        )
 
 
 def make_host_seed(*values: int) -> int:
@@ -49,22 +216,21 @@ def log_train_timing(
     start_step: int,
     metrics,
     data_time: float,
-    reshape_time: float,
+    transfer_time: float,
     dispatch_time: float,
     sequence_length: int,
-    to_host,
 ) -> dict[str, float]:
     window_steps = step - start_step
     avg_steps = max(window_steps, 1)
     sync_start = time.monotonic()
-    train_metrics = to_host(metrics)
+    train_metrics = jax.device_get(metrics)
     sync_time = time.monotonic() - sync_start
 
-    total_time = data_time + reshape_time + dispatch_time + sync_time
+    total_time = data_time + transfer_time + dispatch_time + sync_time
     stats = {
         "sps": window_steps / max(total_time, 1e-8),
         "data_time": data_time / avg_steps,
-        "reshape_time": reshape_time / avg_steps,
+        "transfer_time": transfer_time / avg_steps,
         "compute_time": (dispatch_time + sync_time) / avg_steps,
         "wall_time": total_time / avg_steps,
     }
@@ -79,21 +245,14 @@ def log_train_timing(
     return stats
 
 
-@partial(
-    jax.pmap,
-    axis_name=PMAP_AXIS_NAME,
-    in_axes=(0, 0, None, None, None),
-    static_broadcasted_argnums=(4,),
-    donate_argnums=(0,),
-)
 def train_step(
     state: DynamicsTrainState,
     batch: DynamicsBatch,
     base_sample_key: jax.Array,
-    global_step: int,
+    global_step: jax.Array,
     bootstrap_rows: int,
 ):
-    sample_key = fold_in_many(base_sample_key, global_step, lax.axis_index(PMAP_AXIS_NAME))
+    sample_key = fold_in_many(base_sample_key, global_step)
 
     def loss_fn(params):
         return state.apply_fn(
@@ -105,31 +264,22 @@ def train_step(
         )
 
     (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-    grads = lax.pmean(grads, axis_name=PMAP_AXIS_NAME)
-    metrics = lax.pmean(metrics, axis_name=PMAP_AXIS_NAME)
     state = state.apply_gradients(grads=grads)
     return state, metrics
 
 
-@partial(
-    jax.pmap,
-    axis_name=PMAP_AXIS_NAME,
-    in_axes=(0, 0, None, None, None, None),
-    static_broadcasted_argnums=(5,),
-)
 def eval_step(
     state: DynamicsTrainState,
     batch: DynamicsBatch,
     base_sample_key: jax.Array,
-    global_step: int,
-    batch_index: int,
+    global_step: jax.Array,
+    batch_index: jax.Array,
     bootstrap_rows: int,
 ):
     sample_key = fold_in_many(
         base_sample_key,
         global_step,
         batch_index,
-        lax.axis_index(PMAP_AXIS_NAME),
     )
     _, metrics = state.apply_fn(
         state.params,
@@ -138,7 +288,7 @@ def eval_step(
         method=DynamicsModel.loss,
         rngs={"sample": sample_key},
     )
-    return lax.pmean(metrics, axis_name=PMAP_AXIS_NAME)
+    return metrics
 
 
 def log_video_eval(
@@ -265,9 +415,13 @@ def main(cfg: DictConfig):
     process_index = jax.process_index()
     process_count = jax.process_count()
     local_device_count = jax.local_device_count()
-    local_devices = jax.local_devices()
-    distributed = process_count > 1 or local_device_count > 1
     is_primary_process = process_index == 0
+    mesh, fsdp_enabled, fsdp_axis_size = build_fsdp_mesh(cfg)
+    log_sharding = bool(cfg_select(cfg, "fsdp.log_sharding", True))
+    batch_pspec = batch_partition_spec() if fsdp_enabled else P()
+    batch_sharding = NamedSharding(mesh, batch_pspec)
+    metrics_sharding = replicated_sharding(mesh)
+
     logger.info(
         "JAX backend: %s process=%d/%d local_devices=%d global_devices=%d devices=%s",
         jax.default_backend(),
@@ -277,6 +431,25 @@ def main(cfg: DictConfig):
         jax.device_count(),
         jax.local_devices(),
     )
+    logger.info(
+        "FSDP mesh: enabled=%s mesh_shape=%s data_axis=%d fsdp_axis=%d batch_pspec=%s",
+        fsdp_enabled,
+        mesh.devices.shape,
+        mesh.shape[DATA_AXIS],
+        mesh.shape[FSDP_AXIS],
+        batch_pspec,
+    )
+    if not fsdp_enabled and process_count > 1:
+        raise ValueError(
+            "Multi-process dynamics training requires fsdp.enabled=true or auto. "
+            "Replicated batch sharding would receive different per-process Grain batches."
+        )
+    if not fsdp_enabled and jax.device_count() > 1:
+        logger.warning(
+            "Multiple JAX devices are visible but fsdp.enabled is false; dynamics training "
+            "will use replicated sharding."
+        )
+
     wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled) and is_primary_process)
     total_steps = int(cfg.total_steps)
 
@@ -308,23 +481,27 @@ def main(cfg: DictConfig):
         cfg.dataset.eval.batch_length,
     )
     batch_size_per_process = int(cfg.dataset.batch_size)
-    if batch_size_per_process % local_device_count != 0:
+    if fsdp_enabled and batch_size_per_process % local_device_count != 0:
         raise ValueError(
             "cfg.dataset.batch_size is interpreted per process and must be divisible by "
-            f"jax.local_device_count(); got {cfg.dataset.batch_size=} {local_device_count=}"
+            "jax.local_device_count() for FSDP input sharding; got "
+            f"batch_size={batch_size_per_process} local_device_count={local_device_count}"
         )
-    batch_size_per_device = batch_size_per_process // local_device_count
+    global_batch_size = batch_size_per_process * process_count
+    batch_size_per_device = (
+        batch_size_per_process // local_device_count if fsdp_enabled else batch_size_per_process
+    )
     bootstrap_start_step = int(cfg.loss.bootstrap_start_step)
     target_bootstrap_ratio = float(cfg.loss.bootstrap_ratio)
     target_bootstrap_rows = min(
-        max(int(round(target_bootstrap_ratio * batch_size_per_device)), 0),
-        batch_size_per_device,
+        max(int(round(target_bootstrap_ratio * global_batch_size)), 0),
+        global_batch_size,
     )
     logger.info(
         "Batch layout: per_process=%d per_device=%d global=%d",
         batch_size_per_process,
         batch_size_per_device,
-        batch_size_per_process * process_count,
+        global_batch_size,
     )
     logger.info(
         "Loss schedule: bootstrap_ratio=%.2f bootstrap_rows=%d bootstrap_start_step=%d",
@@ -333,22 +510,10 @@ def main(cfg: DictConfig):
         bootstrap_start_step,
     )
 
-    def reshape_batch(batch: DynamicsBatch) -> DynamicsBatch:
-        return {
-            key: np.reshape(value, (local_device_count, batch_size_per_device, *value.shape[1:]))
-            for key, value in batch.items()
-        }
-
     def bootstrap_rows_for_step(current_step: int) -> int:
         if current_step < bootstrap_start_step:
             return 0
         return target_bootstrap_rows
-
-    def unreplicate(tree):
-        return flax_jax_utils.unreplicate(tree)
-
-    def to_host(tree):
-        return jax.device_get(unreplicate(tree))
 
     def make_loader(
         source: DynamicsDataSource,
@@ -359,7 +524,9 @@ def main(cfg: DictConfig):
     ) -> grain.DataLoader:
         sampler = grain.IndexSampler(
             num_records=len(source),
-            shard_options=grain.ShardByJaxProcess(),
+            shard_options=grain.ShardByJaxProcess()
+            if process_count > 1
+            else grain.NoSharding(),
             shuffle=shuffle,
             seed=seed,
         )
@@ -413,7 +580,7 @@ def main(cfg: DictConfig):
                         eval_source,
                         sequence_length=cfg.dataset.eval.batch_length,
                         shuffle=False,
-                        drop_remainder=distributed,
+                        drop_remainder=fsdp_enabled,
                         seed=cfg.seed,
                     )
                 )
@@ -424,7 +591,7 @@ def main(cfg: DictConfig):
             eval_source,
             sequence_length=cfg.dataset.eval.batch_length,
             shuffle=False,
-            drop_remainder=distributed,
+            drop_remainder=fsdp_enabled,
             seed=cfg.seed,
         )
         logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
@@ -450,11 +617,58 @@ def main(cfg: DictConfig):
     )
     logger.info("TrainState creation took %.1fs", time.monotonic() - _t)
 
+    _t = time.monotonic()
+    state_shardings = make_array_shardings(
+        state,
+        mesh=mesh,
+        fsdp_enabled=fsdp_enabled,
+        fsdp_axis_size=fsdp_axis_size,
+    )
+    state = jax.tree_util.tree_map(make_global_array_from_host, state, state_shardings)
+    if log_sharding:
+        log_sharding_summary(params, state_shardings.params, prefix="Dynamics params")
+    logger.info("TrainState sharding took %.1fs", time.monotonic() - _t)
+
+    batch_input_shardings = {"video": batch_sharding, "actions": batch_sharding}
+    jit_train_step = jax.jit(
+        train_step,
+        in_shardings=(
+            state_shardings,
+            batch_input_shardings,
+            metrics_sharding,
+            metrics_sharding,
+        ),
+        out_shardings=(state_shardings, metrics_sharding),
+        static_argnames=("bootstrap_rows",),
+        donate_argnums=(0,),
+    )
+    jit_eval_step = jax.jit(
+        eval_step,
+        in_shardings=(
+            state_shardings,
+            batch_input_shardings,
+            metrics_sharding,
+            metrics_sharding,
+            metrics_sharding,
+        ),
+        out_shardings=metrics_sharding,
+        static_argnames=("bootstrap_rows",),
+    )
+    train_key = put_replicated(train_key, mesh)
+    eval_key = put_replicated(eval_key, mesh)
+
     video_cfg = cfg.video_eval
+    video_eval_enabled = is_primary_process and process_count == 1
     video_output_dir = None
     run_video_eval = None
     context_tau_used = None
-    if is_primary_process:
+    tokenizer_variables = None
+    if is_primary_process and process_count > 1:
+        logger.warning(
+            "Live dynamics video eval is disabled for multi-process FSDP training. "
+            "Run video evaluation from a single-process export/checkpoint instead."
+        )
+    if video_eval_enabled:
         _t = time.monotonic()
         video_output_dir = Path(to_absolute_path(video_cfg.output_dir))
         video_output_dir.mkdir(parents=True, exist_ok=True)
@@ -542,12 +756,33 @@ def main(cfg: DictConfig):
 
     _t = time.monotonic()
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
-    checkpoint_manager.save_metadata({"dynamics_config": OmegaConf.to_container(cfg, resolve=False)})
+    if is_primary_process:
+        checkpoint_manager.save_metadata(
+            {
+                "config": OmegaConf.to_container(cfg, resolve=False),
+                "dynamics_config": OmegaConf.to_container(cfg, resolve=False),
+            }
+        )
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
+    last_checkpoint_step: int | None = None
     export_interval_steps = int(cfg.checkpoint.export_interval_steps)
 
     def should_export_model(step: int, force: bool) -> bool:
         return force or (export_interval_steps > 0 and step % export_interval_steps == 0)
+
+    def save_checkpoint(step: int, force: bool = False) -> None:
+        nonlocal last_checkpoint_step
+        saved = checkpoint_manager.save(
+            step=step,
+            state=state,
+            extra_items=iterator_items(),
+            force=force,
+        )
+        if not saved:
+            return
+        last_checkpoint_step = int(step)
+        if should_export_model(step, force=force):
+            save_model_export(checkpoint_manager.directory, step, cfg.dynamics, state.params)
 
     train_iterators = {
         sequence_length: iter(loader) for sequence_length, loader in train_loaders.items()
@@ -577,16 +812,22 @@ def main(cfg: DictConfig):
         if isinstance(resume_spec, str) and resume_spec.strip().lower() == "latest":
             resume_step = checkpoint_manager.latest_step()
             if resume_step is None:
-                logger.info("No dynamics checkpoint found in %s; starting fresh.", checkpoint_manager.directory)
+                logger.info(
+                    "No dynamics checkpoint found in %s; starting fresh.",
+                    checkpoint_manager.directory,
+                )
         else:
             resume_step = int(resume_spec)
 
     if resume_step is not None:
-        state = checkpoint_manager.restore(target=state, step=resume_step, extra_items=iterator_items())
+        state = checkpoint_manager.restore(
+            target=state,
+            step=resume_step,
+            extra_items=iterator_items(),
+        )
         logger.info("Resumed dynamics training from step %d", int(state.step))
 
-    state = flax_jax_utils.replicate(state, devices=local_devices)
-    step = int(jax.device_get(unreplicate(state.step)))
+    step = int(jax.device_get(state.step))
     logger.info("Dynamics training target step: %d", total_steps)
 
     if step >= total_steps:
@@ -601,7 +842,7 @@ def main(cfg: DictConfig):
         return
 
     timing_start_step = step
-    timing_data_time = timing_reshape_time = timing_dispatch_time = 0.0
+    timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
     logger.info(
         "Asynchronous timing mode enabled for dynamics training; timing logs are averaged "
         "over each logging window."
@@ -622,23 +863,23 @@ def main(cfg: DictConfig):
                 batch = next(train_iterators[sequence_length])
         data_done = time.monotonic()
 
-        batch = reshape_batch(batch)
-        reshape_done = time.monotonic()
+        batch = put_global_batch(batch, batch_sharding)
+        transfer_done = time.monotonic()
 
         bootstrap_rows = bootstrap_rows_for_step(current_step)
-        state, metrics = train_step(
+        state, metrics = jit_train_step(
             state,
             batch,
             train_key,
-            current_step,
+            jnp.asarray(current_step, dtype=jnp.int32),
             bootstrap_rows,
         )
         train_dispatched = time.monotonic()
 
         step = current_step + 1
         timing_data_time += data_done - step_start
-        timing_reshape_time += reshape_done - data_done
-        timing_dispatch_time += train_dispatched - reshape_done
+        timing_transfer_time += transfer_done - data_done
+        timing_dispatch_time += train_dispatched - transfer_done
 
         timing_stats = None
         if step % cfg.log_interval == 0:
@@ -648,13 +889,12 @@ def main(cfg: DictConfig):
                 start_step=timing_start_step,
                 metrics=metrics,
                 data_time=timing_data_time,
-                reshape_time=timing_reshape_time,
+                transfer_time=timing_transfer_time,
                 dispatch_time=timing_dispatch_time,
                 sequence_length=sequence_length,
-                to_host=to_host,
             )
             timing_start_step = step
-            timing_data_time = timing_reshape_time = timing_dispatch_time = 0.0
+            timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -666,20 +906,23 @@ def main(cfg: DictConfig):
                 eval_batches = list(
                     itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches)
                 )
-            global_eval_batch_counts = np.asarray(
-                multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
-            )
-            eval_batches = eval_batches[: int(np.min(global_eval_batch_counts))]
+            if fsdp_enabled:
+                global_eval_batch_counts = np.asarray(
+                    multihost_utils.process_allgather(
+                        np.asarray(len(eval_batches), dtype=np.int32)
+                    )
+                )
+                eval_batches = eval_batches[: int(np.min(global_eval_batch_counts))]
 
             num_batches = 0
             for batch_idx, eval_batch in enumerate(eval_batches):
-                batch_metrics = to_host(
-                    eval_step(
+                batch_metrics = jax.device_get(
+                    jit_eval_step(
                         state,
-                        reshape_batch(eval_batch),
+                        put_global_batch(eval_batch, batch_sharding),
                         eval_key,
-                        step,
-                        batch_idx,
+                        jnp.asarray(step, dtype=jnp.int32),
+                        jnp.asarray(batch_idx, dtype=jnp.int32),
                         bootstrap_rows,
                     )
                 )
@@ -693,10 +936,10 @@ def main(cfg: DictConfig):
                     {f"eval/{k}": v for k, v in eval_metrics.items()},
                     step=step,
                 )
-            if is_primary_process and num_batches > 0:
+            if video_eval_enabled and num_batches > 0:
                 log_video_eval(
                     wb,
-                    unreplicate(state.params),
+                    put_single_device_tree(state.params),
                     eval_batches[0],
                     step=step,
                     rollout_seed=make_host_seed(cfg.seed, step, num_batches),
@@ -710,20 +953,17 @@ def main(cfg: DictConfig):
             logger.info("Eval at step %d - %d batches in %.3fs", step, num_batches, t_eval)
 
         if checkpoint_manager.should_save(step):
-            host_state = to_host(state)
-            checkpoint_manager.save(step=step, state=host_state, extra_items=iterator_items())
-            if should_export_model(step, force=False):
-                save_model_export(checkpoint_manager.directory, step, cfg.dynamics, host_state.params)
+            save_checkpoint(step)
 
         if timing_stats is not None:
             logger.info(
-                "Step %d - seq: %d, sps: %.2f, data: %.3fs, reshape: %.3fs, "
+                "Step %d - seq: %d, sps: %.2f, data: %.3fs, transfer: %.3fs, "
                 "compute: %.3fs, wall: %.3fs, eval: %.3fs",
                 step,
                 sequence_length,
                 timing_stats["sps"],
                 timing_stats["data_time"],
-                timing_stats["reshape_time"],
+                timing_stats["transfer_time"],
                 timing_stats["compute_time"],
                 timing_stats["wall_time"],
                 t_eval,
@@ -733,16 +973,8 @@ def main(cfg: DictConfig):
             break
 
     multihost_utils.sync_global_devices("dynamics_train_complete")
-    if step >= total_steps and not checkpoint_manager.should_save(step):
-        host_state = to_host(state)
-        checkpoint_manager.save(
-            step=step,
-            state=host_state,
-            extra_items=iterator_items(),
-            force=True,
-        )
-        if should_export_model(step, force=True):
-            save_model_export(checkpoint_manager.directory, step, cfg.dynamics, host_state.params)
+    if step >= total_steps and last_checkpoint_step != step:
+        save_checkpoint(step, force=True)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()
     wb.finish()
