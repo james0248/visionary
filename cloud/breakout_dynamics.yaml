@@ -70,7 +70,7 @@ watcher:
 # - v4 spot or on-demand: region us-central2; chips 4, 8, 16, 32
 machine:
   family: v6e
-  chips: 16
+  chips: 8
   zone: europe-west4-a
   spot: true
   data_disk:
