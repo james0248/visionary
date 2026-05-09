@@ -65,6 +65,6 @@ machine:
   region: us-east1
   spot: true
   data_disk:
-    source: projects/visionary-491008/zones/us-east1-d/disks/visionary-data-dynamics-ue1d
+    source: projects/visionary-491008/zones/us-east1-d/disks/qbert-seaquest-dynamics-ue1d
     mode: read-only
     mount_path: /mnt/data

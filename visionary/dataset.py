@@ -34,7 +34,7 @@ def align_actions_to_frames(
     return aligned
 
 
-def _array_record_source(data_dir: str) -> grain.ArrayRecordDataSource:
+def _array_record_source_with_paths(data_dir: str) -> tuple[grain.ArrayRecordDataSource, list[str]]:
     shard_dir = epath.Path(data_dir)
     paths = sorted(
         [p for p in shard_dir.iterdir() if p.suffix == ".arecord"],
@@ -42,13 +42,26 @@ def _array_record_source(data_dir: str) -> grain.ArrayRecordDataSource:
     )
     if not paths:
         raise FileNotFoundError(f"No .arecord files found in {data_dir}")
-    return grain.ArrayRecordDataSource([p.as_posix() for p in paths])
+    path_strings = [p.as_posix() for p in paths]
+    return grain.ArrayRecordDataSource(path_strings), path_strings
+
+
+def _describe_record_location(source: grain.ArrayRecordDataSource, paths: list[str], idx: int) -> str:
+    if hasattr(source, "_reader_idx_and_position"):
+        try:
+            reader_idx, position = source._reader_idx_and_position(idx)
+            return f"shard={paths[reader_idx]!r} record={position}"
+        except Exception:
+            pass
+    if len(paths) == 1:
+        return f"shard={paths[0]!r}"
+    return f"global_record={idx} among {len(paths)} shards"
 
 
 class DynamicsDataSource(grain.RandomAccessDataSource):
     def __init__(self, data_dir: str):
         self._data_dir = epath.Path(data_dir).as_posix()
-        self._source = _array_record_source(self._data_dir)
+        self._source, self._paths = _array_record_source_with_paths(self._data_dir)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(data_dir={self._data_dir!r})"
@@ -57,8 +70,8 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
         return len(self._source)
 
     def __getitem__(self, idx: int) -> DynamicsDataset:
-        record_bytes = self._source[idx]
         try:
+            record_bytes = self._source[idx]
             with np.load(io.BytesIO(record_bytes)) as data:
                 video = np.asarray(data["frames"])
                 actions = np.asarray(data["actions"])
@@ -69,8 +82,9 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
                     else np.full(actions.shape[1:], -1, dtype=actions.dtype)
                 )
         except Exception as exc:
+            location = _describe_record_location(self._source, self._paths, idx)
             raise ValueError(
-                f"Failed to decode dynamics record idx={idx} from {self._data_dir}"
+                f"Failed to decode dynamics record idx={idx} ({location}) from {self._data_dir}"
             ) from exc
         return DynamicsDataset(
             video=video,
@@ -83,7 +97,7 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
 class VideoDataSource(grain.RandomAccessDataSource):
     def __init__(self, data_dir: str):
         self._data_dir = epath.Path(data_dir).as_posix()
-        self._source = _array_record_source(self._data_dir)
+        self._source, self._paths = _array_record_source_with_paths(self._data_dir)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(data_dir={self._data_dir!r})"
@@ -92,13 +106,14 @@ class VideoDataSource(grain.RandomAccessDataSource):
         return len(self._source)
 
     def __getitem__(self, idx: int) -> VideoDataset:
-        record_bytes = self._source[idx]
         try:
+            record_bytes = self._source[idx]
             with np.load(io.BytesIO(record_bytes)) as data:
                 video = np.asarray(data["frames"])
         except Exception as exc:
+            location = _describe_record_location(self._source, self._paths, idx)
             raise ValueError(
-                f"Failed to decode video record idx={idx} from {self._data_dir}"
+                f"Failed to decode video record idx={idx} ({location}) from {self._data_dir}"
             ) from exc
         return VideoDataset(video=video)
 
