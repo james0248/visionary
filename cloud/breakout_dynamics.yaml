@@ -11,7 +11,7 @@ job:
 
 repo:
   url: https://github.com/james0248/visionary.git
-  branch: refactor-project-struct
+  branch: main
 
 setup:
   accelerator: tpu
