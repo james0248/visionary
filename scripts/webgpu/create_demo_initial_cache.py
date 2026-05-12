@@ -16,7 +16,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--asset_dir", type=Path, default=Path("webgpu_app/assets"))
     parser.add_argument("--onnx_manifest", default="breakout_onnx_manifest.json")
     parser.add_argument("--context_manifest", default="breakout_demo_context.json")
+    parser.add_argument("--mode", choices=("step", "prefill"), default="step")
     parser.add_argument("--prefix_step_export", default="breakout_dynamics_step_cached_b1_t1")
+    parser.add_argument("--prefill_export", default="breakout_dynamics_prefill_cached_b1_t64")
     parser.add_argument("--name", default="breakout_demo_initial_cache")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
@@ -88,22 +90,18 @@ def frame_tensor(tensor: np.ndarray, frame_index: int) -> np.ndarray:
     return tensor[:, frame_index : frame_index + 1]
 
 
-def main() -> None:
-    args = parse_args()
-    asset_dir = args.asset_dir
-    manifest_path = asset_dir / args.onnx_manifest
-    context_manifest_path = asset_dir / args.context_manifest
-    manifest = load_json(manifest_path)
-    context_manifest = load_json(context_manifest_path)
-    prefix_step = find_export(manifest, args.prefix_step_export)
+def cache_from_step_replay(
+    asset_dir: Path,
+    manifest: dict[str, Any],
+    context_manifest: dict[str, Any],
+    context_z: np.ndarray,
+    context_actions: np.ndarray,
+    step_levels: np.ndarray,
+    signal_levels: np.ndarray,
+    export_name: str,
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    prefix_step = find_export(manifest, export_name)
     model_path = asset_dir / prefix_step["path"]
-
-    context_arrays = context_manifest["arrays"]
-    context_z = load_array(asset_dir, context_arrays["z"])
-    context_actions = load_array(asset_dir, context_arrays["actions"])
-    step_levels = load_array(asset_dir, context_arrays["step_levels"])
-    signal_levels = load_array(asset_dir, context_arrays["signal_levels"])
-
     cache_shape = tuple(prefix_step["inputs"]["k_cache"]["shape"])
     cache = {
         "k": np.zeros(cache_shape, dtype=np.float32),
@@ -137,6 +135,83 @@ def main() -> None:
             "length": np.asarray(by_name[length_name], dtype=np.int32).reshape((1,)),
         }
 
+    return cache, {
+        "source_cache_export": export_name,
+        "source_cache_model": prefix_step["path"],
+        "source_cache_model_sha256": sha256_file(model_path),
+    }
+
+
+def cache_from_prefill(
+    asset_dir: Path,
+    manifest: dict[str, Any],
+    context_z: np.ndarray,
+    context_actions: np.ndarray,
+    step_levels: np.ndarray,
+    signal_levels: np.ndarray,
+    export_name: str,
+) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    prefill = find_export(manifest, export_name)
+    model_path = asset_dir / prefill["path"]
+    session = ort.InferenceSession(model_path.as_posix(), providers=["CPUExecutionProvider"])
+    k_name = output_name(session, ("k_cache", "candidate_k_cache"))
+    v_name = output_name(session, ("v_cache", "candidate_v_cache"))
+    length_name = output_name(session, ("cache_length", "candidate_cache_length"))
+    feeds = {
+        "z": context_z,
+        "actions": context_actions,
+        "step_levels": step_levels,
+        "signal_levels": signal_levels,
+    }
+    outputs = session.run(None, feeds)
+    by_name = dict(zip([output.name for output in session.get_outputs()], outputs, strict=True))
+    return {
+        "k": np.asarray(by_name[k_name], dtype=np.float32),
+        "v": np.asarray(by_name[v_name], dtype=np.float32),
+        "length": np.asarray(by_name[length_name], dtype=np.int32).reshape((1,)),
+    }, {
+        "source_cache_export": export_name,
+        "source_cache_model": prefill["path"],
+        "source_cache_model_sha256": sha256_file(model_path),
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    asset_dir = args.asset_dir
+    manifest_path = asset_dir / args.onnx_manifest
+    context_manifest_path = asset_dir / args.context_manifest
+    manifest = load_json(manifest_path)
+    context_manifest = load_json(context_manifest_path)
+
+    context_arrays = context_manifest["arrays"]
+    context_z = load_array(asset_dir, context_arrays["z"])
+    context_actions = load_array(asset_dir, context_arrays["actions"])
+    step_levels = load_array(asset_dir, context_arrays["step_levels"])
+    signal_levels = load_array(asset_dir, context_arrays["signal_levels"])
+
+    if args.mode == "prefill":
+        cache, source_info = cache_from_prefill(
+            asset_dir,
+            manifest,
+            context_z,
+            context_actions,
+            step_levels,
+            signal_levels,
+            args.prefill_export,
+        )
+    else:
+        cache, source_info = cache_from_step_replay(
+            asset_dir,
+            manifest,
+            context_manifest,
+            context_z,
+            context_actions,
+            step_levels,
+            signal_levels,
+            args.prefix_step_export,
+        )
+
     prefix = asset_dir / args.name
     manifest_out = prefix.with_suffix(".json")
     if manifest_out.exists() and not args.overwrite:
@@ -148,13 +223,12 @@ def main() -> None:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_onnx_manifest": args.onnx_manifest,
         "source_context_manifest": args.context_manifest,
-        "source_prefix_step_export": args.prefix_step_export,
-        "source_prefix_step_model": prefix_step["path"],
-        "source_prefix_step_model_sha256": sha256_file(model_path),
+        "cache_creation_mode": args.mode,
+        **source_info,
         "cache_length": int(cache_length[0]),
         "context_length": int(context_manifest["context_length"]),
-        "prefix_frames": prefix_frames,
-        "prefix_slot_start": prefix_slot_start,
+        "prefix_frames": int(context_manifest.get("prefix_frames", 0)),
+        "prefix_slot_start": int(context_manifest.get("prefix_slot_start", 0)),
         "arrays": {
             "k_cache": write_array(
                 prefix.with_suffix(".k_cache.f32.bin"),
@@ -173,7 +247,7 @@ def main() -> None:
             ),
         },
         "notes": [
-            "This cache is generated offline by replaying the same 4-frame prefix-step loop used by the original browser demo.",
+            "This cache is generated offline from the stored browser demo context latents.",
             "The browser continues rollout with the cache-length entry graph and updates the fixed-size cache from per-frame K/V entries.",
         ],
     }

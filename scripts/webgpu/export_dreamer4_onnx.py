@@ -1,4 +1,5 @@
 import argparse
+import copy
 import hashlib
 import itertools
 import json
@@ -2482,7 +2483,7 @@ def fold_attention_scale_into_query_norm_for_webgpu(
             continue
         scale_input_idx, scale = scale_inputs[0]
         assert scale is not None
-        if not np.isfinite(scale) or abs(scale - 0.125) > 1e-8:
+        if not np.isfinite(scale) or scale == 0.0:
             continue
         if scale_mul.input[1 - scale_input_idx] != einsum.output[0]:
             continue
@@ -3801,6 +3802,7 @@ def pack_sibling_gemms_for_webgpu(
     skip_nodes: set[str] = set()
     remove_initializer_names: set[str] = set()
     new_initializers: list[onnx.TensorProto] = []
+    packed_initializer_names: dict[tuple[str, tuple[str, ...]], tuple[str, str]] = {}
     rewrites = Counter()
     examples: list[dict[str, Any]] = []
 
@@ -3810,9 +3812,30 @@ def pack_sibling_gemms_for_webgpu(
             return
         output_widths = [int(shape[-1]) for shape in output_shapes if shape is not None]
         kind: str | None = None
-        if pack_qkv and len(nodes) == 3 and sorted(output_widths) == [128, 128, 512]:
+        input_widths = {
+            int(initializer_arrays[node.input[1]].shape[0])
+            for node in nodes
+            if initializer_arrays[node.input[1]].ndim == 2
+        }
+        input_width = next(iter(input_widths)) if len(input_widths) == 1 else None
+        sorted_widths = sorted(output_widths)
+        if (
+            pack_qkv
+            and len(nodes) == 3
+            and input_width is not None
+            and len(sorted_widths) == 3
+            and sorted_widths[0] == sorted_widths[1]
+            and sorted_widths[2] == sorted_widths[0] * 4
+            and sorted_widths[2] == input_width * 2
+        ):
             kind = "qkv"
-        elif pack_swiglu and len(nodes) == 2 and output_widths == [768, 768]:
+        elif (
+            pack_swiglu
+            and len(nodes) == 2
+            and input_width is not None
+            and output_widths[0] == output_widths[1]
+            and output_widths[0] == input_width * 3
+        ):
             kind = "swiglu"
         if kind is None:
             return
@@ -3820,7 +3843,6 @@ def pack_sibling_gemms_for_webgpu(
         weights = [initializer_arrays[node.input[1]] for node in nodes]
         if any(weight.ndim != 2 for weight in weights):
             return
-        input_widths = {int(weight.shape[0]) for weight in weights}
         if len(input_widths) != 1:
             return
         if [int(weight.shape[1]) for weight in weights] != output_widths:
@@ -3828,16 +3850,27 @@ def pack_sibling_gemms_for_webgpu(
 
         first_node = nodes[0]
         prefix = first_node.name or first_node.output[0]
-        packed_weight_name = f"{prefix}__packed_{kind}_weight"
+        initializer_key = (kind, tuple(node.input[1] for node in nodes))
+        if initializer_key in packed_initializer_names:
+            packed_weight_name, split_sizes_name = packed_initializer_names[initializer_key]
+        else:
+            packed_weight_name = f"{prefix}__packed_{kind}_weight"
+            split_sizes_name = f"{prefix}__packed_{kind}_split_sizes"
+            packed_initializer_names[initializer_key] = (packed_weight_name, split_sizes_name)
+            packed_weight = np.concatenate(weights, axis=1)
+            new_initializers.append(
+                onnx.numpy_helper.from_array(
+                    packed_weight.astype(weights[0].dtype),
+                    packed_weight_name,
+                )
+            )
+            new_initializers.append(
+                onnx.numpy_helper.from_array(
+                    np.asarray(output_widths, dtype=np.int64),
+                    split_sizes_name,
+                )
+            )
         packed_output_name = f"{prefix}__packed_{kind}_output"
-        split_sizes_name = f"{prefix}__packed_{kind}_split_sizes"
-        packed_weight = np.concatenate(weights, axis=1)
-        new_initializers.append(
-            onnx.numpy_helper.from_array(packed_weight.astype(weights[0].dtype), packed_weight_name)
-        )
-        new_initializers.append(
-            onnx.numpy_helper.from_array(np.asarray(output_widths, dtype=np.int64), split_sizes_name)
-        )
         replacements[first_node.name] = [
             onnx.helper.make_node(
                 "Gemm",
@@ -3952,13 +3985,16 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
     rewrites = Counter()
     examples: list[dict[str, Any]] = []
 
+    graph_output_names = {output.name for output in model.graph.output}
+
     for split in model.graph.node:
-        if split.op_type != "Split" or len(split.output) != 3:
+        if split.op_type != "Split" or len(split.output) < 2:
             continue
-        if int(attr_value(split, "axis", -1)) != 1:
+        split_axis = int(attr_value(split, "axis", -1))
+        if split_axis < 0:
             continue
         sizes = split_sizes(split)
-        if sizes is None or sorted(sizes) != [128, 128, 512]:
+        if sizes is None or len(sizes) != len(split.output):
             continue
 
         new_sizes: list[int] = []
@@ -3967,29 +4003,31 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
         removed_outputs: list[str] = []
 
         for output_name, size in zip(split.output, sizes):
-            if size != 128:
+            if output_name in graph_output_names:
                 new_sizes.append(int(size))
                 new_outputs.append(output_name)
                 continue
-
             output_consumers = consumers.get(output_name, [])
-            if len(output_consumers) != 1:
+            child = output_consumers[0] if len(output_consumers) == 1 else None
+            child_sizes = split_sizes(child) if child is not None else None
+            if child is None or child.op_type != "Split" or child_sizes is None:
                 new_sizes.append(int(size))
                 new_outputs.append(output_name)
                 continue
-            child = output_consumers[0]
-            child_sizes = split_sizes(child)
+            if int(attr_value(child, "axis", -1)) != split_axis:
+                new_sizes.append(int(size))
+                new_outputs.append(output_name)
+                continue
             if (
-                child.op_type != "Split"
-                or int(attr_value(child, "axis", -1)) != 1
-                or len(child.output) != 2
-                or child_sizes != (64, 64)
+                len(child.output) != 2
+                or len(child.output) != len(child_sizes)
+                or sum(child_sizes) != int(size)
             ):
                 new_sizes.append(int(size))
                 new_outputs.append(output_name)
                 continue
 
-            new_sizes.extend([64, 64])
+            new_sizes.extend(int(child_size) for child_size in child_sizes)
             new_outputs.extend(child.output)
             child_splits.append(child)
             removed_outputs.append(output_name)
@@ -4006,7 +4044,7 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
             [split.input[0], size_name],
             new_outputs,
             name=f"{split.name or split.output[0]}__partial_head_split",
-            axis=1,
+            axis=split_axis,
         )
         replacements[node_key(split)] = rewritten
         skip_nodes.update(node_key(child) for child in child_splits)
@@ -4063,6 +4101,438 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
             "Inline K/V two-head Split nodes into the packed QKV Split. This keeps the "
             "packed Gemm output identical but emits K/V head tensors directly, removing "
             "two Split dispatches per matched QKV projection."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+    }
+
+
+def rewrite_q_head_split_gather_for_webgpu(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def axes_input(node: onnx.NodeProto) -> tuple[int, ...] | None:
+        if len(node.input) < 2 or node.input[1] not in initializer_arrays:
+            return None
+        return tuple(int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1))
+
+    indices_name = "head_gather_indices_8x32"
+    unsqueeze_axis0_name = "head_gather_unsqueeze_axis0"
+    unsqueeze_axis1_name = "head_gather_unsqueeze_axis1"
+    required_initializers = {
+        indices_name: np.arange(256, dtype=np.int64).reshape(8, 32),
+        unsqueeze_axis0_name: np.asarray([0], dtype=np.int64),
+        unsqueeze_axis1_name: np.asarray([1], dtype=np.int64),
+    }
+
+    replacements: dict[str, list[onnx.NodeProto]] = {}
+    skip_nodes: set[str] = set()
+    stale_value_info: set[str] = set()
+    rewrites = Counter()
+    examples: list[dict[str, Any]] = []
+
+    for split in model.graph.node:
+        if split.op_type != "Split" or len(split.output) != 8:
+            continue
+        if int(attr_value(split, "axis", -1)) != 1:
+            continue
+        if len(split.input) < 2 or split.input[1] not in initializer_arrays:
+            continue
+        split_sizes = tuple(
+            int(value) for value in np.asarray(initializer_arrays[split.input[1]]).reshape(-1)
+        )
+        if split_sizes != (32, 32, 32, 32, 32, 32, 32, 32):
+            continue
+
+        split_consumers = [consumers.get(output_name, []) for output_name in split.output]
+        if any(len(output_consumers) != 1 for output_consumers in split_consumers):
+            continue
+        unsqueezes = [output_consumers[0] for output_consumers in split_consumers]
+        if any(node.op_type != "Unsqueeze" for node in unsqueezes):
+            continue
+        if any(len(consumers.get(node.output[0], [])) != 1 for node in unsqueezes):
+            continue
+
+        concat = consumers[unsqueezes[0].output[0]][0]
+        if concat.op_type != "Concat":
+            continue
+        if any(consumers[node.output[0]][0] is not concat for node in unsqueezes):
+            continue
+        if list(concat.input) != [node.output[0] for node in unsqueezes]:
+            continue
+
+        unsqueeze_axes = [axes_input(node) for node in unsqueezes]
+        if any(axes is None for axes in unsqueeze_axes) or len(set(unsqueeze_axes)) != 1:
+            continue
+        axes = unsqueeze_axes[0]
+        concat_axis = int(attr_value(concat, "axis", -1))
+
+        gather_output = f"{split.output[0]}__head_gathered"
+        replacement_nodes = [
+            onnx.helper.make_node(
+                "Gather",
+                [split.input[0], indices_name],
+                [gather_output],
+                name=f"{split.name or split.output[0]}__head_gather",
+                axis=1,
+            )
+        ]
+        if axes == (0, 1) and concat_axis == 1:
+            unsqueeze_output = f"{split.output[0]}__head_gather_unsqueezed"
+            replacement_nodes.extend(
+                [
+                    onnx.helper.make_node(
+                        "Unsqueeze",
+                        [gather_output, unsqueeze_axis0_name],
+                        [unsqueeze_output],
+                        name=f"{split.name or split.output[0]}__head_gather_unsqueeze0",
+                    ),
+                    onnx.helper.make_node(
+                        "Transpose",
+                        [unsqueeze_output],
+                        [concat.output[0]],
+                        name=f"{split.name or split.output[0]}__head_gather_transpose",
+                        perm=[0, 2, 1, 3],
+                    ),
+                ]
+            )
+            rewrites["axis01_concat1"] += 1
+        elif axes == (1, 2) and concat_axis == 2:
+            replacement_nodes.append(
+                onnx.helper.make_node(
+                    "Unsqueeze",
+                    [gather_output, unsqueeze_axis1_name],
+                    [concat.output[0]],
+                    name=f"{split.name or split.output[0]}__head_gather_unsqueeze1",
+                )
+            )
+            rewrites["axis12_concat2"] += 1
+        else:
+            continue
+
+        replacements[node_key(split)] = replacement_nodes
+        skip_nodes.add(node_key(concat))
+        stale_value_info.update(split.output)
+        stale_value_info.update(node.output[0] for node in unsqueezes)
+        skip_nodes.update(node_key(node) for node in unsqueezes)
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "split": split.name,
+                    "input": split.input[0],
+                    "output": concat.output[0],
+                    "unsqueeze_axes": list(axes),
+                    "concat_axis": concat_axis,
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_q_head_split_gather_rewrite",
+            "rewrites": {},
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "tracked_ops_before": {},
+            "tracked_ops_after": {},
+            "rewrite_examples": [],
+        }
+
+    initializer_names = {initializer.name for initializer in model.graph.initializer}
+    for name, value in required_initializers.items():
+        if name not in initializer_names:
+            model.graph.initializer.append(onnx.numpy_helper.from_array(value, name))
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in skip_nodes:
+            continue
+        rewritten_nodes.extend(replacements.get(key, [node]))
+
+    kept_value_info = [
+        value for value in model.graph.value_info if value.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    tracked_ops = ("Split", "Unsqueeze", "Concat", "Gather", "Transpose", "Einsum", "Gemm")
+    return {
+        "enabled": True,
+        "tool": "custom_q_head_split_gather_rewrite",
+        "reason": (
+            "Replace 8-way Q-head Split/Unsqueeze/Concat layout islands with "
+            "Gather plus a small rank-restoring layout step. This preserves the "
+            "head ordering while reducing layout dispatch count."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+    }
+
+
+def remove_zero_softmax_bias_adds_for_webgpu(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    replacements: dict[str, str] = {}
+    skip_nodes: set[str] = set()
+    stale_value_info: set[str] = set()
+    examples: list[dict[str, Any]] = []
+
+    for node in model.graph.node:
+        if node.op_type != "Add" or len(node.input) != 2 or len(node.output) != 1:
+            continue
+        output_name = node.output[0]
+        output_consumers = consumers.get(output_name, [])
+        if len(output_consumers) != 1 or output_consumers[0].op_type != "Softmax":
+            continue
+
+        zero_input_index = None
+        for index, input_name in enumerate(node.input):
+            value = initializer_arrays.get(input_name)
+            if value is None:
+                continue
+            if np.all(value == 0):
+                zero_input_index = index
+                break
+        if zero_input_index is None:
+            continue
+
+        replacements[output_name] = node.input[1 - zero_input_index]
+        skip_nodes.add(node_key(node))
+        stale_value_info.add(output_name)
+        if len(examples) < 12:
+            zero_name = node.input[zero_input_index]
+            value = initializer_arrays[zero_name]
+            examples.append(
+                {
+                    "add": node.name,
+                    "softmax": output_consumers[0].name,
+                    "zero_input": zero_name,
+                    "zero_shape": list(value.shape),
+                    "rewired_input": node.input[1 - zero_input_index],
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_zero_softmax_bias_add_prune",
+            "rewrites": 0,
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "tracked_ops_before": {},
+            "tracked_ops_after": {},
+            "rewrite_examples": [],
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        if node_key(node) in skip_nodes:
+            continue
+        for index, input_name in enumerate(node.input):
+            if input_name in replacements:
+                node.input[index] = replacements[input_name]
+        rewritten_nodes.append(node)
+
+    used_inputs = {
+        input_name
+        for node in rewritten_nodes
+        for input_name in node.input
+        if input_name
+    }
+    kept_initializers = [
+        initializer
+        for initializer in model.graph.initializer
+        if initializer.name in used_inputs
+    ]
+    kept_value_info = [
+        value for value in model.graph.value_info if value.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.initializer[:]
+    model.graph.initializer.extend(kept_initializers)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    tracked_ops = ("Add", "Softmax", "Mul", "Einsum")
+    return {
+        "enabled": True,
+        "tool": "custom_zero_softmax_bias_add_prune",
+        "reason": (
+            "Remove Add nodes immediately before Softmax when one input is an "
+            "all-zero initializer. This is exact for full-cache attention masks "
+            "that fold to zero bias."
+        ),
+        "rewrites": len(replacements),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrite_examples": examples,
+    }
+
+
+def rewrite_cache_layer_slices_as_gather_for_webgpu(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    skip_nodes: set[str] = set()
+    new_nodes: list[onnx.NodeProto] = []
+    new_initializers: list[onnx.TensorProto] = []
+    stale_value_info: set[str] = set()
+    examples: list[dict[str, Any]] = []
+    rewrites = Counter()
+
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in skip_nodes:
+            continue
+
+        replacement: onnx.NodeProto | None = None
+        if (
+            node.op_type == "Slice"
+            and len(node.input) >= 4
+            and len(node.output) == 1
+            and node.input[0] in {"k_cache", "v_cache"}
+        ):
+            starts = initializer_arrays.get(node.input[1])
+            ends = initializer_arrays.get(node.input[2])
+            axes = initializer_arrays.get(node.input[3])
+            slice_consumers = consumers.get(node.output[0], [])
+            if (
+                starts is not None
+                and ends is not None
+                and axes is not None
+                and len(slice_consumers) == 1
+                and slice_consumers[0].op_type == "Squeeze"
+                and len(slice_consumers[0].output) == 1
+            ):
+                starts = np.asarray(starts).reshape(-1)
+                ends = np.asarray(ends).reshape(-1)
+                axes = np.asarray(axes).reshape(-1)
+                if (
+                    tuple(int(axis) for axis in axes) == (0, 1, 2, 3, 4, 5)
+                    and starts.size == 6
+                    and ends.size == 6
+                    and all(int(starts[index]) == 0 for index in range(1, 6))
+                    and int(ends[0]) == int(starts[0]) + 1
+                ):
+                    layer = int(starts[0])
+                    squeeze = slice_consumers[0]
+                    gather_index_name = f"{key}__layer_gather_index"
+                    new_initializers.append(
+                        onnx.numpy_helper.from_array(
+                            np.asarray(layer, dtype=np.int64), gather_index_name
+                        )
+                    )
+                    replacement = onnx.helper.make_node(
+                        "Gather",
+                        [node.input[0], gather_index_name],
+                        [squeeze.output[0]],
+                        name=f"{key}__layer_gather",
+                        axis=0,
+                    )
+                    skip_nodes.add(node_key(squeeze))
+                    stale_value_info.update({node.output[0], squeeze.output[0]})
+                    rewrites["cache_layer_slice_to_gather"] += 1
+                    if len(examples) < 12:
+                        examples.append(
+                            {
+                                "slice": node.name,
+                                "squeeze": squeeze.name,
+                                "cache": node.input[0],
+                                "layer": layer,
+                                "output": squeeze.output[0],
+                            }
+                        )
+
+        new_nodes.append(replacement if replacement is not None else node)
+
+    if not rewrites:
+        return {
+            "enabled": True,
+            "tool": "custom_cache_layer_slice_gather_rewrite",
+            "reason": "no eligible cache layer Slice/Squeeze pairs found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+        }
+
+    used_inputs = {input_name for node in new_nodes for input_name in node.input if input_name}
+    kept_initializers = [
+        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
+    ]
+    kept_value_info = [
+        value for value in model.graph.value_info if value.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(new_nodes)
+    del model.graph.initializer[:]
+    model.graph.initializer.extend(kept_initializers)
+    model.graph.initializer.extend(new_initializers)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    tracked_ops = ("Slice", "Squeeze", "Gather", "Einsum", "Softmax")
+    return {
+        "enabled": True,
+        "tool": "custom_cache_layer_slice_gather_rewrite",
+        "reason": (
+            "Replace full-shape cache layer Slice followed by layer-axis Squeeze "
+            "with scalar Gather(axis=0). This preserves the per-layer cache tensor "
+            "shape while removing one layout node per K/V layer."
         ),
         "node_count_before": int(sum(before.values())),
         "node_count_after": int(sum(after.values())),
@@ -5387,6 +5857,795 @@ def rewrite_rotary_embedding_for_webgpu(path: Path) -> dict[str, Any]:
     }
 
 
+def rewrite_one_position_rotary_transposes_for_webgpu(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    try:
+        inferred = onnx.shape_inference.infer_shapes(model)
+    except Exception:
+        inferred = model
+    value_shapes = {
+        value.name: _tensor_shape(value)
+        for value in (
+            list(inferred.graph.input)
+            + list(inferred.graph.value_info)
+            + list(inferred.graph.output)
+        )
+    }
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def has_perm(node: onnx.NodeProto, perm: tuple[int, ...]) -> bool:
+        return tuple(int(axis) for axis in attr_value(node, "perm", ())) == perm
+
+    replacements: dict[str, onnx.NodeProto] = {}
+    skip_nodes: set[str] = set()
+    stale_value_info: set[str] = set()
+    new_initializers: list[onnx.TensorProto] = []
+    rewrites = Counter()
+    examples: list[dict[str, Any]] = []
+
+    for pre_transpose in model.graph.node:
+        if (
+            pre_transpose.op_type != "Transpose"
+            or len(pre_transpose.input) != 1
+            or len(pre_transpose.output) != 1
+            or not has_perm(pre_transpose, (0, 2, 1, 3))
+        ):
+            continue
+        input_shape = value_shapes.get(pre_transpose.input[0])
+        if (
+            input_shape is None
+            or len(input_shape) != 4
+            or input_shape[1] != 1
+            or input_shape[2] not in (2, 8)
+        ):
+            continue
+        rotary_consumers = consumers.get(pre_transpose.output[0], [])
+        if len(rotary_consumers) != 1 or rotary_consumers[0].op_type != "RotaryEmbedding":
+            continue
+        rotary = rotary_consumers[0]
+        if len(rotary.input) < 4 or len(rotary.output) != 1:
+            continue
+        post_consumers = consumers.get(rotary.output[0], [])
+        if len(post_consumers) != 1 or post_consumers[0].op_type != "Transpose":
+            continue
+        post_transpose = post_consumers[0]
+        if (
+            len(post_transpose.input) != 1
+            or len(post_transpose.output) != 1
+            or not has_perm(post_transpose, (0, 2, 1, 3))
+        ):
+            continue
+        position_ids = initializer_arrays.get(rotary.input[1])
+        cos_cache = initializer_arrays.get(rotary.input[2])
+        sin_cache = initializer_arrays.get(rotary.input[3])
+        if (
+            position_ids is None
+            or np.asarray(position_ids).size != 1
+            or int(np.asarray(position_ids).reshape(())) != 0
+            or cos_cache is None
+            or sin_cache is None
+            or cos_cache.shape != sin_cache.shape
+            or len(cos_cache.shape) != 2
+            or cos_cache.shape[0] != 1
+        ):
+            continue
+
+        repeated_sequence = int(input_shape[2])
+        cos_name = f"{node_key(rotary)}__direct_repeat_cos_s{repeated_sequence}"
+        sin_name = f"{node_key(rotary)}__direct_repeat_sin_s{repeated_sequence}"
+        new_initializers.append(
+            onnx.numpy_helper.from_array(
+                np.repeat(cos_cache, repeated_sequence, axis=0).astype(cos_cache.dtype),
+                cos_name,
+            )
+        )
+        new_initializers.append(
+            onnx.numpy_helper.from_array(
+                np.repeat(sin_cache, repeated_sequence, axis=0).astype(sin_cache.dtype),
+                sin_name,
+            )
+        )
+        replacements[node_key(pre_transpose)] = onnx.helper.make_node(
+            "RotaryEmbedding",
+            [pre_transpose.input[0], rotary.input[1], cos_name, sin_name],
+            [post_transpose.output[0]],
+            name=f"{node_key(rotary)}__direct_repeated_onepos",
+            domain=rotary.domain,
+            interleaved=int(attr_value(rotary, "interleaved", 0)),
+            num_heads=1,
+            rotary_embedding_dim=int(attr_value(rotary, "rotary_embedding_dim", 0)),
+            scale=float(attr_value(rotary, "scale", 1.0)),
+        )
+        skip_nodes.update({node_key(rotary), node_key(post_transpose)})
+        stale_value_info.update(pre_transpose.output)
+        stale_value_info.update(rotary.output)
+        rewrites["direct_repeated_one_position_rotary"] += 1
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "pre_transpose": pre_transpose.name,
+                    "rotary": rotary.name,
+                    "post_transpose": post_transpose.name,
+                    "input_shape": list(input_shape),
+                    "repeated_sequence": repeated_sequence,
+                    "output": post_transpose.output[0],
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_one_position_rotary_transpose_rewrite",
+            "reason": "no eligible one-position RotaryEmbedding transpose wrappers found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in skip_nodes:
+            continue
+        rewritten_nodes.append(replacements.get(key, node))
+
+    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    kept_initializers = [
+        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
+    ]
+    kept_value_info = [
+        value for value in model.graph.value_info if value.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.initializer[:]
+    model.graph.initializer.extend(kept_initializers)
+    model.graph.initializer.extend(new_initializers)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    tracked_ops = ("Transpose", "RotaryEmbedding", "Einsum", "Gemm")
+    return {
+        "enabled": True,
+        "tool": "custom_one_position_rotary_transpose_rewrite",
+        "reason": (
+            "Replace one-position Transpose -> RotaryEmbedding -> Transpose islands "
+            "with a direct-layout RotaryEmbedding whose single cos/sin row is repeated "
+            "across the true head axis. The rotation is identical because the position "
+            "is fixed to zero for these one-token temporal branches."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+    }
+
+
+def rewrite_final_output_head_slice_transposes_for_webgpu(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    try:
+        inferred = onnx.shape_inference.infer_shapes(model)
+    except Exception:
+        inferred = model
+    value_shapes = {
+        value.name: _tensor_shape(value)
+        for value in (
+            list(inferred.graph.input)
+            + list(inferred.graph.value_info)
+            + list(inferred.graph.output)
+        )
+    }
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def int_initializer(name: str) -> tuple[int, ...] | None:
+        value = initializer_arrays.get(name)
+        if value is None:
+            return None
+        return tuple(int(item) for item in np.asarray(value).reshape(-1))
+
+    replacements: dict[str, onnx.NodeProto] = {}
+    squeeze_axis_replacements: dict[str, str] = {}
+    skip_nodes: set[str] = set()
+    stale_value_info: set[str] = set()
+    new_initializers: list[onnx.TensorProto] = []
+    examples: list[dict[str, Any]] = []
+
+    for transpose in model.graph.node:
+        if (
+            transpose.op_type != "Transpose"
+            or len(transpose.input) != 1
+            or len(transpose.output) != 1
+            or tuple(int(axis) for axis in attr_value(transpose, "perm", ())) != (0, 2, 1, 3)
+        ):
+            continue
+        input_shape = value_shapes.get(transpose.input[0])
+        output_shape = value_shapes.get(transpose.output[0])
+        if (
+            input_shape is None
+            or output_shape is None
+            or len(input_shape) != 4
+            or len(output_shape) != 4
+            or input_shape[0] != 1
+            or input_shape[2] != 1
+            or output_shape[0] != 1
+            or output_shape[1] != 1
+        ):
+            continue
+        slice_users = consumers.get(transpose.output[0], [])
+        if len(slice_users) != 1 or slice_users[0].op_type != "Slice":
+            continue
+        slice_node = slice_users[0]
+        if len(slice_node.input) < 4 or len(slice_node.output) != 1:
+            continue
+        starts = int_initializer(slice_node.input[1])
+        ends = int_initializer(slice_node.input[2])
+        axes = int_initializer(slice_node.input[3])
+        steps = int_initializer(slice_node.input[4]) if len(slice_node.input) > 4 else None
+        if (
+            starts != (0, 0, 4, 0)
+            or ends != output_shape
+            or axes != (0, 1, 2, 3)
+            or (steps is not None and steps != (1, 1, 1, 1))
+        ):
+            continue
+        squeeze_users = consumers.get(slice_node.output[0], [])
+        if len(squeeze_users) != 1 or squeeze_users[0].op_type != "Squeeze":
+            continue
+        squeeze = squeeze_users[0]
+        if len(squeeze.input) < 2 or int_initializer(squeeze.input[1]) != (0, 1):
+            continue
+
+        direct_starts_name = f"{node_key(slice_node)}__pre_transpose_starts"
+        direct_ends_name = f"{node_key(slice_node)}__pre_transpose_ends"
+        direct_axes_name = f"{node_key(slice_node)}__pre_transpose_axes"
+        squeeze_axes_name = f"{node_key(squeeze)}__pre_transpose_squeeze_axes"
+        new_initializers.extend(
+            [
+                onnx.numpy_helper.from_array(
+                    np.asarray([0, 4, 0, 0], dtype=np.int64),
+                    direct_starts_name,
+                ),
+                onnx.numpy_helper.from_array(
+                    np.asarray(input_shape, dtype=np.int64),
+                    direct_ends_name,
+                ),
+                onnx.numpy_helper.from_array(
+                    np.asarray([0, 1, 2, 3], dtype=np.int64),
+                    direct_axes_name,
+                ),
+                onnx.numpy_helper.from_array(
+                    np.asarray([0, 2], dtype=np.int64),
+                    squeeze_axes_name,
+                ),
+            ]
+        )
+        replacements[node_key(slice_node)] = onnx.helper.make_node(
+            "Slice",
+            [transpose.input[0], direct_starts_name, direct_ends_name, direct_axes_name],
+            [slice_node.output[0]],
+            name=f"{node_key(slice_node)}__pre_transpose",
+        )
+        squeeze_axis_replacements[node_key(squeeze)] = squeeze_axes_name
+        skip_nodes.add(node_key(transpose))
+        stale_value_info.update(transpose.output)
+        stale_value_info.update(slice_node.output)
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "transpose": transpose.name,
+                    "slice": slice_node.name,
+                    "squeeze": squeeze.name,
+                    "input_shape": list(input_shape),
+                    "old_slice_shape": list(output_shape),
+                    "output": squeeze.output[0],
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_final_output_head_slice_transpose_rewrite",
+            "reason": "no eligible final output-head Transpose -> Slice -> Squeeze islands found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": 0,
+            "rewrite_examples": [],
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in skip_nodes:
+            continue
+        replacement = replacements.get(key)
+        if replacement is not None:
+            rewritten_nodes.append(replacement)
+            continue
+        if key in squeeze_axis_replacements:
+            copied = copy.deepcopy(node)
+            copied.input[1] = squeeze_axis_replacements[key]
+            rewritten_nodes.append(copied)
+            continue
+        rewritten_nodes.append(node)
+
+    kept_value_info = [
+        value for value in model.graph.value_info if value.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    model.graph.initializer.extend(new_initializers)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    tracked_ops = ("Transpose", "Slice", "Squeeze", "Gemm")
+    return {
+        "enabled": True,
+        "tool": "custom_final_output_head_slice_transpose_rewrite",
+        "reason": (
+            "Slice the final output-head token range before the singleton-axis "
+            "transpose and retarget the following squeeze axes. This is exact for "
+            "the full-cache output heads because the transposed axis is singleton."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrites": len(replacements),
+        "rewrite_examples": examples,
+    }
+
+
+def fold_shared_gather_add_constants_for_webgpu(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    output_replacements: dict[str, str] = {}
+    removed_nodes: set[str] = set()
+    initializer_updates: dict[str, np.ndarray] = {}
+    examples: list[dict[str, Any]] = []
+
+    for gather in model.graph.node:
+        if gather.op_type != "Gather" or len(gather.input) < 2 or len(gather.output) != 1:
+            continue
+        data_name = gather.input[0]
+        data = initializer_arrays.get(data_name)
+        if data is None or data.ndim != 2:
+            continue
+        axis = 0
+        for attr in gather.attribute:
+            if attr.name == "axis":
+                axis = int(onnx.helper.get_attribute_value(attr))
+        if axis != 0:
+            continue
+        add_users = consumers.get(gather.output[0], [])
+        if not add_users or any(user.op_type != "Add" for user in add_users):
+            continue
+
+        constants: list[np.ndarray] = []
+        for add in add_users:
+            if len(add.input) != 2 or len(add.output) != 1:
+                constants = []
+                break
+            const_inputs = [name for name in add.input if name != gather.output[0]]
+            if len(const_inputs) != 1:
+                constants = []
+                break
+            const = initializer_arrays.get(const_inputs[0])
+            if const is None or const.shape[-1:] != data.shape[-1:]:
+                constants = []
+                break
+            if any(dim != 1 for dim in const.shape[:-1]):
+                constants = []
+                break
+            constants.append(np.asarray(const).reshape(data.shape[-1]))
+        if not constants:
+            continue
+        if any(not np.array_equal(constants[0], other) for other in constants[1:]):
+            continue
+
+        initializer_updates[data_name] = (data + constants[0].reshape(1, -1)).astype(data.dtype)
+        for add in add_users:
+            output_replacements[add.output[0]] = gather.output[0]
+            removed_nodes.add(node_key(add))
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "gather": gather.name,
+                    "initializer": data_name,
+                    "removed_adds": [add.name for add in add_users],
+                    "fanout": len(add_users),
+                    "data_shape": list(data.shape),
+                }
+            )
+
+    if not removed_nodes:
+        return {
+            "enabled": True,
+            "tool": "custom_shared_gather_add_constant_fold",
+            "reason": "no eligible shared Gather + Add(constant) fanout found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": 0,
+            "rewrite_examples": [],
+        }
+
+    for initializer in model.graph.initializer:
+        update = initializer_updates.get(initializer.name)
+        if update is not None:
+            initializer.CopyFrom(onnx.numpy_helper.from_array(update, initializer.name))
+
+    for node in model.graph.node:
+        if node_key(node) in removed_nodes:
+            continue
+        for index, input_name in enumerate(node.input):
+            node.input[index] = output_replacements.get(input_name, input_name)
+
+    kept_nodes = [node for node in model.graph.node if node_key(node) not in removed_nodes]
+    del model.graph.node[:]
+    model.graph.node.extend(kept_nodes)
+    kept_value_info = [
+        value for value in model.graph.value_info if value.name not in output_replacements
+    ]
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    tracked_ops = ("Gather", "Add", "Unsqueeze")
+    return {
+        "enabled": True,
+        "tool": "custom_shared_gather_add_constant_fold",
+        "reason": (
+            "Fold identical constants added to every fanout of a shared embedding "
+            "Gather into the embedding initializer, then wire consumers to the "
+            "folded Gather output."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrites": len(removed_nodes),
+        "rewrite_examples": examples,
+    }
+
+
+def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    node_by_output: dict[str, onnx.NodeProto] = {}
+    for node in model.graph.node:
+        for output_name in node.output:
+            if output_name:
+                node_by_output[output_name] = node
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def int_initializer(name: str) -> tuple[int, ...] | None:
+        value = initializer_arrays.get(name)
+        if value is None:
+            return None
+        if not np.issubdtype(value.dtype, np.integer):
+            return None
+        return tuple(int(item) for item in np.asarray(value).reshape(-1))
+
+    def axes_initializer(axes: tuple[int, ...]) -> str:
+        target = tuple(int(axis) for axis in axes)
+        for name in initializer_arrays:
+            if int_initializer(name) == target:
+                return name
+        name = "swiglu_rank2_unsqueeze_axes_" + "_".join(str(axis) for axis in target)
+        tensor = onnx.numpy_helper.from_array(np.asarray(target, dtype=np.int64), name)
+        model.graph.initializer.append(tensor)
+        initializer_arrays[name] = onnx.numpy_helper.to_array(tensor)
+        return name
+
+    def axis_initializer(axis: int) -> str:
+        return axes_initializer((axis,))
+
+    rewrites: list[dict[str, Any]] = []
+    rewrite_count = 0
+    remove_nodes: set[str] = set()
+    insert_before: dict[str, onnx.NodeProto] = {}
+    stale_value_info: set[str] = set()
+
+    for quick_gelu in model.graph.node:
+        if quick_gelu.op_type != "QuickGelu" or len(quick_gelu.input) != 1:
+            continue
+        quick_input_unsqueeze = node_by_output.get(quick_gelu.input[0])
+        if (
+            quick_input_unsqueeze is None
+            or quick_input_unsqueeze.op_type != "Unsqueeze"
+            or len(quick_input_unsqueeze.input) < 2
+            or len(quick_input_unsqueeze.output) != 1
+        ):
+            continue
+        singleton_axis = int_initializer(quick_input_unsqueeze.input[1])
+        if singleton_axis not in ((0,), (1,)):
+            continue
+        axis = singleton_axis[0]
+
+        mul_users = consumers.get(quick_gelu.output[0], [])
+        if len(mul_users) != 1 or mul_users[0].op_type != "Mul" or len(mul_users[0].input) != 2:
+            continue
+        mul = mul_users[0]
+        other_mul_inputs = [name for name in mul.input if name != quick_gelu.output[0]]
+        if len(other_mul_inputs) != 1:
+            continue
+        gate_input_unsqueeze = node_by_output.get(other_mul_inputs[0])
+        if (
+            gate_input_unsqueeze is None
+            or gate_input_unsqueeze.op_type != "Unsqueeze"
+            or len(gate_input_unsqueeze.input) < 2
+            or len(gate_input_unsqueeze.output) != 1
+            or int_initializer(gate_input_unsqueeze.input[1]) != singleton_axis
+        ):
+            continue
+
+        post_mul_squeeze_users = consumers.get(mul.output[0], [])
+        if (
+            len(post_mul_squeeze_users) != 1
+            or post_mul_squeeze_users[0].op_type != "Squeeze"
+            or len(post_mul_squeeze_users[0].input) < 2
+            or len(post_mul_squeeze_users[0].output) != 1
+            or int_initializer(post_mul_squeeze_users[0].input[1]) != singleton_axis
+        ):
+            continue
+        post_mul_squeeze = post_mul_squeeze_users[0]
+        output_gemm_users = consumers.get(post_mul_squeeze.output[0], [])
+        if len(output_gemm_users) != 1 or output_gemm_users[0].op_type != "Gemm":
+            continue
+        output_gemm = output_gemm_users[0]
+        post_gemm_unsqueeze_users = consumers.get(output_gemm.output[0], [])
+        if (
+            len(post_gemm_unsqueeze_users) != 1
+            or post_gemm_unsqueeze_users[0].op_type != "Unsqueeze"
+            or len(post_gemm_unsqueeze_users[0].input) < 2
+            or len(post_gemm_unsqueeze_users[0].output) != 1
+            or int_initializer(post_gemm_unsqueeze_users[0].input[1]) != singleton_axis
+        ):
+            continue
+        post_gemm_unsqueeze = post_gemm_unsqueeze_users[0]
+        residual_add_users = consumers.get(post_gemm_unsqueeze.output[0], [])
+        if (
+            len(residual_add_users) != 1
+            or residual_add_users[0].op_type != "Add"
+            or len(residual_add_users[0].input) != 2
+            or len(residual_add_users[0].output) != 1
+        ):
+            continue
+        residual_add = residual_add_users[0]
+        following_users = consumers.get(residual_add.output[0], [])
+        following_transpose: onnx.NodeProto | None = None
+        remove_post_add_unsqueeze: onnx.NodeProto | None = None
+        restored_axes: tuple[int, ...] | None = None
+        if (
+            len(following_users) == 1
+            and following_users[0].op_type == "Transpose"
+            and tuple(int(item) for item in attr_value(following_users[0], "perm", ()))
+            == (1, 0, 2)
+        ):
+            following_transpose = following_users[0]
+            restored_axes = (1 - axis,)
+        elif (
+            len(following_users) == 1
+            and following_users[0].op_type == "Unsqueeze"
+            and len(following_users[0].input) >= 2
+            and int_initializer(following_users[0].input[1]) == (0,)
+        ):
+            post_add_unsqueeze = following_users[0]
+            post_add_transpose_users = consumers.get(post_add_unsqueeze.output[0], [])
+            if (
+                axis == 1
+                and len(post_add_transpose_users) == 1
+                and post_add_transpose_users[0].op_type == "Transpose"
+                and tuple(
+                    int(item)
+                    for item in attr_value(post_add_transpose_users[0], "perm", ())
+                )
+                == (0, 2, 1, 3)
+            ):
+                following_transpose = post_add_transpose_users[0]
+                remove_post_add_unsqueeze = post_add_unsqueeze
+                restored_axes = (0, 1)
+            elif (
+                axis == 1
+                and len(post_add_transpose_users) == 1
+                and post_add_transpose_users[0].op_type == "Slice"
+            ):
+                following_transpose = post_add_unsqueeze
+                restored_axes = (0, 2)
+        if following_transpose is None or restored_axes is None:
+            continue
+        residual_inputs = [
+            name for name in residual_add.input if name != post_gemm_unsqueeze.output[0]
+        ]
+        if len(residual_inputs) != 1:
+            continue
+        residual_input = residual_inputs[0]
+
+        quick_gelu.input[0] = quick_input_unsqueeze.input[0]
+        for index, input_name in enumerate(mul.input):
+            if input_name == gate_input_unsqueeze.output[0]:
+                mul.input[index] = gate_input_unsqueeze.input[0]
+        output_gemm.input[0] = mul.output[0]
+
+        residual_rank2 = f"{node_key(residual_add)}__swiglu_rank2_residual"
+        insert_before[node_key(residual_add)] = onnx.helper.make_node(
+            "Squeeze",
+            [residual_input, axis_initializer(axis)],
+            [residual_rank2],
+            name=f"{node_key(residual_add)}__swiglu_rank2_residual_squeeze",
+        )
+        for index, input_name in enumerate(residual_add.input):
+            if input_name == residual_input:
+                residual_add.input[index] = residual_rank2
+            elif input_name == post_gemm_unsqueeze.output[0]:
+                residual_add.input[index] = output_gemm.output[0]
+
+        following_transpose.op_type = "Unsqueeze"
+        del following_transpose.attribute[:]
+        del following_transpose.input[:]
+        following_transpose.input.extend(
+            [residual_add.output[0], axes_initializer(restored_axes)]
+        )
+
+        remove_nodes.update(
+            {
+                node_key(quick_input_unsqueeze),
+                node_key(gate_input_unsqueeze),
+                node_key(post_mul_squeeze),
+                node_key(post_gemm_unsqueeze),
+            }
+        )
+        if remove_post_add_unsqueeze is not None:
+            remove_nodes.add(node_key(remove_post_add_unsqueeze))
+            stale_value_info.update(remove_post_add_unsqueeze.output)
+        stale_value_info.update(
+            {
+                quick_input_unsqueeze.output[0],
+                gate_input_unsqueeze.output[0],
+                post_mul_squeeze.output[0],
+                post_gemm_unsqueeze.output[0],
+                quick_gelu.output[0],
+                mul.output[0],
+                residual_add.output[0],
+                residual_rank2,
+            }
+        )
+        rewrite_count += 1
+        if len(rewrites) < 12:
+            rewrites.append(
+                {
+                    "quick_gelu": quick_gelu.name,
+                    "removed_unsqueezes": [
+                        quick_input_unsqueeze.name,
+                        gate_input_unsqueeze.name,
+                        post_gemm_unsqueeze.name,
+                    ],
+                    "removed_squeeze": post_mul_squeeze.name,
+                    "residual_add": residual_add.name,
+                    "removed_post_add_unsqueeze": (
+                        remove_post_add_unsqueeze.name
+                        if remove_post_add_unsqueeze is not None
+                        else None
+                    ),
+                    "restored_axes": list(restored_axes),
+                }
+            )
+
+    if not remove_nodes:
+        return {
+            "enabled": True,
+            "tool": "custom_swiglu_rank2_island_rewrite",
+            "reason": "no eligible rank-3 SwiGLU singleton islands found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": 0,
+            "rewrite_examples": [],
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in remove_nodes:
+            continue
+        if key in insert_before:
+            rewritten_nodes.append(insert_before[key])
+        rewritten_nodes.append(node)
+
+    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    kept_initializers = [
+        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
+    ]
+    kept_value_info = [
+        value for value in model.graph.value_info if value.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.initializer[:]
+    model.graph.initializer.extend(kept_initializers)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    tracked_ops = ("Unsqueeze", "Squeeze", "Transpose", "QuickGelu", "Mul", "Gemm")
+    return {
+        "enabled": True,
+        "tool": "custom_swiglu_rank2_island_rewrite",
+        "reason": (
+            "Keep singleton-axis SwiGLU activation islands rank-2 between the "
+            "packed SwiGLU split and output Gemm, then restore the singleton axis "
+            "at the residual boundary. This is exact because the removed axes are "
+            "singleton and QuickGelu/Mul operate elementwise."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrites": rewrite_count,
+        "rewrite_examples": rewrites,
+    }
+
+
 def _single_consumer(
     consumers: dict[str, list[onnx.NodeProto]],
     value_name: str,
@@ -5868,20 +7127,16 @@ def main() -> None:
         context_noise: jax.Array,
         actions: jax.Array,
         position_index: jax.Array,
-        k_cache_0: jax.Array,
-        k_cache_1: jax.Array,
-        k_cache_2: jax.Array,
-        k_cache_3: jax.Array,
-        k_cache_4: jax.Array,
-        k_cache_5: jax.Array,
-        v_cache_0: jax.Array,
-        v_cache_1: jax.Array,
-        v_cache_2: jax.Array,
-        v_cache_3: jax.Array,
-        v_cache_4: jax.Array,
-        v_cache_5: jax.Array,
-        cache_length: jax.Array,
+        *cache_args: jax.Array,
     ) -> tuple[jax.Array, jax.Array, tuple[jax.Array, ...], tuple[jax.Array, ...], jax.Array]:
+        if len(cache_args) < 3 or len(cache_args) % 2 != 1:
+            raise ValueError(
+                "Layer-cache sample export expects K caches, V caches, and cache_length."
+            )
+        cache_count = (len(cache_args) - 1) // 2
+        k_caches = tuple(cache_args[:cache_count])
+        v_caches = tuple(cache_args[cache_count:-1])
+        cache_length = cache_args[-1]
         return onnx_apply_dynamics_cached_sample_step_append_context_layer_cache(
             dynamics_variables,
             dynamics_cfg,
@@ -5889,8 +7144,8 @@ def main() -> None:
             context_noise,
             actions,
             position_index,
-            (k_cache_0, k_cache_1, k_cache_2, k_cache_3, k_cache_4, k_cache_5),
-            (v_cache_0, v_cache_1, v_cache_2, v_cache_3, v_cache_4, v_cache_5),
+            k_caches,
+            v_caches,
             cache_length,
             context_tau=args.context_tau,
             sample_steps=args.sample_steps,
@@ -5945,11 +7200,6 @@ def main() -> None:
             ),
         }
         layer_count = dyn_shapes.temporal_blocks
-        if layer_count != 6:
-            raise ValueError(
-                "Layer-cache export currently uses an explicit 6-layer ONNX ABI; "
-                f"got temporal_blocks={layer_count}."
-            )
         k_layer_names = tuple(f"k_cache_{i}" for i in range(layer_count))
         v_layer_names = tuple(f"v_cache_{i}" for i in range(layer_count))
         candidate_k_layer_names = tuple(f"candidate_k_cache_{i}" for i in range(layer_count))
@@ -6418,6 +7668,10 @@ def main() -> None:
         name: rewrite_packed_qkv_split_partial_heads_for_webgpu(path)
         for name, path in exported_paths.items()
     }
+    q_head_split_gather_rewrite = {
+        name: rewrite_q_head_split_gather_for_webgpu(path)
+        for name, path in exported_paths.items()
+    }
     slide_static_cache_rewrite = {
         name: rewrite_slide_static_cache_ops_for_webgpu(path)
         if name
@@ -6477,6 +7731,10 @@ def main() -> None:
         name: fold_attention_scale_into_query_norm_for_webgpu(
             path, enabled=not args.skip_attention_scale_folding
         )
+        for name, path in exported_paths.items()
+    }
+    zero_softmax_bias_add_prune = {
+        name: remove_zero_softmax_bias_adds_for_webgpu(path)
         for name, path in exported_paths.items()
     }
     spatial_qk_head_layout_rewrite = {
@@ -7604,6 +8862,7 @@ def main() -> None:
         entry["packed_qkv_partial_head_split_rewrite"] = (
             packed_qkv_partial_head_split_rewrite[entry["name"]]
         )
+        entry["q_head_split_gather_rewrite"] = q_head_split_gather_rewrite[entry["name"]]
         entry["skip_simplified_layer_norm_rewrite"] = skip_simplified_layer_norm_rewrite[
             entry["name"]
         ]
@@ -7615,6 +8874,7 @@ def main() -> None:
             entry["name"]
         ]
         entry["attention_scale_folding"] = attention_scale_folding[entry["name"]]
+        entry["zero_softmax_bias_add_prune"] = zero_softmax_bias_add_prune[entry["name"]]
         entry["spatial_qk_head_layout_rewrite"] = spatial_qk_head_layout_rewrite[
             entry["name"]
         ]
@@ -7631,6 +8891,7 @@ def main() -> None:
             "sample_cache_policy": "sample_then_append_generated_context",
             "preferred_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
             "preferred_prefill_export": DYNAMICS_CACHED_PREFILL_NAME,
+            "preferred_decoder_export": TOKENIZER_DECODER_STEP_NAME,
             "decode_z": {
                 "source": "final_z_after_velocity_update",
                 "dynamics_shape": list(dyn_shapes.step_z),
@@ -7679,6 +8940,7 @@ def main() -> None:
                 not args.skip_unsqueeze_transpose_squeeze_rewrite
             ),
             "attention_scale_folding": not args.skip_attention_scale_folding,
+            "zero_softmax_bias_add_prune": True,
             "spatial_qk_direct_bhsd": not args.skip_spatial_qk_head_layout_rewrite,
             "temporal_attention_bhsd": not args.skip_temporal_attention_bhsd_rewrite,
             "steady_state_entry_final_z_only": args.export_cached,

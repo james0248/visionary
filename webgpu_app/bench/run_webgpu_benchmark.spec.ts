@@ -47,14 +47,47 @@ async function runBenchmark(
   if (process.env.WEBGPU_BENCHMARK_GRAPH_CAPTURE === '1' || options.graphCapture) {
     params.set('graphCapture', 'true');
   }
+  if (process.env.WEBGPU_BENCHMARK_DYNAMICS_GRAPH_CAPTURE) {
+    params.set('dynamicsGraphCapture', process.env.WEBGPU_BENCHMARK_DYNAMICS_GRAPH_CAPTURE);
+  }
+  if (process.env.WEBGPU_BENCHMARK_DECODER_GRAPH_CAPTURE) {
+    params.set('decoderGraphCapture', process.env.WEBGPU_BENCHMARK_DECODER_GRAPH_CAPTURE);
+  }
   if (process.env.WEBGPU_BENCHMARK_PREFERRED_LAYOUT) {
     params.set('preferredLayout', process.env.WEBGPU_BENCHMARK_PREFERRED_LAYOUT);
+  }
+  if (process.env.WEBGPU_BENCHMARK_GRAPH_OPTIMIZATION_LEVEL) {
+    params.set('graphOptimizationLevel', process.env.WEBGPU_BENCHMARK_GRAPH_OPTIMIZATION_LEVEL);
   }
   if (process.env.WEBGPU_BENCHMARK_PREFILL_ARTIFACT) {
     params.set('prefillArtifact', process.env.WEBGPU_BENCHMARK_PREFILL_ARTIFACT);
   }
   if (process.env.WEBGPU_BENCHMARK_STEP_ARTIFACT) {
     params.set('stepArtifact', process.env.WEBGPU_BENCHMARK_STEP_ARTIFACT);
+  }
+  if (process.env.WEBGPU_BENCHMARK_ASSET_BASE) {
+    params.set('assetBase', process.env.WEBGPU_BENCHMARK_ASSET_BASE);
+  }
+  if (process.env.WEBGPU_BENCHMARK_BROWSER_PROFILE) {
+    params.set('browserProfile', process.env.WEBGPU_BENCHMARK_BROWSER_PROFILE);
+  }
+  if (process.env.WEBGPU_BENCHMARK_PROFILING) {
+    params.set('profiling', process.env.WEBGPU_BENCHMARK_PROFILING);
+  }
+  if (process.env.WEBGPU_BENCHMARK_PROFILING_REQUIRED) {
+    params.set('profilingRequired', process.env.WEBGPU_BENCHMARK_PROFILING_REQUIRED);
+  }
+  if (process.env.WEBGPU_BENCHMARK_PROFILING_DRAIN_MS) {
+    params.set('profilingDrainMs', process.env.WEBGPU_BENCHMARK_PROFILING_DRAIN_MS);
+  }
+  if (process.env.WEBGPU_BENCHMARK_PROFILING_TOP_K) {
+    params.set('profilingTopK', process.env.WEBGPU_BENCHMARK_PROFILING_TOP_K);
+  }
+  if (process.env.WEBGPU_BENCHMARK_ORT_MODULE) {
+    params.set('ortModule', process.env.WEBGPU_BENCHMARK_ORT_MODULE);
+  }
+  if (process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS) {
+    params.set('wasmNumThreads', process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS);
   }
   await page.goto(`/webgpu_app/bench/index.html?${params.toString()}`);
   try {
@@ -115,17 +148,33 @@ test('webgpu demo streaming benchmark', async ({ page }) => {
   ]);
   expect(result.results.find((entry) => entry.mode === 'streaming_frame').timing.steady_state_fps)
     .toBeGreaterThan(0);
+  expect(
+    result.results.find((entry) => entry.mode === 'streaming_frame').output_validation,
+  ).toMatchObject({ status: 'passed' });
 });
 
 test('webgpu demo streaming benchmark graph capture @graph-capture', async ({ page }) => {
   const result = await runBenchmark(page, 'streaming', { graphCapture: true });
   await writeResult(result, GRAPH_CAPTURE_RESULT_PATH);
-  expect(['passed', 'blocked'], result.message ?? '').toContain(result.status);
+  expect(['passed', 'blocked', 'failed'], result.message ?? '').toContain(result.status);
   expect(result.schema_version).toBe(2);
 
   if (result.status === 'blocked') return;
+  if (result.status === 'failed') {
+    expect(result.message).toContain('Generated frame output validation failed');
+    expect(
+      result.results.find((entry) => entry.mode === 'streaming_frame').output_validation,
+    ).toMatchObject({
+      status: 'failed',
+      unique_hashes: 1,
+    });
+    return;
+  }
 
   expect(result.results.find((entry) => entry.mode === 'cached_step').graph_capture).toBe(true);
+  expect(
+    result.results.find((entry) => entry.mode === 'streaming_frame').output_validation,
+  ).toMatchObject({ status: 'passed' });
   expect(
     result.results.find((entry) => entry.mode === 'streaming_frame').timing
     .steady_state_after_graph_capture_warmup_fps,

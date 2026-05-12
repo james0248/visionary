@@ -122,13 +122,36 @@ select {
     inset 0 0 36px rgba(0, 0, 0, 0.95);
 }
 
-canvas {
+.screen-bezel > canvas,
+.screen-bezel > .frame-fallback,
+.screen-bezel > .frame-preview {
+  grid-area: 1 / 1;
+}
+
+canvas,
+.frame-fallback,
+.frame-preview {
   width: auto;
   height: min(100%, 82svh);
   max-width: 100%;
   max-height: 100%;
   image-rendering: pixelated;
   background: #000;
+}
+
+.frame-fallback,
+.frame-preview {
+  display: block;
+}
+
+.frame-fallback[hidden],
+.frame-preview[hidden] {
+  display: none;
+}
+
+.frame-preview {
+  z-index: 1;
+  pointer-events: none;
 }
 
 .panel {
@@ -378,7 +401,8 @@ select option {
     border-width: 10px;
   }
 
-  canvas {
+  canvas,
+  .frame-fallback {
     width: min(92vw, 680px);
     height: auto;
   }

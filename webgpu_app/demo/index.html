@@ -37,11 +37,11 @@
 
           <div class="action-grid" aria-label="Action controls">
             <div></div>
-            <button id="key-fire" class="key-button fire-button" type="button">Fire</button>
+            <button id="key-fire" class="key-button fire-button" type="button" data-action-id="1">Fire</button>
             <div></div>
-            <button id="key-left" class="key-button" type="button">←</button>
-            <button id="key-noop" class="key-button" type="button">•</button>
-            <button id="key-right" class="key-button" type="button">→</button>
+            <button id="key-left" class="key-button" type="button" data-action-id="3">←</button>
+            <button id="key-noop" class="key-button" type="button" data-action-id="0">•</button>
+            <button id="key-right" class="key-button" type="button" data-action-id="2">→</button>
           </div>
         </div>
 
@@ -97,7 +97,7 @@
       id="visionary-demo-main"
       type="module"
       src="./main.js"
-      data-asset-base="/webgpu_app/assets"
+      data-asset-base="/webgpu_app/dream_arcade_assets/breakout"
       data-ort-module="/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs"
       data-ort-wasm-base="/node_modules/onnxruntime-web/dist/"
     ></script>

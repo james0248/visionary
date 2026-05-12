@@ -27,14 +27,19 @@ for (let index = 2; index < process.argv.length; index += 1) {
 
 const outDir = resolve(args.get('--out') ?? 'webgpu_app/dist');
 const copyAssets = args.get('--copy-assets') === 'true';
-const assetBase = args.get('--asset-base') ?? (copyAssets ? './assets' : '/webgpu_app/assets');
+const assetBase =
+  args.get('--asset-base') ??
+  (copyAssets ? './assets' : '/webgpu_app/dream_arcade_assets/breakout');
+const pacmanAssetBase =
+  args.get('--pacman-asset-base') ??
+  (copyAssets ? './assets/pacman' : siblingAssetBase(assetBase, 'breakout', 'pacman'));
 const ortModule =
   args.get('--ort-module') ?? './vendor/onnxruntime-web/ort.webgpu.bundle.min.mjs';
 const ortWasmBase = args.get('--ort-wasm-base') ?? './vendor/onnxruntime-web/';
 
 const demoDir = resolve('webgpu_app/demo');
 const ortDistDir = resolve('node_modules/onnxruntime-web/dist');
-const assetDir = resolve('webgpu_app/assets');
+const assetDir = resolve(args.get('--asset-dir') ?? 'webgpu_app/dream_arcade_assets/breakout');
 const baseAssets = [
   'breakout_onnx_manifest.json',
   'breakout_demo_context.json',
@@ -49,10 +54,27 @@ function demoModelAssets() {
   const manifestPath = join(assetDir, 'breakout_onnx_manifest.json');
   if (!existsSync(manifestPath)) return [];
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  const preferredStep = manifest.demo_generation?.preferred_step_export;
-  if (!preferredStep) return [];
-  const exportSpec = manifest.exports?.find((entry) => entry.name === preferredStep);
-  return exportSpec?.path ? [exportSpec.path] : [];
+  const preferredExports = [
+    manifest.demo_generation?.preferred_step_export,
+    manifest.demo_generation?.preferred_full_cache_step_export,
+    'breakout_tokenizer_decoder_b1_t1',
+    'breakout_tokenizer_decode_z_b1_t1',
+  ].filter(Boolean);
+  return [
+    ...new Set(
+      preferredExports
+        .map((name) => manifest.exports?.find((entry) => entry.name === name)?.path)
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function siblingAssetBase(base: string, fromName: string, toName: string) {
+  const normalized = base.replace(/\/$/, '');
+  if (normalized.endsWith(`/${fromName}`)) {
+    return `${normalized.slice(0, -fromName.length)}${toName}`;
+  }
+  return `${normalized}/${toName}`;
 }
 
 rmSync(outDir, { recursive: true, force: true });
@@ -63,12 +85,16 @@ for (const file of ['styles.css']) {
 }
 await buildDemoBrowserBundle(outDir);
 
-let html = readFileSync(join(demoDir, 'index.html'), 'utf8');
-html = html
-  .replace(/data-asset-base="[^"]*"/, `data-asset-base="${assetBase}"`)
-  .replace(/data-ort-module="[^"]*"/, `data-ort-module="${ortModule}"`)
-  .replace(/data-ort-wasm-base="[^"]*"/, `data-ort-wasm-base="${ortWasmBase}"`);
-writeFileSync(join(outDir, 'index.html'), html);
+for (const htmlFile of ['index.html', 'pacman.html']) {
+  if (!existsSync(join(demoDir, htmlFile))) continue;
+  const pageAssetBase = htmlFile === 'pacman.html' ? pacmanAssetBase : assetBase;
+  let html = readFileSync(join(demoDir, htmlFile), 'utf8');
+  html = html
+    .replace(/data-asset-base="[^"]*"/, `data-asset-base="${pageAssetBase}"`)
+    .replace(/data-ort-module="[^"]*"/, `data-ort-module="${ortModule}"`)
+    .replace(/data-ort-wasm-base="[^"]*"/, `data-ort-wasm-base="${ortWasmBase}"`);
+  writeFileSync(join(outDir, htmlFile), html);
+}
 
 const vendorDir = join(outDir, 'vendor/onnxruntime-web');
 mkdirSync(vendorDir, { recursive: true });

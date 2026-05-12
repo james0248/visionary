@@ -1,12 +1,48 @@
 // @ts-nocheck
 export {};
 
-const ASSET_DIR = '/webgpu_app/assets';
-const MANIFEST_URL = `${ASSET_DIR}/breakout_onnx_manifest.json`;
-const ORT_MODULE_URL = '/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs';
+let ASSET_DIR = '/webgpu_app/dream_arcade_assets/breakout';
+let MANIFEST_URL = `${ASSET_DIR}/breakout_onnx_manifest.json`;
+const moduleParams = new URLSearchParams(window.location.search);
+const ORT_MODULE_URL =
+  moduleParams.get('ortModule') ?? '/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs';
+const CAPTURE_CONSOLE = ['1', 'true', 'yes', 'on'].includes(
+  (moduleParams.get('captureConsole') ?? '').toLowerCase(),
+);
+const capturedConsoleMessages = [];
+if (CAPTURE_CONSOLE) {
+  for (const level of ['log', 'warn', 'error']) {
+    const original = console[level].bind(console);
+    console[level] = (...args) => {
+      capturedConsoleMessages.push({
+        level,
+        text: args
+          .map((arg) => {
+            if (typeof arg === 'string') return arg;
+            try {
+              return JSON.stringify(arg);
+            } catch {
+              return String(arg);
+            }
+          })
+          .join(' '),
+      });
+      original(...args);
+    };
+  }
+}
 const ort = await import(ORT_MODULE_URL);
 ort.env.wasm ??= {};
 ort.env.wasm.wasmPaths = '/node_modules/onnxruntime-web/dist/';
+const wasmNumThreadsParam = moduleParams.get('wasmNumThreads');
+const parsedWasmNumThreads = Number(wasmNumThreadsParam);
+const WASM_NUM_THREADS =
+  wasmNumThreadsParam == null || !Number.isInteger(parsedWasmNumThreads) || parsedWasmNumThreads <= 0
+    ? null
+    : parsedWasmNumThreads;
+if (WASM_NUM_THREADS != null) {
+  ort.env.wasm.numThreads = WASM_NUM_THREADS;
+}
 ort.env.webgpu ??= {};
 ort.env.webgpu.powerPreference = 'high-performance';
 const DEFAULT_TIMED_RUNS = 64;
@@ -15,6 +51,28 @@ const SAMPLE_STEPS = 2;
 const SAMPLE_STEP_LEVEL = 1;
 const CONTEXT_STEP_LEVEL = 5;
 const CONTEXT_TAU_EFFECTIVE = 29 / 32;
+const SAFARI_GRAPH_CAPTURE_STEP_ARTIFACT =
+  'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2_final_z_add_zero_safari_trial';
+const SAFARI_GRAPH_CAPTURE_EXPECTED_FRAME_HASHES = [
+  '8b011283',
+  'e86c61dc',
+  'ab3ef873',
+  '54cc2b94',
+  '960b4a73',
+  'ebcf25cd',
+  'c3204639',
+  '9bdf2a06',
+];
+const SAFARI_GRAPH_CAPTURE_EXPECTED_LATENT_HASHES = [
+  'f90f159f',
+  'a2d64ac5',
+  '577bdd02',
+  'edef5069',
+  '05f7a366',
+  'ef6586cf',
+  'cdbfd640',
+  '2579363d',
+];
 const DEFAULT_CONFIG = {
   mode: 'streaming',
   provider: 'webgpu',
@@ -23,14 +81,40 @@ const DEFAULT_CONFIG = {
   requireHardwareGpu: true,
   debugStats: false,
   graphCapture: false,
+  dynamicsGraphCapture: null,
+  decoderGraphCapture: null,
   preferredLayout: null,
+  graphOptimizationLevel: 'basic',
   prefillArtifact: null,
-  stepArtifact: null,
+  stepArtifact: 'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2',
+  assetBase: ASSET_DIR,
+  browserProfile: 'auto',
+  profiling: false,
+  profilingMode: 'default',
+  profilingRequired: false,
+  profilingDrainMs: 100,
+  profilingTopK: 20,
+  ortDebug: false,
+  ortLogLevel: null,
+  captureConsole: CAPTURE_CONSOLE,
+  graphCaptureFreshInput: false,
+  graphCaptureFinalZOnly: false,
+  primeGraphCapture: false,
+  preallocateStepOutputs: true,
+  preallocateDecoderOutputs: true,
+  ortModule: ORT_MODULE_URL,
+  wasmNumThreads: WASM_NUM_THREADS,
+  validateOutput: true,
+  validationFrames: 6,
 };
 const REQUIRED_ARTIFACTS = {
   prefill: ['breakout_dynamics_prefill_cached_b1_t64'],
-  step: ['breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2'],
-  decoder: ['breakout_tokenizer_decode_z_b1_t1'],
+  step: [
+    'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2',
+    'breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2',
+    'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2',
+  ],
+  decoder: ['breakout_tokenizer_decoder_b1_t1', 'breakout_tokenizer_decode_z_b1_t1'],
 };
 
 function setStatus(message) {
@@ -40,18 +124,202 @@ function setStatus(message) {
 
 function parseConfig() {
   const params = new URLSearchParams(window.location.search);
+  const booleanParam = (name, fallback) => {
+    const value = params.get(name);
+    if (value == null) return fallback;
+    return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+  };
+  const detectedBrowserProfile = detectBrowserProfile(navigator.userAgent);
+  const requestedBrowserProfile = params.get('browserProfile') ?? DEFAULT_CONFIG.browserProfile;
+  const browserProfile =
+    requestedBrowserProfile === 'auto' ? detectedBrowserProfile : requestedBrowserProfile;
+  const browserDefaults = browserProfileDefaults(browserProfile);
+  const graphCapture = booleanParam(
+    'graphCapture',
+    browserDefaults.graphCapture ?? DEFAULT_CONFIG.graphCapture,
+  );
   return {
     mode: params.get('mode') ?? DEFAULT_CONFIG.mode,
     provider: params.get('provider') ?? DEFAULT_CONFIG.provider,
-    warmupRuns: Number(params.get('warmupRuns') ?? DEFAULT_CONFIG.warmupRuns),
+    warmupRuns: Number(
+      params.get('warmupRuns') ?? browserDefaults.warmupRuns ?? DEFAULT_CONFIG.warmupRuns,
+    ),
     timedRuns: Number(params.get('timedRuns') ?? DEFAULT_CONFIG.timedRuns),
     requireHardwareGpu:
       (params.get('requireHardwareGpu') ?? String(DEFAULT_CONFIG.requireHardwareGpu)) === 'true',
     debugStats: (params.get('debugStats') ?? String(DEFAULT_CONFIG.debugStats)) === 'true',
-    graphCapture: (params.get('graphCapture') ?? String(DEFAULT_CONFIG.graphCapture)) === 'true',
+    graphCapture,
+    dynamicsGraphCapture: booleanParam(
+      'dynamicsGraphCapture',
+      browserDefaults.dynamicsGraphCapture ?? DEFAULT_CONFIG.dynamicsGraphCapture ?? graphCapture,
+    ),
+    decoderGraphCapture: booleanParam(
+      'decoderGraphCapture',
+      browserDefaults.decoderGraphCapture ?? DEFAULT_CONFIG.decoderGraphCapture ?? graphCapture,
+    ),
     preferredLayout: params.get('preferredLayout') ?? DEFAULT_CONFIG.preferredLayout,
+    graphOptimizationLevel:
+      params.get('graphOptimizationLevel') ??
+      browserDefaults.graphOptimizationLevel ??
+      DEFAULT_CONFIG.graphOptimizationLevel,
     prefillArtifact: params.get('prefillArtifact') ?? DEFAULT_CONFIG.prefillArtifact,
-    stepArtifact: params.get('stepArtifact') ?? DEFAULT_CONFIG.stepArtifact,
+    stepArtifact:
+      params.get('stepArtifact') ?? browserDefaults.stepArtifact ?? DEFAULT_CONFIG.stepArtifact,
+    assetBase: params.get('assetBase') ?? DEFAULT_CONFIG.assetBase,
+    browserProfile,
+    detectedBrowserProfile,
+    profiling: booleanParam('profiling', DEFAULT_CONFIG.profiling),
+    profilingMode: params.get('profilingMode') ?? DEFAULT_CONFIG.profilingMode,
+    profilingRequired: booleanParam('profilingRequired', DEFAULT_CONFIG.profilingRequired),
+    profilingDrainMs: Number(params.get('profilingDrainMs') ?? DEFAULT_CONFIG.profilingDrainMs),
+    profilingTopK: Number(params.get('profilingTopK') ?? DEFAULT_CONFIG.profilingTopK),
+    ortDebug: booleanParam('ortDebug', DEFAULT_CONFIG.ortDebug),
+    ortLogLevel: params.get('ortLogLevel') ?? DEFAULT_CONFIG.ortLogLevel,
+    captureConsole: CAPTURE_CONSOLE,
+    graphCaptureFreshInput: booleanParam(
+      'graphCaptureFreshInput',
+      DEFAULT_CONFIG.graphCaptureFreshInput,
+    ),
+    graphCaptureFinalZOnly: booleanParam(
+      'graphCaptureFinalZOnly',
+      DEFAULT_CONFIG.graphCaptureFinalZOnly,
+    ),
+    primeGraphCapture: booleanParam(
+      'primeGraphCapture',
+      browserDefaults.primeGraphCapture ?? DEFAULT_CONFIG.primeGraphCapture,
+    ),
+    preallocateStepOutputs: booleanParam(
+      'preallocateStepOutputs',
+      DEFAULT_CONFIG.preallocateStepOutputs,
+    ),
+    preallocateDecoderOutputs: booleanParam(
+      'preallocateDecoderOutputs',
+      DEFAULT_CONFIG.preallocateDecoderOutputs,
+    ),
+    ortModule: ORT_MODULE_URL,
+    wasmNumThreads: WASM_NUM_THREADS,
+    validateOutput: booleanParam('validateOutput', DEFAULT_CONFIG.validateOutput),
+    validationFrames: Number(params.get('validationFrames') ?? DEFAULT_CONFIG.validationFrames),
+  };
+}
+
+function detectBrowserProfile(userAgent) {
+  if (/Version\/[\d.]+ Safari\//.test(userAgent) && !/(Chrome|Chromium|CriOS|Edg)\//.test(userAgent)) {
+    return 'safari';
+  }
+  if (/(Chrome|Chromium|CriOS|Edg)\//.test(userAgent)) return 'chromium';
+  if (/Firefox\//.test(userAgent)) return 'firefox';
+  return 'unknown';
+}
+
+function browserProfileDefaults(browserProfile) {
+  if (browserProfile === 'safari') {
+    return {
+      graphCapture: true,
+      dynamicsGraphCapture: true,
+      decoderGraphCapture: true,
+      graphOptimizationLevel: 'basic',
+      stepArtifact: SAFARI_GRAPH_CAPTURE_STEP_ARTIFACT,
+      warmupRuns: 0,
+      primeGraphCapture: false,
+    };
+  }
+  return {};
+}
+
+function configureAssetBase(assetBase) {
+  ASSET_DIR = assetBase.replace(/\/$/, '');
+  MANIFEST_URL = `${ASSET_DIR}/breakout_onnx_manifest.json`;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function setupWebgpuProfiling(config) {
+  if (config.provider !== 'webgpu' || !config.profiling) {
+    return {
+      enabled: false,
+      events: [],
+      reason: config.provider !== 'webgpu' ? 'provider is not webgpu' : 'profiling query param is false',
+    };
+  }
+  const events = [];
+  ort.env.webgpu ??= {};
+  ort.env.webgpu.profiling ??= {};
+  ort.env.webgpu.profiling.mode = config.profilingMode;
+  ort.env.webgpu.profiling.ondata = (data) => {
+    events.push(data);
+  };
+  return {
+    enabled: true,
+    events,
+    source: 'ort.env.webgpu.profiling.ondata',
+  };
+}
+
+function setupOrtDiagnostics(config) {
+  if (config.ortDebug) {
+    ort.env.debug = true;
+  }
+  if (config.ortLogLevel) {
+    ort.env.logLevel = config.ortLogLevel;
+  }
+}
+
+function summarizeProfiling(profiler, config) {
+  if (!profiler.enabled) {
+    return {
+      enabled: false,
+      event_count: 0,
+      reason: profiler.reason,
+      source: profiler.source ?? null,
+    };
+  }
+
+  const groups = new Map();
+  for (const event of profiler.events) {
+    const durationMs = Math.max(0, (event.endTime - event.startTime) / 1_000_000);
+    const key = [
+      event.programName ?? '<unknown program>',
+      event.kernelName ?? '<unknown kernel>',
+      event.kernelType ?? '<unknown type>',
+    ].join(' | ');
+    const current = groups.get(key) ?? {
+      program_name: event.programName ?? null,
+      kernel_name: event.kernelName ?? null,
+      kernel_type: event.kernelType ?? null,
+      count: 0,
+      total_ms: 0,
+      min_ms: Number.POSITIVE_INFINITY,
+      max_ms: 0,
+      inputs: event.inputsMetadata ?? [],
+      outputs: event.outputsMetadata ?? [],
+    };
+    current.count += 1;
+    current.total_ms += durationMs;
+    current.min_ms = Math.min(current.min_ms, durationMs);
+    current.max_ms = Math.max(current.max_ms, durationMs);
+    groups.set(key, current);
+  }
+
+  const topK = Math.max(1, Math.floor(config.profilingTopK || DEFAULT_CONFIG.profilingTopK));
+  const topPrograms = [...groups.values()]
+    .map((entry) => ({
+      ...entry,
+      mean_ms: entry.count > 0 ? entry.total_ms / entry.count : 0,
+      min_ms: Number.isFinite(entry.min_ms) ? entry.min_ms : 0,
+    }))
+    .sort((a, b) => b.total_ms - a.total_ms)
+    .slice(0, topK);
+
+  return {
+    enabled: true,
+    event_count: profiler.events.length,
+    source: profiler.source,
+    top_programs: topPrograms,
   };
 }
 
@@ -288,7 +556,9 @@ function summarizeAfter(samples, dropCount) {
 }
 
 function summarizeGraphCaptureSteady(samples, config) {
-  return config.graphCapture ? summarizeAfter(samples, GRAPH_CAPTURE_STEADY_STATE_DROP) : null;
+  return config.dynamicsGraphCapture || config.decoderGraphCapture
+    ? summarizeAfter(samples, GRAPH_CAPTURE_STEADY_STATE_DROP)
+    : null;
 }
 
 async function timeAsync(fn) {
@@ -342,6 +612,106 @@ function tensorSummary(tensor) {
   };
 }
 
+async function readGpuTensorBytes(device, tensor) {
+  if (!device || !tensor?.gpuBuffer) {
+    throw new Error(`Cannot validate GPU tensor ${tensor?.dims?.join('x') ?? '<unknown>'}: GPUBuffer is unavailable.`);
+  }
+  const byteLength = tensorByteLength(tensor.type, tensor.dims);
+  const paddedByteLength = Math.max(16, 4 * Math.ceil(byteLength / 4));
+  const readback = device.createBuffer({
+    size: paddedByteLength,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const encoder = device.createCommandEncoder();
+  encoder.copyBufferToBuffer(tensor.gpuBuffer, 0, readback, 0, byteLength);
+  device.queue.submit([encoder.finish()]);
+  await readback.mapAsync(GPUMapMode.READ, 0, paddedByteLength);
+  const bytes = new Uint8Array(readback.getMappedRange(0, paddedByteLength)).slice(0, byteLength);
+  readback.destroy();
+  return bytes;
+}
+
+async function tensorDataForHash(tensor, device = null) {
+  if (tensor.location && tensor.location !== 'cpu' && tensor.location !== 'cpu-pinned') {
+    if (device && tensor.gpuBuffer) {
+      return readGpuTensorBytes(device, tensor);
+    }
+    if (typeof tensor.getData !== 'function') {
+      return readGpuTensorBytes(device, tensor);
+    }
+    return tensor.getData(false);
+  }
+  return tensor.data;
+}
+
+async function tensorContentHash(tensor, device = null) {
+  const values = await tensorDataForHash(tensor, device);
+  const bytes =
+    values instanceof Uint8Array
+      ? values
+      : new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
+  let hash = 2166136261 >>> 0;
+  for (let index = 0; index < bytes.length; index += 1) {
+    hash ^= bytes[index];
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function outputValidationSummary(hashes, config, latentHashes = []) {
+  if (!config.validateOutput) {
+    return {
+      status: 'skipped',
+      reason: 'disabled by validateOutput=false',
+      sample_count: 0,
+      unique_hashes: 0,
+      hashes: [],
+      unique_latent_hashes: 0,
+      latent_hashes: [],
+    };
+  }
+  const uniqueHashes = new Set(hashes);
+  const uniqueLatentHashes = new Set(latentHashes);
+  const expected = expectedOutputValidationHashes(config);
+  const matchesExpected =
+    expected == null
+      ? null
+      : hashes.every((hash, index) => hash === expected.frame_hashes[index]) &&
+        latentHashes.every((hash, index) => hash === expected.latent_hashes[index]);
+  return {
+    status: expected
+      ? uniqueHashes.size > 1 && matchesExpected
+        ? 'passed'
+        : 'failed'
+      : uniqueHashes.size > 1
+        ? 'passed'
+        : 'failed',
+    sample_count: hashes.length,
+    unique_hashes: uniqueHashes.size,
+    hashes,
+    unique_latent_hashes: uniqueLatentHashes.size,
+    latent_hashes: latentHashes,
+    expected_hashes: expected?.frame_hashes ?? null,
+    expected_latent_hashes: expected?.latent_hashes ?? null,
+    matches_expected_hashes: matchesExpected,
+  };
+}
+
+function expectedOutputValidationHashes(config) {
+  if (
+    config.provider === 'webgpu' &&
+    config.graphCapture &&
+    config.dynamicsGraphCapture &&
+    config.stepArtifact === SAFARI_GRAPH_CAPTURE_STEP_ARTIFACT
+  ) {
+    return {
+      frame_hashes: SAFARI_GRAPH_CAPTURE_EXPECTED_FRAME_HASHES.slice(0, config.validationFrames),
+      latent_hashes: SAFARI_GRAPH_CAPTURE_EXPECTED_LATENT_HASHES.slice(0, config.validationFrames),
+    };
+  }
+  return null;
+}
+
 function assertDims(name, actual, expected) {
   if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
     throw new Error(`${name} shape mismatch: expected ${expected}, got ${actual}`);
@@ -387,7 +757,8 @@ async function createSession(modelUrl, externalData = [], sessionOptions = {}) {
     ort.InferenceSession.create(modelUrl, {
       executionProviders: [executionProvider],
       externalData,
-      graphOptimizationLevel: 'basic',
+      graphOptimizationLevel:
+        ortSessionOptions.graphOptimizationLevel ?? DEFAULT_CONFIG.graphOptimizationLevel,
       ...ortSessionOptions,
     }),
   );
@@ -452,13 +823,14 @@ function resolveDemoSpecs(manifest, config = DEFAULT_CONFIG) {
     ? [config.prefillArtifact, ...REQUIRED_ARTIFACTS.prefill]
     : REQUIRED_ARTIFACTS.prefill;
   const manifestStepNames = [manifest.demo_generation?.preferred_step_export].filter(Boolean);
+  const manifestDecoderNames = [manifest.demo_generation?.preferred_decoder_export].filter(Boolean);
   const stepNames = config.stepArtifact
     ? [config.stepArtifact, ...REQUIRED_ARTIFACTS.step]
     : [...manifestStepNames, ...REQUIRED_ARTIFACTS.step];
   return {
     prefill: findSpec(exportsByName, prefillNames),
     step: findSpec(exportsByName, stepNames),
-    decoder: findSpec(exportsByName, REQUIRED_ARTIFACTS.decoder),
+    decoder: findSpec(exportsByName, [...manifestDecoderNames, ...REQUIRED_ARTIFACTS.decoder]),
   };
 }
 
@@ -647,7 +1019,7 @@ function blockedResult({ config, manifest, gpu, missing }) {
             : {}),
         },
       ],
-      graphOptimizationLevel: 'basic',
+      graphOptimizationLevel: config.graphOptimizationLevel,
     },
     gpu,
     sampling: samplingConfig(null, config.timedRuns),
@@ -1150,26 +1522,128 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   };
 }
 
-function updateCacheFromEntries(updater, cache, outputs, names, pinned = []) {
+function createCpuEntryCacheUpdater(spec, manifest) {
+  const cacheSpec = spec.inputs?.k_cache;
+  const entrySpec = spec.outputs?.candidate_k_entry;
+  if (!cacheSpec || !entrySpec) {
+    throw new Error('Entry-cache update requires k_cache input and candidate_k_entry output specs.');
+  }
+  if (cacheSpec.dtype !== 'float32' || entrySpec.dtype !== 'float32') {
+    throw new Error(
+      `CPU entry-cache update currently supports float32 caches only, got ${cacheSpec.dtype}/${entrySpec.dtype}.`,
+    );
+  }
+  const cacheLayout =
+    manifest.cache_contract?.tensors?.k_cache?.layout ?? 'layer_batch_token_time_head_dim';
+  let layers;
+  let batch;
+  let tokens;
+  let contextLength;
+  let heads;
+  let headDim;
+  if (cacheLayout === 'layer_batch_token_head_time_dim') {
+    [layers, batch, tokens, heads, contextLength, headDim] = cacheSpec.shape;
+  } else {
+    [layers, batch, tokens, contextLength, heads, headDim] = cacheSpec.shape;
+  }
+  const halfHeadDim = headDim / 2;
+  if (!Number.isInteger(halfHeadDim)) {
+    throw new Error(`Entry-cache update requires an even head_dim, got ${headDim}.`);
+  }
+  const ropeBase = Number(manifest.dynamics?.rope_base ?? manifest.dynamics?.base ?? 10000);
+  const cosValues = new Float32Array(halfHeadDim);
+  const sinValues = new Float32Array(halfHeadDim);
+  for (let dim = 0; dim < halfHeadDim; dim += 1) {
+    const theta = 1 / (ropeBase ** (dim / halfHeadDim));
+    cosValues[dim] = Math.cos(theta);
+    sinValues[dim] = Math.sin(theta);
+  }
+  const cacheIndex = (layer, batchIndex, token, time, head, dim) =>
+    cacheLayout === 'layer_batch_token_head_time_dim'
+      ? (((((layer * batch + batchIndex) * tokens + token) * heads + head) * contextLength + time) * headDim + dim)
+      : (((((layer * batch + batchIndex) * tokens + token) * contextLength + time) * heads + head) * headDim + dim);
+  const entryIndex = (layer, batchIndex, token, head, dim) =>
+    ((((layer * batch + batchIndex) * tokens + token) * heads + head) * headDim + dim);
+  return {
+    kind: 'cpu_inplace_slide_rebase_entry',
+    rope_base: ropeBase,
+    cache_layout: cacheLayout,
+    cache_shape: cacheSpec.shape,
+    entry_shape: entrySpec.shape,
+    update(cache, kEntry, vEntry) {
+      const kCache = cache.k.data;
+      const vCache = cache.v.data;
+      const kEntryData = kEntry.data;
+      const vEntryData = vEntry.data;
+      for (let layer = 0; layer < layers; layer += 1) {
+        for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+          for (let token = 0; token < tokens; token += 1) {
+            for (let head = 0; head < heads; head += 1) {
+              for (let dim = 0; dim < halfHeadDim; dim += 1) {
+                const cosTheta = cosValues[dim];
+                const sinTheta = sinValues[dim];
+                for (let time = 0; time < contextLength - 1; time += 1) {
+                  const srcLeft = cacheIndex(layer, batchIndex, token, time + 1, head, dim);
+                  const srcRight = cacheIndex(
+                    layer,
+                    batchIndex,
+                    token,
+                    time + 1,
+                    head,
+                    halfHeadDim + dim,
+                  );
+                  const dstLeft = cacheIndex(layer, batchIndex, token, time, head, dim);
+                  const dstRight = cacheIndex(layer, batchIndex, token, time, head, halfHeadDim + dim);
+                  const left = kCache[srcLeft];
+                  const right = kCache[srcRight];
+                  kCache[dstLeft] = left * cosTheta + right * sinTheta;
+                  kCache[dstRight] = right * cosTheta - left * sinTheta;
+                }
+                const entryLeft = entryIndex(layer, batchIndex, token, head, dim);
+                const entryRight = entryIndex(layer, batchIndex, token, head, halfHeadDim + dim);
+                kCache[cacheIndex(layer, batchIndex, token, contextLength - 1, head, dim)] =
+                  kEntryData[entryLeft];
+                kCache[
+                  cacheIndex(layer, batchIndex, token, contextLength - 1, head, halfHeadDim + dim)
+                ] = kEntryData[entryRight];
+              }
+              for (let dim = 0; dim < headDim; dim += 1) {
+                for (let time = 0; time < contextLength - 1; time += 1) {
+                  vCache[cacheIndex(layer, batchIndex, token, time, head, dim)] =
+                    vCache[cacheIndex(layer, batchIndex, token, time + 1, head, dim)];
+                }
+                vCache[cacheIndex(layer, batchIndex, token, contextLength - 1, head, dim)] =
+                  vEntryData[entryIndex(layer, batchIndex, token, head, dim)];
+              }
+            }
+          }
+        }
+      }
+      return cache;
+    },
+  };
+}
+
+function updateCacheFromEntries(updater, cache, outputs, names, pinned = [], device = null) {
   const kEntry = outputs[names.entryK];
   const vEntry = outputs[names.entryV];
   if (!kEntry || !vEntry) {
     throw new Error('Entry-cache step did not return candidate_k_entry/candidate_v_entry.');
   }
-  if (kEntry.location !== 'gpu-buffer' || vEntry.location !== 'gpu-buffer') {
+  if (updater.kind?.startsWith('webgpu') && (kEntry.location !== 'gpu-buffer' || vEntry.location !== 'gpu-buffer')) {
     throw new Error(
       `Entry-cache update requires GPU entry tensors, got ${kEntry.location}/${vEntry.location}.`,
     );
   }
   const updatedCache = updater.update(cache, kEntry, vEntry);
-  disposeTensorUnlessPinned(kEntry, pinned);
-  disposeTensorUnlessPinned(vEntry, pinned);
+  disposeTensorUnlessPinnedAfterSubmittedWork(device, kEntry, pinned);
+  disposeTensorUnlessPinnedAfterSubmittedWork(device, vEntry, pinned);
   return updatedCache;
 }
 
 function cacheFetches(names) {
   if (names.entryK && names.entryV) return [names.entryK, names.entryV];
-  return [names.k, names.v, names.length].flat().filter(Boolean);
+  return [...new Set([names.k, names.v, names.length].flat().filter(Boolean))];
 }
 
 function disposeTensorIfOwned(tensor) {
@@ -1185,6 +1659,27 @@ function tensorIsInList(tensor, list) {
 function disposeTensorUnlessPinned(tensor, pinned = []) {
   if (!tensorIsInList(tensor, pinned)) {
     disposeTensorIfOwned(tensor);
+  }
+}
+
+function disposeTensorAfterSubmittedWork(device, tensor) {
+  if (tensor?.location !== 'gpu-buffer') {
+    disposeTensorIfOwned(tensor);
+    return;
+  }
+  if (!device?.queue?.onSubmittedWorkDone) {
+    disposeTensorIfOwned(tensor);
+    return;
+  }
+  device.queue.onSubmittedWorkDone().then(
+    () => tensor.dispose(),
+    () => tensor.dispose(),
+  );
+}
+
+function disposeTensorUnlessPinnedAfterSubmittedWork(device, tensor, pinned = []) {
+  if (!tensorIsInList(tensor, pinned)) {
+    disposeTensorAfterSubmittedWork(device, tensor);
   }
 }
 
@@ -1206,6 +1701,20 @@ function createPreallocatedFetches(device, spec, names) {
       return [name, createEmptyGpuTensor(device, outputSpec)];
     }),
   );
+}
+
+function assertGraphCaptureGpuTensors(label, feeds, fetches) {
+  const entries = [
+    ...Object.entries(feeds ?? {}).map(([name, tensor]) => [`feed:${name}`, tensor]),
+    ...(fetches && !Array.isArray(fetches)
+      ? Object.entries(fetches).map(([name, tensor]) => [`fetch:${name}`, tensor])
+      : []),
+  ];
+  for (const [name, tensor] of entries) {
+    if (tensor?.location === 'gpu-buffer' && !tensor.gpuBuffer) {
+      throw new Error(`${label} ${name} is marked gpu-buffer but has no GPUBuffer.`);
+    }
+  }
 }
 
 function preallocatedPinnedTensors(fetches) {
@@ -1267,7 +1776,7 @@ function preferredOutputLocationFor(role, spec, config) {
     return locations;
   }
   if (role === 'cached_step') {
-    if (config.graphCapture) {
+    if (config.dynamicsGraphCapture) {
       return Object.fromEntries(Object.keys(spec.outputs ?? {}).map((name) => [name, 'gpu-buffer']));
     }
     const names = cacheOutputNames(spec);
@@ -1279,7 +1788,7 @@ function preferredOutputLocationFor(role, spec, config) {
     };
     for (const name of [names.k, names.v].flat().filter(Boolean)) locations[name] = 'gpu-buffer';
     for (const name of [names.entryK, names.entryV].filter(Boolean)) locations[name] = 'gpu-buffer';
-    if (names.length && !config.graphCapture) locations[names.length] = 'cpu';
+    if (names.length && !config.dynamicsGraphCapture) locations[names.length] = 'cpu';
     if (usesFusedSampleStep) {
       locations[finalName] = 'gpu-buffer';
     }
@@ -1288,6 +1797,11 @@ function preferredOutputLocationFor(role, spec, config) {
   if (role === 'single_frame_decoder') {
     return {
       [decoderOutputName(spec)]: config.debugStats ? 'cpu' : 'gpu-buffer',
+    };
+  }
+  if (role === 'single_frame_decoder_validation') {
+    return {
+      [decoderOutputName(spec)]: 'cpu',
     };
   }
   return undefined;
@@ -1299,9 +1813,9 @@ async function createBenchSession(role, spec, config) {
   const preferredOutputLocation = preferredOutputLocationFor(role, spec, config);
   const enableGraphCapture =
     config.provider === 'webgpu' &&
-    config.graphCapture &&
-    (role === 'cached_step' || role === 'single_frame_decoder');
-  const graphOptimizationLevel = 'basic';
+    ((role === 'cached_step' && config.dynamicsGraphCapture) ||
+      (role === 'single_frame_decoder' && config.decoderGraphCapture));
+  const graphOptimizationLevel = config.graphOptimizationLevel;
   const sessionCreate = await createSession(
     modelUrl,
     externalDataForSpec(spec),
@@ -1331,6 +1845,9 @@ async function runDemoBenchmark({ config, specs, manifest }) {
   const prefill = await createBenchSession('cached_prefill', specs.prefill, config);
   const step = await createBenchSession('cached_step', specs.step, config);
   const decoder = await createBenchSession('single_frame_decoder', specs.decoder, config);
+  const validationDecoder = config.validateOutput
+    ? await createBenchSession('single_frame_decoder_validation', specs.decoder, config)
+    : null;
   const prefillFeeds = makeFeedsFromSpec(specs.prefill, 1000);
   const stepBaseFeeds = makeFeedsFromSpec(specs.step, 2000);
   const decoderBaseFeeds = makeFeedsFromSpec(specs.decoder, 3000);
@@ -1343,34 +1860,56 @@ async function runDemoBenchmark({ config, specs, manifest }) {
   const decoderName = decoderOutputName(specs.decoder);
   const prefillFetches = cacheFetches(prefillCacheNames);
   const stepCacheFetches =
-    config.graphCapture && step.graph_capture && !usesEntryCacheStep
+    step.graph_capture && !usesEntryCacheStep
       ? [stepCacheNames.k, stepCacheNames.v].flat().filter(Boolean)
       : cacheFetches(stepCacheNames);
   const stepPredFetches = [...new Set([predName, finalZName])];
-  const stepCommitFetches = usesFusedSampleStep && !config.debugStats
+  const stepCommitFetches = config.graphCaptureFinalZOnly && step.graph_capture
+    ? [finalZName]
+    : usesFusedSampleStep && !config.debugStats
     ? [...new Set([finalZName, ...stepCacheFetches])]
     : [...new Set([predName, finalZName, ...stepCacheFetches])];
   const decoderFetches = [decoderName];
   const actionTensor = makeIntTensor([1, 1], 4000, 4);
   const zDtype = stepZInputDtype(specs.step);
   const gpuDevice = config.provider === 'webgpu' ? (ort.env.webgpu?.device ?? null) : null;
-  const usePreallocatedHotOutputs =
-    gpuDevice && !config.debugStats && !config.graphCapture;
-  const stepCommitFetchArg = usePreallocatedHotOutputs
+  const usesSafariMaterializedGraphCapture =
+    config.stepArtifact === SAFARI_GRAPH_CAPTURE_STEP_ARTIFACT;
+  const usePreallocatedStepOutputs =
+    gpuDevice &&
+    config.preallocateStepOutputs &&
+    !config.debugStats &&
+    !(
+      config.browserProfile === 'safari' &&
+      config.dynamicsGraphCapture &&
+      !usesSafariMaterializedGraphCapture
+    );
+  const usePreallocatedDecoderOutputs =
+    gpuDevice &&
+    config.preallocateDecoderOutputs &&
+    !config.debugStats &&
+    !(
+      config.browserProfile === 'safari' &&
+      (config.dynamicsGraphCapture || config.decoderGraphCapture) &&
+      !usesSafariMaterializedGraphCapture
+    );
+  const stepCommitFetchArg = usePreallocatedStepOutputs
     ? createPreallocatedFetches(gpuDevice, specs.step, stepCommitFetches)
     : stepCommitFetches;
-  const decoderFetchArg = usePreallocatedHotOutputs
+  const decoderFetchArg = usePreallocatedDecoderOutputs
     ? createPreallocatedFetches(gpuDevice, specs.decoder, decoderFetches)
     : decoderFetches;
   const entryCacheUpdater =
-    usesEntryCacheStep && gpuDevice
-      ? createEntryCacheUpdater(gpuDevice, specs.step, manifest)
+    usesEntryCacheStep
+      ? gpuDevice
+        ? createEntryCacheUpdater(gpuDevice, specs.step, manifest)
+        : createCpuEntryCacheUpdater(specs.step, manifest)
       : null;
   if (usesEntryCacheStep && !entryCacheUpdater) {
     throw new Error('Entry-cache artifact requires provider=webgpu and an ORT WebGPU device.');
   }
   const graphCaptureStepInputs =
-    config.graphCapture && step.graph_capture && gpuDevice
+    step.graph_capture && gpuDevice
       ? {
           action: createGpuTensorFromCpu(gpuDevice, actionTensor),
           z: createGpuTensorFromCpu(gpuDevice, makeFloatTensor([1, 1, 32, 32], 5999, zDtype)),
@@ -1381,21 +1920,30 @@ async function runDemoBenchmark({ config, specs, manifest }) {
         }
       : null;
   const streamingInputZ =
-    !config.graphCapture && gpuDevice && usesFusedSampleStep
+    !step.graph_capture && gpuDevice && usesFusedSampleStep
       ? createGpuTensorFromCpu(gpuDevice, makeFloatTensor([1, 1, 32, 32], 5999, zDtype))
       : null;
   const graphCaptureFixedCache =
-    config.graphCapture && step.graph_capture && gpuDevice
+    step.graph_capture && gpuDevice
       ? createFixedGpuCache(gpuDevice, specs.step)
       : null;
   const graphCaptureFixedScalars =
-    config.graphCapture && step.graph_capture && gpuDevice
+    step.graph_capture && gpuDevice
       ? createFixedGpuScalarInputs(gpuDevice, specs.step)
       : null;
   const graphCaptureDecoderInput =
-    config.graphCapture && decoder.graph_capture && gpuDevice && Boolean(specs.decoder.inputs?.z)
+    gpuDevice && (decoder.graph_capture || !specs.decoder.inputs?.z)
       ? createFixedGpuDecoderInput(gpuDevice, specs.decoder)
       : null;
+  if (
+    graphCaptureDecoderInput &&
+    stepCommitFetchArg &&
+    !Array.isArray(stepCommitFetchArg) &&
+    specs.step.outputs?.[finalZName]?.dtype === graphCaptureDecoderInput.tensor.type &&
+    sameShape(specs.step.outputs?.[finalZName]?.shape, graphCaptureDecoderInput.tensor.dims)
+  ) {
+    stepCommitFetchArg[finalZName] = graphCaptureDecoderInput.tensor;
+  }
   const graphCapturePinnedTensors = [
     ...fixedCachePinnedTensors(graphCaptureFixedCache),
     ...fixedInputPinnedTensors(graphCaptureStepInputs, graphCaptureFixedScalars),
@@ -1423,8 +1971,12 @@ async function runDemoBenchmark({ config, specs, manifest }) {
   for (let i = 0; i < config.warmupRuns; i += 1) {
     setStatus(`demo benchmark: warmup frame ${i + 1}/${config.warmupRuns}`);
     let candidateCache = persistentCache;
-    let currentZ = streamingInputZ ?? makeFloatTensor([1, 1, 32, 32], 5000 + i, zDtype);
+    let currentZ =
+      config.graphCaptureFreshInput && step.graph_capture
+        ? makeFloatTensor([1, 1, 32, 32], 5000 + i, zDtype)
+        : streamingInputZ ?? makeFloatTensor([1, 1, 32, 32], 5000 + i, zDtype);
     let predZ = null;
+    let pendingEntryCacheOutputs = null;
     const sampleCount = usesFusedSampleStep ? 1 : SAMPLE_STEPS;
     for (let sample = 0; sample < sampleCount; sample += 1) {
       const signalLevelTensor = needsSignalLevelInput
@@ -1466,17 +2018,15 @@ async function runDemoBenchmark({ config, specs, manifest }) {
         feeds.position_index = graphCaptureFixedScalars.positionIndex;
       }
       const fetches = sample === sampleCount - 1 ? stepCommitFetchArg : stepPredFetches;
+      if (step.graph_capture) {
+        assertGraphCaptureGpuTensors('warmup cached_step graph capture', feeds, fetches);
+      }
       const outputs = await step.session.run(feeds, fetches);
       predZ = outputs[predName] ?? null;
       if (sample === sampleCount - 1) {
         if (usesEntryCacheStep) {
-          candidateCache = updateCacheFromEntries(
-            entryCacheUpdater,
-            persistentCache,
-            outputs,
-            stepCacheNames,
-            graphCapturePinnedTensors,
-          );
+          pendingEntryCacheOutputs =
+            config.graphCaptureFinalZOnly && step.graph_capture ? null : outputs;
         } else {
           candidateCache = cacheFromOutputs(outputs, stepCacheNames, persistentCache.length);
         }
@@ -1503,14 +2053,29 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       replaceDecoderLatent(decoderBaseFeeds, decoderInput),
       decoderFetchArg,
     );
-    disposeTensorUnlessPinned(decoderOutputs[decoderName], graphCapturePinnedTensors);
+    if (pendingEntryCacheOutputs) {
+      candidateCache = updateCacheFromEntries(
+        entryCacheUpdater,
+        persistentCache,
+        pendingEntryCacheOutputs,
+        stepCacheNames,
+        graphCapturePinnedTensors,
+        gpuDevice,
+      );
+    }
+    disposeTensorUnlessPinnedAfterSubmittedWork(
+      gpuDevice,
+      decoderOutputs[decoderName],
+      graphCapturePinnedTensors,
+    );
     if (usesFusedSampleStep) {
       if (streamingInputZ && currentZ !== streamingInputZ) {
         copyGpuTensor(gpuDevice, currentZ, streamingInputZ);
+        disposeTensorUnlessPinnedAfterSubmittedWork(gpuDevice, currentZ, graphCapturePinnedTensors);
       }
       streamingZ = streamingInputZ ?? currentZ;
     } else {
-      disposeTensorIfOwned(currentZ);
+      disposeTensorAfterSubmittedWork(gpuDevice, currentZ);
     }
   }
 
@@ -1521,6 +2086,8 @@ async function runDemoBenchmark({ config, specs, manifest }) {
   const packUnpackSamples = [];
   const streamingFrameSamples = [];
   const targetForwardSamples = [];
+  const validationFrameHashes = [];
+  const validationLatentHashes = [];
   let latestPredStats = null;
   let latestFrameStats = null;
 
@@ -1534,17 +2101,107 @@ async function runDemoBenchmark({ config, specs, manifest }) {
     persistentCache = copyCacheIntoFixedGpu(gpuDevice, prefillCache, graphCaptureFixedCache);
     disposeCache(prefillCache, graphCapturePinnedTensors);
   }
+  if (usesSafariMaterializedGraphCapture && step.graph_capture && config.primeGraphCapture) {
+    setStatus('demo benchmark: priming graph capture');
+    let currentZ = makeFloatTensor([1, 1, 32, 32], 6000, zDtype);
+    let primeOutputs = null;
+    const sampleCount = usesFusedSampleStep ? 1 : SAMPLE_STEPS;
+    for (let sample = 0; sample < sampleCount; sample += 1) {
+      const signalLevelTensor = needsSignalLevelInput
+        ? makeScalarFillTensor('int32', [1, 1], sample)
+        : null;
+      const positionTensor = needsPositionIndexInput
+        ? makeScalarFillTensor('int32', [1], persistentCache.length.data[0])
+        : null;
+      if (graphCaptureStepInputs?.z && currentZ.location === 'gpu-buffer') {
+        copyGpuTensorToTargets(gpuDevice, currentZ, [
+          graphCaptureStepInputs.z,
+          graphCaptureStepInputs.contextNoise,
+        ]);
+      } else if (graphCaptureStepInputs?.z) {
+        writeCpuTensorToGpu(gpuDevice, graphCaptureStepInputs.z, currentZ);
+        writeCpuTensorToGpu(gpuDevice, graphCaptureStepInputs.contextNoise, currentZ);
+      }
+      const feeds = setStepInputs(applyCacheFeeds(stepBaseFeeds, persistentCache), {
+        z: graphCaptureStepInputs?.z ?? currentZ,
+        contextNoise: graphCaptureStepInputs?.contextNoise ?? currentZ,
+        action: graphCaptureStepInputs?.action ?? actionTensor,
+        stepLevel: stepLevelTensor,
+        signalLevel: signalLevelTensor,
+        positionIndex: positionTensor,
+      });
+      if (graphCaptureFixedScalars?.cacheLength) {
+        feeds.cache_length = graphCaptureFixedScalars.cacheLength;
+      }
+      if (graphCaptureFixedScalars?.samplePositionIndex) {
+        feeds.sample_position_index = graphCaptureFixedScalars.samplePositionIndex;
+      }
+      if (graphCaptureFixedScalars?.contextPositionIndex) {
+        feeds.context_position_index = graphCaptureFixedScalars.contextPositionIndex;
+      }
+      if (graphCaptureFixedScalars?.attentionMask) {
+        feeds.attention_mask = graphCaptureFixedScalars.attentionMask;
+      }
+      if (graphCaptureFixedScalars?.positionIndex) {
+        feeds.position_index = graphCaptureFixedScalars.positionIndex;
+      }
+      const fetches = sample === sampleCount - 1 ? stepCommitFetchArg : stepPredFetches;
+      assertGraphCaptureGpuTensors('prime cached_step graph capture', feeds, fetches);
+      primeOutputs = await step.session.run(feeds, fetches);
+      const predZ = primeOutputs[predName] ?? null;
+      currentZ = usesFusedSampleStep ? primeOutputs[finalZName] : nextSampleZ(currentZ, predZ, sample);
+    }
+    const decoderInput = graphCaptureDecoderInput
+      ? timeSync(() => {
+          copyTensorToGpu(gpuDevice, currentZ, graphCaptureDecoderInput.tensor);
+          return graphCaptureDecoderInput.tensor;
+        }).value
+      : specs.decoder.inputs?.z
+        ? currentZ
+        : latentFromPredZ(currentZ);
+    const decoderFeeds = replaceDecoderLatent(decoderBaseFeeds, decoderInput);
+    if (decoder.graph_capture) {
+      assertGraphCaptureGpuTensors('prime decoder graph capture', decoderFeeds, decoderFetchArg);
+    }
+    const decoderOutputs = await decoder.session.run(decoderFeeds, decoderFetchArg);
+    disposeTensorUnlessPinnedAfterSubmittedWork(
+      gpuDevice,
+      decoderOutputs[decoderName],
+      graphCapturePinnedTensors,
+    );
+    if (primeOutputs) {
+      disposeTensorUnlessPinnedAfterSubmittedWork(
+        gpuDevice,
+        primeOutputs[stepCacheNames.entryK],
+        graphCapturePinnedTensors,
+      );
+      disposeTensorUnlessPinnedAfterSubmittedWork(
+        gpuDevice,
+        primeOutputs[stepCacheNames.entryV],
+        graphCapturePinnedTensors,
+      );
+      disposeTensorUnlessPinnedAfterSubmittedWork(
+        gpuDevice,
+        primeOutputs[finalZName],
+        graphCapturePinnedTensors,
+      );
+    }
+    streamingZ = null;
+  }
 
   for (let frame = 0; frame < config.timedRuns; frame += 1) {
     setStatus(`demo benchmark: generated frame ${frame + 1}/${config.timedRuns}`);
     const frameStart = performance.now();
     let candidateCache = persistentCache;
     let currentZ =
-      streamingInputZ ??
-      (config.graphCapture && streamingZ?.location === 'gpu-buffer'
-        ? streamingZ
-        : makeFloatTensor([1, 1, 32, 32], 6000 + frame, zDtype));
+      config.graphCaptureFreshInput && step.graph_capture
+        ? makeFloatTensor([1, 1, 32, 32], 6000 + frame, zDtype)
+        : streamingInputZ ??
+          (step.graph_capture && streamingZ?.location === 'gpu-buffer'
+            ? streamingZ
+            : makeFloatTensor([1, 1, 32, 32], 6000 + frame, zDtype));
     let predZ = null;
+    let pendingEntryCacheOutputs = null;
     const frameForwardSamples = [];
 
     const sampleCount = usesFusedSampleStep ? 1 : SAMPLE_STEPS;
@@ -1589,6 +2246,9 @@ async function runDemoBenchmark({ config, specs, manifest }) {
         feeds.position_index = graphCaptureFixedScalars.positionIndex;
       }
       const fetches = sample === sampleCount - 1 ? stepCommitFetchArg : stepPredFetches;
+      if (step.graph_capture) {
+        assertGraphCaptureGpuTensors('timed cached_step graph capture', feeds, fetches);
+      }
       const timed = await timeAsync(() => step.session.run(feeds, fetches));
       predZ = timed.value[predName] ?? null;
       if (!usesFusedSampleStep && !predZ) {
@@ -1596,13 +2256,8 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       }
       if (sample === sampleCount - 1) {
         if (usesEntryCacheStep) {
-          candidateCache = updateCacheFromEntries(
-            entryCacheUpdater,
-            persistentCache,
-            timed.value,
-            stepCacheNames,
-            graphCapturePinnedTensors,
-          );
+          pendingEntryCacheOutputs =
+            config.graphCaptureFinalZOnly && step.graph_capture ? null : timed.value;
         } else {
           candidateCache = cacheFromOutputs(timed.value, stepCacheNames, persistentCache.length);
         }
@@ -1628,9 +2283,25 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       return specs.decoder.inputs?.z ? currentZ : latentFromPredZ(currentZ);
     });
     const decoderTimed = await timeAsync(() =>
-      decoder.session.run(replaceDecoderLatent(decoderBaseFeeds, packTimed.value), decoderFetchArg),
+      {
+        const decoderFeeds = replaceDecoderLatent(decoderBaseFeeds, packTimed.value);
+        if (decoder.graph_capture) {
+          assertGraphCaptureGpuTensors('timed decoder graph capture', decoderFeeds, decoderFetchArg);
+        }
+        return decoder.session.run(decoderFeeds, decoderFetchArg);
+      },
     );
     const commitTimed = timeSync(() => {
+      if (pendingEntryCacheOutputs) {
+        candidateCache = updateCacheFromEntries(
+          entryCacheUpdater,
+          persistentCache,
+          pendingEntryCacheOutputs,
+          stepCacheNames,
+          graphCapturePinnedTensors,
+          gpuDevice,
+        );
+      }
       const oldCache = persistentCache;
       persistentCache = candidateCache;
       if (oldCache !== persistentCache) disposeCache(oldCache, graphCapturePinnedTensors);
@@ -1649,18 +2320,31 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       throw new Error(`Single-frame decoder did not return output ${decoderName}`);
     }
     latestFrameStats = tensorSummary(frameOutput);
+    if (
+      validationDecoder &&
+      validationFrameHashes.length < Math.max(1, Math.floor(config.validationFrames))
+    ) {
+      validationLatentHashes.push(await tensorContentHash(packTimed.value, gpuDevice));
+      const validationOutputs = await validationDecoder.session.run(
+        replaceDecoderLatent(decoderBaseFeeds, packTimed.value),
+        [decoderName],
+      );
+      validationFrameHashes.push(await tensorContentHash(validationOutputs[decoderName]));
+      disposeTensorAfterSubmittedWork(gpuDevice, validationOutputs[decoderName]);
+    }
     if (predZ) {
       assertDims('cached_step.pred_z', predZ.dims, specs.step.outputs[predName].shape);
     }
     assertDims('cached_step.final_z', currentZ.dims, specs.step.outputs[finalZName].shape);
     assertDims('single_frame_decoder.output', frameOutput.dims, specs.decoder.outputs[decoderName].shape);
-    disposeTensorUnlessPinned(frameOutput, graphCapturePinnedTensors);
+    disposeTensorUnlessPinnedAfterSubmittedWork(gpuDevice, frameOutput, graphCapturePinnedTensors);
     if (usesFusedSampleStep) {
       if (streamingInputZ && currentZ !== streamingInputZ) {
         copyGpuTensor(gpuDevice, currentZ, streamingInputZ);
+        disposeTensorUnlessPinnedAfterSubmittedWork(gpuDevice, currentZ, graphCapturePinnedTensors);
       }
       if (streamingZ !== currentZ) {
-        disposeTensorUnlessPinned(streamingZ, graphCapturePinnedTensors);
+        disposeTensorUnlessPinnedAfterSubmittedWork(gpuDevice, streamingZ, graphCapturePinnedTensors);
       }
       streamingZ = streamingInputZ ?? currentZ;
     }
@@ -1680,6 +2364,7 @@ async function runDemoBenchmark({ config, specs, manifest }) {
     config,
   );
   const steady = summarize(streamingFrameSamples);
+  const outputValidation = outputValidationSummary(validationFrameHashes, config, validationLatentHashes);
   return [
     {
       mode: 'cached_prefill',
@@ -1783,6 +2468,7 @@ async function runDemoBenchmark({ config, specs, manifest }) {
             : 'cache_length advances once per generated frame from fused final candidate cache'
           : 'cache_length advances once per generated frame',
       },
+      output_validation: outputValidation,
       output: latestFrameStats,
     },
   ];
@@ -1790,6 +2476,9 @@ async function runDemoBenchmark({ config, specs, manifest }) {
 
 async function runBenchmark() {
   const config = parseConfig();
+  configureAssetBase(config.assetBase);
+  setupOrtDiagnostics(config);
+  const profiler = setupWebgpuProfiling(config);
   setStatus('starting demo benchmark');
   const manifest = await fetchManifest();
   const gpu = await gpuInfo(config);
@@ -1806,10 +2495,23 @@ async function runBenchmark() {
   validateDemoSpecs(specs, manifest);
 
   const results = await runDemoBenchmark({ config, specs, manifest });
+  const outputValidation = results.find((entry) => entry.mode === 'streaming_frame')
+    ?.output_validation ?? { status: 'skipped' };
+  if (profiler.enabled && config.profilingDrainMs > 0) {
+    await delay(config.profilingDrainMs);
+  }
+  const profiling = summarizeProfiling(profiler, config);
+  if (config.profilingRequired && profiler.enabled && profiling.event_count === 0) {
+    throw new Error('WebGPU profiling was required but no profiling events were received.');
+  }
   return {
     schema_version: 2,
-    status: 'passed',
-    streaming_contract_status: 'available',
+    status: outputValidation.status === 'failed' ? 'failed' : 'passed',
+    streaming_contract_status:
+      outputValidation.status === 'failed' ? 'failed' : 'available',
+    ...(outputValidation.status === 'failed'
+      ? { message: 'Generated frame output validation failed: sampled frames were static.' }
+      : {}),
     benchmark_modes: ['cached_prefill', 'cached_step', 'streaming_frame'],
     config,
     created_at: new Date().toISOString(),
@@ -1818,12 +2520,14 @@ async function runBenchmark() {
     ort_version: ort.version ?? null,
     provider_options: {
       executionProviders: [{ name: config.provider }],
-      graphOptimizationLevel: 'basic',
+      graphOptimizationLevel: config.graphOptimizationLevel,
     },
     gpu,
     sampling: samplingConfig(specs, config.timedRuns),
     cache_abi: cacheAbi(manifest),
     manifest: compactManifest(manifest),
+    profiling,
+    diagnostics: config.captureConsole ? capturedConsoleMessages.slice(-500) : [],
     results,
   };
 }
@@ -1838,7 +2542,7 @@ function graphCaptureBlockedResult(error) {
   const config = parseConfig();
   const message = error?.message ?? String(error);
   if (
-    !config.graphCapture ||
+    !(config.graphCapture || config.dynamicsGraphCapture || config.decoderGraphCapture) ||
     !message.includes('cannot use the graph capture feature') ||
     !message.includes('WebGpuExecutionProvider')
   ) {
