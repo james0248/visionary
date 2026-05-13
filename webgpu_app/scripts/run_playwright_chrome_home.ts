@@ -30,6 +30,7 @@ const benchmarkFlagEnv = new Map([
   ['--webgpu-benchmark-ort-module', 'WEBGPU_BENCHMARK_ORT_MODULE'],
   ['--webgpu-benchmark-wasm-num-threads', 'WEBGPU_BENCHMARK_WASM_NUM_THREADS'],
   ['--demo-query', 'DEMO_QUERY'],
+  ['--allow-software-webgpu', 'ALLOW_SOFTWARE_WEBGPU'],
 ]);
 
 function parseArgs(args: string[]) {
@@ -65,9 +66,10 @@ function parseArgs(args: string[]) {
 
     const envName = benchmarkFlagEnv.get(key);
     if (envName) {
-      const value = inlineValue ?? args[index + 1];
+      const nextValue = args[index + 1];
+      const value = inlineValue ?? (nextValue && !nextValue.startsWith('--') ? nextValue : undefined);
       env[envName] = value ?? '1';
-      if (inlineValue == null && args[index + 1] && !args[index + 1].startsWith('--')) {
+      if (inlineValue == null && value != null) {
         index += 1;
       }
       continue;

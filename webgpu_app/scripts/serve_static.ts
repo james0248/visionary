@@ -27,7 +27,10 @@ const contentTypes = {
 
 function resolveRequestPath(url) {
   const pathname = decodeURIComponent(new URL(url, `http://${host}:${port}`).pathname);
-  const relative = normalize(pathname).replace(/^[/\\]+/, '');
+  let relative = normalize(pathname).replace(/^[/\\]+/, '');
+  if (relative === 'webgpu_app' || relative.startsWith(`webgpu_app${sep}`)) {
+    relative = relative.replace(/^webgpu_app[/\\]?/, '');
+  }
   const absolute = resolve(join(root, relative));
   if (absolute !== root && !absolute.startsWith(`${root}${sep}`)) {
     return null;

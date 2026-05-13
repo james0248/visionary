@@ -25,7 +25,7 @@ function resolveBaseUrl(value) {
   return resolveUrl(value).replace(/\/$/, '');
 }
 
-const ASSET_DIR = resolveBaseUrl(configValue('assetBase', '/webgpu_app/assets'));
+const ASSET_DIR = resolveBaseUrl(configValue('assetBase', '/assets'));
 const MANIFEST_URL = `${ASSET_DIR}/${configValue('manifestName', 'breakout_onnx_manifest.json')}`;
 const CONTEXT_URL = `${ASSET_DIR}/${configValue('contextName', 'breakout_demo_context.json')}`;
 const INITIAL_CACHE_URL = `${ASSET_DIR}/${configValue('initialCacheName', 'breakout_demo_initial_cache.json')}`;
@@ -759,7 +759,7 @@ function assertTensorMatchesSpec(tensor, spec, label, name) {
       `${label} does not match the exported ${name} input. ` +
         `Artifact has ${tensor.type} ${formatShape(tensor.dims)}, ` +
         `model expects ${spec.dtype} ${formatShape(spec.shape)}. ` +
-        'Regenerate it with `uv run python scripts/webgpu/create_demo_initial_cache.py --asset_dir webgpu_app/assets --overwrite`.',
+        'Regenerate it with `uv run python webgpu_app/export/create_demo_initial_cache.py --asset_dir webgpu_app/assets --overwrite`.',
     );
   }
 }

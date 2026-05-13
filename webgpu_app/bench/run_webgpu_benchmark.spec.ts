@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
-const RESULT_DIR = 'webgpu_app/bench/results';
+const RESULT_DIR = 'bench/results';
 const RESULT_PATH = path.join(RESULT_DIR, 'latest.json');
 const GRAPH_CAPTURE_RESULT_PATH = path.join(RESULT_DIR, 'graph_capture_latest.json');
 
@@ -89,7 +89,7 @@ async function runBenchmark(
   if (process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS) {
     params.set('wasmNumThreads', process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS);
   }
-  await page.goto(`/webgpu_app/bench/index.html?${params.toString()}`);
+  await page.goto(`/bench/index.html?${params.toString()}`);
   try {
     const result = await page.waitForFunction(
       () => window.__WEBGPU_BENCHMARK_RESULT__ ?? null,
@@ -122,7 +122,7 @@ test('webgpu benchmark smoke @smoke', async ({ page }) => {
   expect(result.results.map((entry) => entry.mode)).not.toContain('uncached_window');
 });
 
-test('webgpu demo streaming benchmark', async ({ page }) => {
+test('webgpu demo streaming benchmark @output_validation', async ({ page }) => {
   const result = await runBenchmark(page, 'streaming');
   await writeResult(result);
   expect(['passed', 'blocked'], result.message ?? '').toContain(result.status);

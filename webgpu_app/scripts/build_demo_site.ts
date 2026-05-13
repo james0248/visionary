@@ -25,11 +25,11 @@ for (let index = 2; index < process.argv.length; index += 1) {
   }
 }
 
-const outDir = resolve(args.get('--out') ?? 'webgpu_app/dist');
+const outDir = resolve(args.get('--out') ?? 'dist');
 const copyAssets = args.get('--copy-assets') === 'true';
 const assetBase =
   args.get('--asset-base') ??
-  (copyAssets ? './assets' : '/webgpu_app/dream_arcade_assets/breakout');
+  (copyAssets ? './assets' : '/dream_arcade_assets/breakout');
 const pacmanAssetBase =
   args.get('--pacman-asset-base') ??
   (copyAssets ? './assets/pacman' : siblingAssetBase(assetBase, 'breakout', 'pacman'));
@@ -37,9 +37,9 @@ const ortModule =
   args.get('--ort-module') ?? './vendor/onnxruntime-web/ort.webgpu.bundle.min.mjs';
 const ortWasmBase = args.get('--ort-wasm-base') ?? './vendor/onnxruntime-web/';
 
-const demoDir = resolve('webgpu_app/demo');
+const demoDir = resolve('demo');
 const ortDistDir = resolve('node_modules/onnxruntime-web/dist');
-const assetDir = resolve(args.get('--asset-dir') ?? 'webgpu_app/dream_arcade_assets/breakout');
+const assetDir = resolve(args.get('--asset-dir') ?? 'dream_arcade_assets/breakout');
 const baseAssets = [
   'breakout_onnx_manifest.json',
   'breakout_demo_context.json',

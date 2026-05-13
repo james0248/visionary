@@ -1,7 +1,7 @@
 // @ts-nocheck
 export {};
 
-let ASSET_DIR = '/webgpu_app/dream_arcade_assets/breakout';
+let ASSET_DIR = '/dream_arcade_assets/breakout';
 let MANIFEST_URL = `${ASSET_DIR}/breakout_onnx_manifest.json`;
 const moduleParams = new URLSearchParams(window.location.search);
 const ORT_MODULE_URL =
