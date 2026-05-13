@@ -5,6 +5,10 @@ const headless = process.env.PLAYWRIGHT_HEADLESS === '1';
 const browserChannel = process.env.PLAYWRIGHT_CHANNEL;
 const chromeHome = process.env.PLAYWRIGHT_CHROME_HOME ?? '/private/tmp/visionary-chrome-home';
 mkdirSync(`${chromeHome}/Library/Application Support/Google/Chrome/Crashpad`, { recursive: true });
+mkdirSync(`${chromeHome}/Library/Application Support/Google/Chrome for Testing/Crashpad`, {
+  recursive: true,
+});
+mkdirSync('/private/tmp/visionary-chrome-crashpad', { recursive: true });
 
 const crashpadArgs = [
   '--disable-crash-reporter',
@@ -29,6 +33,7 @@ export default defineConfig({
       env: {
         ...process.env,
         HOME: chromeHome,
+        CFFIXED_USER_HOME: chromeHome,
       },
       args: [
         '--enable-unsafe-webgpu',
