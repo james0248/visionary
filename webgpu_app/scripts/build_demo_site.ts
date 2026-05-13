@@ -30,9 +30,6 @@ const copyAssets = args.get('--copy-assets') === 'true';
 const assetBase =
   args.get('--asset-base') ??
   (copyAssets ? './assets' : '/dream_arcade_assets/breakout');
-const pacmanAssetBase =
-  args.get('--pacman-asset-base') ??
-  (copyAssets ? './assets/pacman' : siblingAssetBase(assetBase, 'breakout', 'pacman'));
 const ortModule =
   args.get('--ort-module') ?? './vendor/onnxruntime-web/ort.webgpu.bundle.min.mjs';
 const ortWasmBase = args.get('--ort-wasm-base') ?? './vendor/onnxruntime-web/';
@@ -69,14 +66,6 @@ function demoModelAssets() {
   ];
 }
 
-function siblingAssetBase(base: string, fromName: string, toName: string) {
-  const normalized = base.replace(/\/$/, '');
-  if (normalized.endsWith(`/${fromName}`)) {
-    return `${normalized.slice(0, -fromName.length)}${toName}`;
-  }
-  return `${normalized}/${toName}`;
-}
-
 rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
@@ -85,16 +74,12 @@ for (const file of ['styles.css']) {
 }
 await buildDemoBrowserBundle(outDir);
 
-for (const htmlFile of ['index.html', 'pacman.html']) {
-  if (!existsSync(join(demoDir, htmlFile))) continue;
-  const pageAssetBase = htmlFile === 'pacman.html' ? pacmanAssetBase : assetBase;
-  let html = readFileSync(join(demoDir, htmlFile), 'utf8');
-  html = html
-    .replace(/data-asset-base="[^"]*"/, `data-asset-base="${pageAssetBase}"`)
-    .replace(/data-ort-module="[^"]*"/, `data-ort-module="${ortModule}"`)
-    .replace(/data-ort-wasm-base="[^"]*"/, `data-ort-wasm-base="${ortWasmBase}"`);
-  writeFileSync(join(outDir, htmlFile), html);
-}
+let html = readFileSync(join(demoDir, 'index.html'), 'utf8');
+html = html
+  .replace(/data-asset-base="[^"]*"/, `data-asset-base="${assetBase}"`)
+  .replace(/data-ort-module="[^"]*"/, `data-ort-module="${ortModule}"`)
+  .replace(/data-ort-wasm-base="[^"]*"/, `data-ort-wasm-base="${ortWasmBase}"`);
+writeFileSync(join(outDir, 'index.html'), html);
 
 const vendorDir = join(outDir, 'vendor/onnxruntime-web');
 mkdirSync(vendorDir, { recursive: true });

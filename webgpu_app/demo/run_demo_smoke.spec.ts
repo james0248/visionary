@@ -1,7 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const demoPath = `/demo/index.html${process.env.DEMO_QUERY ?? ''}`;
-const pacmanDemoPath = `/demo/pacman.html${process.env.DEMO_QUERY ?? ''}`;
 
 function visibleFrame(page: Page) {
   return page.locator('#frame:not([hidden]), .frame-fallback:not([hidden])').first();
@@ -205,34 +204,4 @@ test('world model demo falls back when 2D canvas is unavailable @demo', async ({
   await expect(page.locator('.frame-fallback')).toBeVisible();
   expect(pageErrors).toEqual([]);
   expect(canvasConsoleMessages).toEqual([]);
-});
-
-test('pacman demo wires cardinal and diagonal actions @demo', async ({ page }) => {
-  await page.goto(pacmanDemoPath);
-  await expect(page.locator('.pacman-grid [data-action-id]')).toHaveCount(9);
-  await expect
-    .poll(async () => page.evaluate(() => (window as any).visionaryDemoActionsReady === true), {
-      timeout: 30_000,
-    })
-    .toBe(true);
-
-  await page.keyboard.down('ArrowUp');
-  await expect(page.locator('#action')).toHaveText('up');
-  await page.keyboard.down('ArrowRight');
-  await expect(page.locator('#action')).toHaveText('up+right');
-  await page.keyboard.up('ArrowUp');
-  await expect(page.locator('#action')).toHaveText('right');
-  await page.keyboard.up('ArrowRight');
-  await expect(page.locator('#action')).toHaveText('noop');
-});
-
-test('pacman demo starts and renders a frame @demo', async ({ page }) => {
-  await page.goto(pacmanDemoPath);
-  await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
-  await page.locator('#start').click();
-  await expect
-    .poll(async () => Number(await page.locator('#frame-count').textContent()), {
-      timeout: 180_000,
-    })
-    .toBeGreaterThan(0);
 });
