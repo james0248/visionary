@@ -1,9 +1,7 @@
 import argparse
 import copy
-import hashlib
 import itertools
 import json
-import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -18,6 +16,16 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 
+from webgpu_app.export.manifest import cache_contract, tensor_spec, version_or_unknown
+from webgpu_app.export.onnx_artifacts import (
+    ensure_output,
+    export_file_metadata,
+    external_data_path,
+    remove_existing_export,
+    sha256_file,
+    snapshot_raw_artifacts,
+)
+from webgpu_app.export.validation import validate_outputs, validate_single_output
 from visionary.common.checkpoint import (
     resolve_model_export_step,
     restore_model_export_single_device,
@@ -381,36 +389,6 @@ def require_static_phase1_args(args: argparse.Namespace) -> None:
         )
 
 
-def ensure_output(path: Path, overwrite: bool) -> None:
-    if path.exists() and not overwrite:
-        raise FileExistsError(f"{path} already exists; pass --overwrite to replace it.")
-
-
-def external_data_path(path: Path) -> Path:
-    return path.with_name(path.name + ".data")
-
-
-def remove_existing_export(path: Path, overwrite: bool) -> None:
-    ensure_output(path, overwrite=overwrite)
-    sidecar = external_data_path(path)
-    ensure_output(sidecar, overwrite=overwrite)
-    if overwrite:
-        path.unlink(missing_ok=True)
-        sidecar.unlink(missing_ok=True)
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def version_or_unknown(module: Any) -> str:
-    return str(getattr(module, "__version__", "unknown"))
-
-
 def seeded_inputs(
     seed: int,
     tokenizer_shape: tuple[int, int, int, int],
@@ -473,62 +451,6 @@ def export_to_onnx(
         output_names=output_names,
     )
     onnx.checker.check_model(output_path.as_posix())
-
-
-def copy_onnx_artifact(src: Path, dst: Path, overwrite: bool) -> dict[str, Any]:
-    ensure_output(dst, overwrite=overwrite)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if overwrite:
-        dst.unlink(missing_ok=True)
-        external_data_path(dst).unlink(missing_ok=True)
-    shutil.copy2(src, dst)
-
-    copied = [{"path": dst.name, "sha256": sha256_file(dst), "size_bytes": dst.stat().st_size}]
-    src_sidecar = external_data_path(src)
-    if src_sidecar.exists():
-        dst_sidecar = external_data_path(dst)
-        ensure_output(dst_sidecar, overwrite=overwrite)
-        if overwrite:
-            dst_sidecar.unlink(missing_ok=True)
-        shutil.copy2(src_sidecar, dst_sidecar)
-        copied.append(
-            {
-                "path": dst_sidecar.name,
-                "sha256": sha256_file(dst_sidecar),
-                "size_bytes": dst_sidecar.stat().st_size,
-            }
-        )
-    return {"path": dst.name, "files": copied}
-
-
-def snapshot_raw_artifacts(
-    exported_paths: dict[str, Path],
-    raw_out_dir: Path,
-    overwrite: bool,
-) -> dict[str, Any]:
-    raw_out_dir.mkdir(parents=True, exist_ok=True)
-    copied = {
-        name: copy_onnx_artifact(path, raw_out_dir / path.name, overwrite=overwrite)
-        for name, path in exported_paths.items()
-    }
-    manifest = {
-        "schema_version": 1,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "description": (
-            "Raw jax2onnx exports captured before ONNX simplification, ORT optimization, "
-            "or WebGPU-specific graph rewrites."
-        ),
-        "artifacts": copied,
-    }
-    raw_manifest_path = raw_out_dir / "raw_onnx_artifacts_manifest.json"
-    ensure_output(raw_manifest_path, overwrite=overwrite)
-    raw_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    return {
-        "enabled": True,
-        "path": raw_out_dir.as_posix(),
-        "manifest": raw_manifest_path.name,
-        "artifacts": copied,
-    }
 
 
 def op_counts(path: Path) -> Counter[str]:
@@ -6658,149 +6580,6 @@ def _single_consumer(
     if op_type is not None and node.op_type != op_type:
         return None
     return node
-
-
-def run_ort(path: Path, feeds: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    session = ort.InferenceSession(path.as_posix(), providers=["CPUExecutionProvider"])
-    typed_feeds = dict(feeds)
-    for input_spec in session.get_inputs():
-        if input_spec.name not in typed_feeds:
-            continue
-        if input_spec.type == "tensor(float16)":
-            typed_feeds[input_spec.name] = typed_feeds[input_spec.name].astype(np.float16)
-        elif input_spec.type == "tensor(float)":
-            typed_feeds[input_spec.name] = typed_feeds[input_spec.name].astype(np.float32)
-    outputs = session.run(None, typed_feeds)
-    return {output.name: value for output, value in zip(session.get_outputs(), outputs)}
-
-
-def compare_arrays(
-    expected: np.ndarray, actual: np.ndarray, atol: float, rtol: float
-) -> dict[str, Any]:
-    expected = expected.astype(np.float32) if expected.dtype == np.float16 else expected
-    actual = actual.astype(np.float32) if actual.dtype == np.float16 else actual
-    diff = np.abs(expected - actual)
-    denom = np.maximum(np.abs(expected), np.asarray(1e-8, dtype=expected.dtype))
-    rel = diff / denom
-    passed = bool(np.allclose(expected, actual, atol=atol, rtol=rtol))
-    return {
-        "atol": atol,
-        "rtol": rtol,
-        "max_abs_error": float(np.max(diff)),
-        "mean_abs_error": float(np.mean(diff)),
-        "max_rel_error": float(np.max(rel)),
-        "mean_rel_error": float(np.mean(rel)),
-        "passed": passed,
-    }
-
-
-def tensor_spec(dtype: str, shape: tuple[int, ...]) -> dict[str, Any]:
-    return {"dtype": dtype, "shape": list(shape)}
-
-
-def export_file_metadata(path: Path) -> dict[str, Any]:
-    metadata = {
-        "path": path.name,
-        "sha256": sha256_file(path),
-    }
-    sidecar = external_data_path(path)
-    if sidecar.exists():
-        metadata["external_data"] = [
-            {
-                "path": sidecar.name,
-                "sha256": sha256_file(sidecar),
-            }
-        ]
-    else:
-        metadata["external_data"] = []
-    return metadata
-
-
-def cache_contract(dyn_shapes, available: bool, dtype: str = "float32") -> dict[str, Any]:
-    cache_shape = list(dyn_shapes.cache)
-    layer_cache_shape = list(dyn_shapes.layer_cache)
-    return {
-        "status": "available" if available else "contract_only",
-        "reason": None
-        if available
-        else (
-            "Cached ONNX graphs require inference-only temporal attention kernels. "
-            "Do not treat the uncached dynamics graph as production browser success."
-        ),
-        "static_axes": True,
-        "context_length": dyn_shapes.context_length,
-        "temporal_blocks": dyn_shapes.temporal_blocks,
-        "total_tokens": dyn_shapes.total_tokens,
-        "num_kv_heads": dyn_shapes.num_kv_heads,
-        "head_dim": dyn_shapes.head_dim,
-        "tensors": {
-            "k_cache": tensor_spec(dtype, tuple(cache_shape)),
-            "v_cache": tensor_spec(dtype, tuple(cache_shape)),
-            "layer_cache": {
-                **tensor_spec(dtype, tuple(layer_cache_shape)),
-                "layers": dyn_shapes.temporal_blocks,
-            },
-            "cache_length": tensor_spec("int32", (1,)),
-        },
-        "ownership": "browser_runtime",
-        "invalidation": [
-            "new_episode",
-            "checkpoint_or_config_change",
-            "context_latent_change",
-            "action_history_change",
-            "latent_history_change",
-            "context_tau_change",
-            "batch_order_change",
-        ],
-        "target_frame_policy": (
-            "Use committed cache for attention on all sample iterations. Discard candidate "
-            "cache for sample steps 0-2. Commit candidate cache only on sample step 3."
-        ),
-    }
-
-
-def validate_single_output(
-    path: Path,
-    feeds: dict[str, jax.Array],
-    output_name: str,
-    expected: jax.Array,
-    atol: float,
-    rtol: float,
-) -> dict[str, Any]:
-    ort_feeds = {name: np.asarray(jax.device_get(value)) for name, value in feeds.items()}
-    actual = run_ort(path, ort_feeds)[output_name]
-    return compare_arrays(
-        np.asarray(jax.device_get(expected)),
-        actual,
-        atol=atol,
-        rtol=rtol,
-    )
-
-
-def validate_outputs(
-    path: Path,
-    feeds: dict[str, jax.Array],
-    expected: dict[str, jax.Array],
-    atol: float,
-    rtol: float,
-) -> dict[str, Any]:
-    ort_feeds = {name: np.asarray(jax.device_get(value)) for name, value in feeds.items()}
-    actual = run_ort(path, ort_feeds)
-    results = {
-        name: compare_arrays(
-            np.asarray(jax.device_get(expected_value)),
-            actual[name],
-            atol=atol,
-            rtol=rtol,
-        )
-        for name, expected_value in expected.items()
-    }
-    return {
-        "atol": atol,
-        "rtol": rtol,
-        "passed": all(result["passed"] for result in results.values()),
-        "outputs": results,
-    }
 
 
 def main() -> None:
