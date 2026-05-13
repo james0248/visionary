@@ -12,7 +12,7 @@ import onnx
 import onnxruntime as ort
 from onnx import numpy_helper
 
-from scripts.webgpu.export_dreamer4_onnx import (
+from webgpu_app.export.export_dreamer4_onnx import (
     fold_attention_scale_into_query_norm_for_webgpu,
     fold_shared_gather_add_constants_for_webgpu,
     remove_zero_softmax_bias_adds_for_webgpu,

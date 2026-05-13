@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable
 
-from scripts.webgpu.export_dreamer4_onnx import (
+from webgpu_app.export.export_dreamer4_onnx import (
     DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
     DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME,
     DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME,

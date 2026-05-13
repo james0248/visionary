@@ -130,7 +130,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Optional directory where the freshly exported ONNX files are copied before "
             "any simplification, ORT optimization, or WebGPU graph rewrites. Use this "
-            "with scripts/webgpu/compare_onnx_artifacts.py as a behavior-preserving "
+            "with webgpu_app/export/compare_raw_optimized_onnx.py as a behavior-preserving "
             "optimization gate."
         ),
     )
