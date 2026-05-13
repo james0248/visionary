@@ -1,4 +1,18 @@
 // @ts-nocheck
+import { applyCacheFeeds, cacheOutputNames, inputCacheNames } from '../runtime/cache';
+import { byExportName, findSpec, sameShape } from '../runtime/manifest';
+import { configureOrt } from '../runtime/ort';
+import {
+  copyGpuTensor,
+  copyTensorToGpu,
+  createEmptyGpuTensor as createEmptyGpuTensorWithOrt,
+  createGpuTensorFromCpu as createGpuTensorFromCpuWithOrt,
+  mul,
+  tensorByteLength,
+  tensorDataBytes,
+  writeCpuTensorToGpu,
+} from '../runtime/tensors';
+
 export {};
 
 let ASSET_DIR = '/dream_arcade_assets/breakout';
@@ -32,19 +46,19 @@ if (CAPTURE_CONSOLE) {
   }
 }
 const ort = await import(ORT_MODULE_URL);
-ort.env.wasm ??= {};
-ort.env.wasm.wasmPaths = '/node_modules/onnxruntime-web/dist/';
 const wasmNumThreadsParam = moduleParams.get('wasmNumThreads');
 const parsedWasmNumThreads = Number(wasmNumThreadsParam);
 const WASM_NUM_THREADS =
   wasmNumThreadsParam == null || !Number.isInteger(parsedWasmNumThreads) || parsedWasmNumThreads <= 0
     ? null
     : parsedWasmNumThreads;
-if (WASM_NUM_THREADS != null) {
-  ort.env.wasm.numThreads = WASM_NUM_THREADS;
-}
-ort.env.webgpu ??= {};
-ort.env.webgpu.powerPreference = 'high-performance';
+configureOrt(ort, {
+  wasmPaths: '/node_modules/onnxruntime-web/dist/',
+  wasmNumThreads: WASM_NUM_THREADS,
+});
+const createGpuTensorFromCpu = (device, tensor) =>
+  createGpuTensorFromCpuWithOrt(ort, device, tensor);
+const createEmptyGpuTensor = (device, spec) => createEmptyGpuTensorWithOrt(ort, device, spec);
 const DEFAULT_TIMED_RUNS = 64;
 const GRAPH_CAPTURE_STEADY_STATE_DROP = 8;
 const SAMPLE_STEPS = 2;
@@ -323,10 +337,6 @@ function summarizeProfiling(profiler, config) {
   };
 }
 
-function mul(shape) {
-  return shape.reduce((total, value) => total * value, 1);
-}
-
 function makePrng(seed) {
   let state = seed >>> 0;
   return () => {
@@ -438,64 +448,6 @@ function makeCacheAttentionMaskTensor(dtype, shape, cacheLength) {
   return new ort.Tensor(dtype, values, shape);
 }
 
-function tensorByteLength(dtype, shape) {
-  const bytesPerElement =
-    dtype === 'float32' || dtype === 'int32' || dtype === 'uint32'
-      ? 4
-      : dtype === 'float16'
-        ? 2
-        : dtype === 'uint8'
-          ? 1
-          : 8;
-  return mul(shape) * bytesPerElement;
-}
-
-function tensorDataBytes(tensor) {
-  const data = tensor.data;
-  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-}
-
-function createGpuTensorFromCpu(device, tensor) {
-  const byteLength = Math.max(16, tensorByteLength(tensor.type, tensor.dims));
-  const buffer = device.createBuffer({
-    size: byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    mappedAtCreation: true,
-  });
-  new Uint8Array(buffer.getMappedRange()).set(tensorDataBytes(tensor));
-  buffer.unmap();
-  return ort.Tensor.fromGpuBuffer(buffer, {
-    dataType: tensor.type,
-    dims: tensor.dims,
-    dispose: () => buffer.destroy(),
-  });
-}
-
-function createEmptyGpuTensor(device, spec) {
-  const byteLength = Math.max(16, tensorByteLength(spec.dtype, spec.shape));
-  const buffer = device.createBuffer({
-    size: byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  return ort.Tensor.fromGpuBuffer(buffer, {
-    dataType: spec.dtype,
-    dims: spec.shape,
-    dispose: () => buffer.destroy(),
-  });
-}
-
-function writeCpuTensorToGpu(device, gpuTensor, cpuTensor) {
-  device.queue.writeBuffer(gpuTensor.gpuBuffer, 0, tensorDataBytes(cpuTensor));
-}
-
-function copyGpuTensor(device, source, target) {
-  if (source === target) return;
-  const byteLength = tensorByteLength(source.type, source.dims);
-  const encoder = device.createCommandEncoder();
-  encoder.copyBufferToBuffer(source.gpuBuffer, 0, target.gpuBuffer, 0, byteLength);
-  device.queue.submit([encoder.finish()]);
-}
-
 function copyGpuTensorToTargets(device, source, targets) {
   const copies = targets.filter((target) => target && source !== target);
   if (!copies.length) return;
@@ -505,14 +457,6 @@ function copyGpuTensorToTargets(device, source, targets) {
     encoder.copyBufferToBuffer(source.gpuBuffer, 0, target.gpuBuffer, 0, byteLength);
   }
   device.queue.submit([encoder.finish()]);
-}
-
-function copyTensorToGpu(device, source, target) {
-  if (source?.location === 'gpu-buffer') {
-    copyGpuTensor(device, source, target);
-  } else {
-    writeCpuTensorToGpu(device, target, source);
-  }
 }
 
 function percentile(sorted, p) {
@@ -806,17 +750,6 @@ function externalDataForSpec(spec) {
   }));
 }
 
-function byExportName(manifest) {
-  return Object.fromEntries((manifest.exports ?? []).map((entry) => [entry.name, entry]));
-}
-
-function findSpec(exportsByName, names) {
-  for (const name of names) {
-    if (exportsByName[name]) return exportsByName[name];
-  }
-  return null;
-}
-
 function resolveDemoSpecs(manifest, config = DEFAULT_CONFIG) {
   const exportsByName = byExportName(manifest);
   const prefillNames = config.prefillArtifact
@@ -841,15 +774,6 @@ function missingDemoArtifacts(specs) {
       role,
       accepted_names: REQUIRED_ARTIFACTS[role],
     }));
-}
-
-function sameShape(actual, expected) {
-  return (
-    Array.isArray(actual) &&
-    Array.isArray(expected) &&
-    actual.length === expected.length &&
-    actual.every((value, index) => value === expected[index])
-  );
 }
 
 function requireTensorSpec(label, spec, expectedShape) {
@@ -1074,21 +998,6 @@ function makeFeedsFromSpec(spec, seedBase = 100) {
   return feeds;
 }
 
-function cacheOutputNames(spec) {
-  const outputs = Object.keys(spec.outputs ?? {});
-  const kLayers = outputs.filter((name) => /^k_cache_\d+$/.test(name)).sort();
-  const vLayers = outputs.filter((name) => /^v_cache_\d+$/.test(name)).sort();
-  const candidateKLayers = outputs.filter((name) => /^candidate_k_cache_\d+$/.test(name)).sort();
-  const candidateVLayers = outputs.filter((name) => /^candidate_v_cache_\d+$/.test(name)).sort();
-  return {
-    k: candidateKLayers.length ? candidateKLayers : kLayers.length ? kLayers : outputs.find((name) => name === 'k_cache' || name.endsWith('_k_cache')),
-    v: candidateVLayers.length ? candidateVLayers : vLayers.length ? vLayers : outputs.find((name) => name === 'v_cache' || name.endsWith('_v_cache')),
-    entryK: outputs.find((name) => name === 'candidate_k_entry' || name.endsWith('_k_entry')),
-    entryV: outputs.find((name) => name === 'candidate_v_entry' || name.endsWith('_v_entry')),
-    length: outputs.find((name) => name === 'cache_length' || name.endsWith('_cache_length')),
-  };
-}
-
 function stepPredOutputName(spec) {
   const outputs = Object.keys(spec.outputs ?? {});
   return (
@@ -1129,20 +1038,6 @@ function decoderInputName(spec) {
     inputs.find((name) => name.includes('latent')) ??
     inputs[0]
   );
-}
-
-function applyCacheFeeds(feeds, cache) {
-  const next = { ...feeds };
-  for (const name of Object.keys(next)) {
-    const kLayer = /^k_cache_(\d+)$/.exec(name);
-    const vLayer = /^v_cache_(\d+)$/.exec(name);
-    if (kLayer && Array.isArray(cache.k)) next[name] = cache.k[Number(kLayer[1])];
-    else if (name === 'k_cache' || name.endsWith('_k_cache')) next[name] = cache.k;
-    if (vLayer && Array.isArray(cache.v)) next[name] = cache.v[Number(vLayer[1])];
-    else if (name === 'v_cache' || name.endsWith('_v_cache')) next[name] = cache.v;
-    if (name === 'cache_length' || name.endsWith('_cache_length')) next[name] = cache.length;
-  }
-  return next;
 }
 
 function replaceNamedFeed(feeds, patterns, tensor) {
@@ -1186,17 +1081,6 @@ function cacheFromOutputs(outputs, names, fallbackLength = null) {
     k: Array.isArray(names.k) ? names.k.map((name) => outputs[name]) : outputs[names.k],
     v: Array.isArray(names.v) ? names.v.map((name) => outputs[name]) : outputs[names.v],
     length: names.length && outputs[names.length] ? outputs[names.length] : fallbackLength,
-  };
-}
-
-function inputCacheNames(spec) {
-  const inputs = Object.keys(spec.inputs ?? {});
-  const kLayers = inputs.filter((name) => /^k_cache_\d+$/.test(name)).sort();
-  const vLayers = inputs.filter((name) => /^v_cache_\d+$/.test(name)).sort();
-  return {
-    k: kLayers.length ? kLayers : inputs.find((name) => name === 'k_cache' || name.endsWith('_k_cache')),
-    v: vLayers.length ? vLayers : inputs.find((name) => name === 'v_cache' || name.endsWith('_v_cache')),
-    length: inputs.find((name) => name === 'cache_length' || name.endsWith('_cache_length')),
   };
 }
 

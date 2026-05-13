@@ -1,4 +1,22 @@
 import { NormalNoiseGenerator } from './jax_noise';
+import {
+  findExport,
+  findFirstExport,
+  findFirstOptionalExport,
+  formatShape,
+  sameShape,
+} from '../runtime/manifest';
+import { configureOrt } from '../runtime/ort';
+import {
+  copyGpuTensor,
+  copyTensorToGpu,
+  createEmptyGpuTensor as createEmptyGpuTensorWithOrt,
+  createGpuTensorFromCpu as createGpuTensorFromCpuWithOrt,
+  mul,
+  tensorByteLength,
+  tensorDataBytes,
+  writeCpuTensorToGpu,
+} from '../runtime/tensors';
 
 const params = new URLSearchParams(window.location.search);
 const scriptElement = document.getElementById('visionary-demo-main') as HTMLElement | null;
@@ -63,11 +81,12 @@ const DEFAULT_GRAPH_OPTIMIZATION_LEVEL = 'basic';
 const DEFAULT_ORT_MODULE = `/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs`;
 const DEFAULT_ORT_WASM_BASE = `/node_modules/onnxruntime-web/dist/`;
 const ort = await import(resolveUrl(configValue('ortModule', DEFAULT_ORT_MODULE)));
-
-ort.env.wasm ??= {};
-ort.env.wasm.wasmPaths = resolveUrl(configValue('ortWasmBase', DEFAULT_ORT_WASM_BASE));
-ort.env.webgpu ??= {};
-ort.env.webgpu.powerPreference = 'high-performance';
+configureOrt(ort, {
+  wasmPaths: resolveUrl(configValue('ortWasmBase', DEFAULT_ORT_WASM_BASE)),
+});
+const createGpuTensorFromCpu = (device, tensor) =>
+  createGpuTensorFromCpuWithOrt(ort, device, tensor);
+const createEmptyGpuTensor = (device, spec) => createEmptyGpuTensorWithOrt(ort, device, spec);
 
 const DEFAULT_ACTION_DEFINITIONS = [
   { id: 0, name: 'noop', label: 'noop', keys: [] },
@@ -450,31 +469,6 @@ function dtypeArray(dtype) {
   throw new Error(`Unsupported artifact dtype ${dtype}`);
 }
 
-function mul(shape) {
-  return shape.reduce((total, value) => total * value, 1);
-}
-
-function tensorByteLength(dtype, shape) {
-  const bytesPerElement =
-    dtype === 'float32' || dtype === 'int32' || dtype === 'uint32'
-      ? 4
-      : dtype === 'float16'
-        ? 2
-        : dtype === 'uint8'
-          ? 1
-          : 8;
-  return mul(shape) * bytesPerElement;
-}
-
-function tensorDataBytes(tensor) {
-  const data = tensor.data;
-  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-}
-
-function writeCpuTensorToGpu(device, gpuTensor, cpuTensor) {
-  device.queue.writeBuffer(gpuTensor.gpuBuffer, 0, tensorDataBytes(cpuTensor));
-}
-
 function createGraphCaptureUploadBuffer(device, gpuTensor, cpuTensor) {
   const byteLength = Math.max(16, tensorByteLength(cpuTensor.type, cpuTensor.dims));
   const buffer = device.createBuffer({
@@ -506,51 +500,6 @@ function writeGraphCaptureInputTensor(device, gpuTensor, cpuTensor) {
     return;
   }
   writeCpuTensorToGpu(device, gpuTensor, cpuTensor);
-}
-
-function copyGpuTensor(device, source, target) {
-  if (source === target) return;
-  const byteLength = tensorByteLength(source.type, source.dims);
-  const encoder = device.createCommandEncoder({ label: 'visionary-demo-gpu-copy' });
-  encoder.copyBufferToBuffer(source.gpuBuffer, 0, target.gpuBuffer, 0, byteLength);
-  device.queue.submit([encoder.finish()]);
-}
-
-function copyTensorToGpu(device, source, target) {
-  if (source?.location === 'gpu-buffer') {
-    copyGpuTensor(device, source, target);
-  } else {
-    writeCpuTensorToGpu(device, target, source);
-  }
-}
-
-function createGpuTensorFromCpu(device, tensor) {
-  const byteLength = Math.max(16, tensorByteLength(tensor.type, tensor.dims));
-  const buffer = device.createBuffer({
-    size: byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-    mappedAtCreation: true,
-  });
-  new Uint8Array(buffer.getMappedRange()).set(tensorDataBytes(tensor));
-  buffer.unmap();
-  return ort.Tensor.fromGpuBuffer(buffer, {
-    dataType: tensor.type,
-    dims: tensor.dims,
-    dispose: () => buffer.destroy(),
-  });
-}
-
-function createEmptyGpuTensor(device, spec) {
-  const byteLength = Math.max(16, tensorByteLength(spec.dtype, spec.shape));
-  const buffer = device.createBuffer({
-    size: byteLength,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  return ort.Tensor.fromGpuBuffer(buffer, {
-    dataType: spec.dtype,
-    dims: spec.shape,
-    dispose: () => buffer.destroy(),
-  });
 }
 
 function cloneTensorToGpu(device, tensor) {
@@ -697,28 +646,6 @@ async function fetchTensorFromArtifact(baseUrl, spec, label) {
   return new ort.Tensor(spec.dtype, new ArrayType(bytes.buffer), spec.shape);
 }
 
-function findExport(manifest, name) {
-  const entry = manifest.exports.find((item) => item.name === name);
-  if (!entry) throw new Error(`Missing export ${name}`);
-  return entry;
-}
-
-function findFirstExport(manifest, names) {
-  for (const name of names.filter(Boolean)) {
-    const entry = manifest.exports.find((item) => item.name === name);
-    if (entry) return entry;
-  }
-  throw new Error(`Missing exports: ${names.filter(Boolean).join(', ')}`);
-}
-
-function findFirstOptionalExport(manifest, names) {
-  for (const name of names.filter(Boolean)) {
-    const entry = manifest.exports.find((item) => item.name === name);
-    if (entry) return entry;
-  }
-  return null;
-}
-
 function isSafariSafeFullCacheStepExport(manifest, spec) {
   if (browserProfile !== 'safari' || !safariSafeGraphCaptureAllowed || !spec) return false;
   const manifestPreferred = manifest.demo_generation?.preferred_full_cache_step_export_safari;
@@ -742,14 +669,6 @@ function requiredOutputName(spec, preferred) {
 
 function optionalOutputName(spec, preferred) {
   return spec.outputs?.[preferred] ? preferred : null;
-}
-
-function formatShape(shape) {
-  return `[${shape.join(',')}]`;
-}
-
-function sameShape(left, right) {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function assertTensorMatchesSpec(tensor, spec, label, name) {
