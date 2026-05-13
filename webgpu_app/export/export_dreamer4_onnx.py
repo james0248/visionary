@@ -26,6 +26,10 @@ from webgpu_app.export.onnx_artifacts import (
     snapshot_raw_artifacts,
 )
 from webgpu_app.export.validation import validate_outputs, validate_single_output
+from webgpu_app.export.webgpu_passes import (
+    run_webgpu_passes,
+    webgpu_pass_options_from_args,
+)
 from visionary.common.checkpoint import (
     resolve_model_export_step,
     restore_model_export_single_device,
@@ -7359,186 +7363,84 @@ def main() -> None:
         else {"enabled": False, "reason": "--raw_out_dir not set"}
     )
 
-    simplification = {
-        name: {"enabled": False, "reason": "--simplify_onnx not set"} for name in exported_paths
-    }
-    if args.simplify_onnx:
-        demo_simplification_names = {
-            TOKENIZER_DECODE_Z_STEP_NAME,
-            DYNAMICS_CACHED_PREFILL_NAME,
-            DYNAMICS_CACHED_PREFILL_LAYER_NAME,
-            DYNAMICS_CACHED_SAMPLE_STEP_NAME,
-            DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME,
-            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
-            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
-            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME,
-            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME,
-            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
-            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME,
-        }
-        simplification = {
-            name: simplify_onnx_for_webgpu(path)
-            if not args.simplify_demo_only or name in demo_simplification_names
-            else {
-                "enabled": False,
-                "reason": "--simplify_demo_only skips artifacts outside the browser demo hot path",
-                "tool": "onnxsim",
-            }
-            for name, path in exported_paths.items()
-        }
-
-    optimization = {
-        name: {"enabled": False, "reason": "--skip_onnx_optimization"} for name in exported_paths
-    }
-    if not args.skip_onnx_optimization:
-        optimization = {
-            name: optimize_onnx_for_webgpu(path) for name, path in exported_paths.items()
-        }
-
-    layout_rewrite = {
-        name: {"enabled": False, "reason": "--skip_singleton_reshape_rewrite"}
-        for name in exported_paths
-    }
-    if not args.skip_singleton_reshape_rewrite:
-        layout_rewrite = {
-            name: rewrite_singleton_reshapes_for_webgpu(path)
-            for name, path in exported_paths.items()
-        }
-        gqa_repeat_rewrite = {
-            name: rewrite_gqa_repeats_for_webgpu(path) for name, path in exported_paths.items()
-        }
-        packed_qkv_head_projection_rewrite = {
-            name: rewrite_packed_qkv_head_projection_for_webgpu(
-                path,
-                enabled=args.pack_qkv_head_projection,
-            )
-            for name, path in exported_paths.items()
-        }
-        head_projection_rewriter = (
-            rewrite_head_projection_reshapes_with_layout_ops_for_webgpu
-            if args.head_projection_rewrite == "layout"
-            else rewrite_head_projection_reshapes_for_webgpu
-        )
-        head_projection_rewrite = {
-            name: head_projection_rewriter(path) for name, path in exported_paths.items()
-        }
-    else:
-        gqa_repeat_rewrite = {
-            name: {"enabled": False, "reason": "--skip_singleton_reshape_rewrite"}
-            for name in exported_paths
-        }
-        head_projection_rewrite = {
-            name: {"enabled": False, "reason": "--skip_singleton_reshape_rewrite"}
-            for name in exported_paths
-        }
-        packed_qkv_head_projection_rewrite = {
-            name: {"enabled": False, "reason": "--skip_singleton_reshape_rewrite"}
-            for name in exported_paths
-        }
-    packed_gemm_rewrite = {
-        name: pack_sibling_gemms_for_webgpu(
-            path,
-            pack_qkv=args.pack_qkv_gemm,
-            pack_swiglu=args.pack_swiglu_gemm,
-        )
-        for name, path in exported_paths.items()
-    }
-    packed_qkv_partial_head_split_rewrite = {
-        name: rewrite_packed_qkv_split_partial_heads_for_webgpu(path)
-        for name, path in exported_paths.items()
-    }
-    q_head_split_gather_rewrite = {
-        name: rewrite_q_head_split_gather_for_webgpu(path)
-        for name, path in exported_paths.items()
-    }
-    slide_static_cache_rewrite = {
-        name: rewrite_slide_static_cache_ops_for_webgpu(path)
-        if name
-        in {
-            DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME,
-            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME,
-            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME,
-        }
-        else {"enabled": False, "reason": "not a steady-state slide artifact"}
-        for name, path in exported_paths.items()
-    }
-
-    rmsnorm_rewrite = {
-        name: rewrite_rmsnorm_for_webgpu(path) for name, path in exported_paths.items()
-    }
-    skip_simplified_layer_norm_rewrite = {
-        name: fuse_skip_simplified_layer_norm_for_webgpu(path)
-        for name, path in exported_paths.items()
-    }
-    gather_index_rewrite = {
-        name: rewrite_gather_int64_casts_for_webgpu(path) for name, path in exported_paths.items()
-    }
-    rotary_embedding_rewrite = {
-        name: {"enabled": False, "reason": "--rotary_embedding_rewrite not set"}
-        for name in exported_paths
-    }
-    if args.rotary_embedding_rewrite:
-        rotary_embedding_rewrite = {
-            name: rewrite_rotary_embedding_for_webgpu(path)
-            for name, path in exported_paths.items()
-        }
-    fused_gqa_attention_rewrite = {
-        name: fuse_manual_gqa_attention_for_webgpu(
-            path,
-            enabled=args.fuse_gqa_attention or args.fuse_spatial_gqa_attention,
-            fuse_spatial=args.fuse_spatial_gqa_attention,
-        )
-        for name, path in exported_paths.items()
-    }
-    fused_mha_attention_rewrite = {
-        name: fuse_manual_mha_attention_for_webgpu(path, enabled=args.fuse_mha_attention)
-        for name, path in exported_paths.items()
-    }
-    squeeze_concat_rewrite = {
-        name: rewrite_squeeze_concat_for_webgpu(
-            path, enabled=not args.skip_squeeze_concat_rewrite
-        )
-        for name, path in exported_paths.items()
-    }
-    unsqueeze_transpose_squeeze_rewrite = {
-        name: rewrite_unsqueeze_transpose_squeeze_for_webgpu(
-            path, enabled=not args.skip_unsqueeze_transpose_squeeze_rewrite
-        )
-        for name, path in exported_paths.items()
-    }
-    attention_scale_folding = {
-        name: fold_attention_scale_into_query_norm_for_webgpu(
-            path, enabled=not args.skip_attention_scale_folding
-        )
-        for name, path in exported_paths.items()
-    }
-    zero_softmax_bias_add_prune = {
-        name: remove_zero_softmax_bias_adds_for_webgpu(path)
-        for name, path in exported_paths.items()
-    }
-    spatial_qk_head_layout_rewrite = {
-        name: rewrite_spatial_qk_head_layout_for_webgpu(
-            path, enabled=not args.skip_spatial_qk_head_layout_rewrite
-        )
-        for name, path in exported_paths.items()
-    }
-    temporal_attention_bhsd_rewrite = {
-        name: rewrite_temporal_attention_bhsd_for_webgpu(
-            path, enabled=not args.skip_temporal_attention_bhsd_rewrite
-        )
-        for name, path in exported_paths.items()
-    }
-    final_z_only_rewrite = {
-        name: rewrite_entry_final_z_only_for_webgpu(
-            path,
-            enabled=name
-            in {
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME,
-            },
-        )
-        for name, path in exported_paths.items()
-    }
+    pass_results = run_webgpu_passes(
+        exported_paths,
+        webgpu_pass_options_from_args(args),
+        names={
+            "tokenizer_decode_z_step": TOKENIZER_DECODE_Z_STEP_NAME,
+            "dynamics_cached_prefill": DYNAMICS_CACHED_PREFILL_NAME,
+            "dynamics_cached_prefill_layer": DYNAMICS_CACHED_PREFILL_LAYER_NAME,
+            "dynamics_cached_sample_step": DYNAMICS_CACHED_SAMPLE_STEP_NAME,
+            "dynamics_cached_sample_step_slide": DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME,
+            "dynamics_cached_sample_append_context": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
+            "dynamics_cached_sample_append_context_entry": (
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
+            ),
+            "dynamics_cached_sample_append_context_slide": (
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME
+            ),
+            "dynamics_cached_sample_append_context_slide_full_cache": (
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+            ),
+            "dynamics_cached_sample_append_context_slide_entry": (
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+            ),
+            "dynamics_cached_sample_append_context_slide_layer": (
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
+            ),
+        },
+        rewrites={
+            "simplify": simplify_onnx_for_webgpu,
+            "optimize": optimize_onnx_for_webgpu,
+            "singleton_reshapes": rewrite_singleton_reshapes_for_webgpu,
+            "gqa_repeats": rewrite_gqa_repeats_for_webgpu,
+            "packed_qkv_head_projection": rewrite_packed_qkv_head_projection_for_webgpu,
+            "head_projection_layout": rewrite_head_projection_reshapes_with_layout_ops_for_webgpu,
+            "head_projection_einsum": rewrite_head_projection_reshapes_for_webgpu,
+            "pack_sibling_gemms": pack_sibling_gemms_for_webgpu,
+            "packed_qkv_partial_head_split": rewrite_packed_qkv_split_partial_heads_for_webgpu,
+            "q_head_split_gather": rewrite_q_head_split_gather_for_webgpu,
+            "slide_static_cache": rewrite_slide_static_cache_ops_for_webgpu,
+            "rmsnorm": rewrite_rmsnorm_for_webgpu,
+            "skip_simplified_layer_norm": fuse_skip_simplified_layer_norm_for_webgpu,
+            "gather_index": rewrite_gather_int64_casts_for_webgpu,
+            "rotary_embedding": rewrite_rotary_embedding_for_webgpu,
+            "fuse_gqa_attention": fuse_manual_gqa_attention_for_webgpu,
+            "fuse_mha_attention": fuse_manual_mha_attention_for_webgpu,
+            "squeeze_concat": rewrite_squeeze_concat_for_webgpu,
+            "unsqueeze_transpose_squeeze": rewrite_unsqueeze_transpose_squeeze_for_webgpu,
+            "attention_scale_folding": fold_attention_scale_into_query_norm_for_webgpu,
+            "zero_softmax_bias_adds": remove_zero_softmax_bias_adds_for_webgpu,
+            "spatial_qk_head_layout": rewrite_spatial_qk_head_layout_for_webgpu,
+            "temporal_attention_bhsd": rewrite_temporal_attention_bhsd_for_webgpu,
+            "entry_final_z_only": rewrite_entry_final_z_only_for_webgpu,
+        },
+    )
+    simplification = pass_results["simplification"]
+    optimization = pass_results["optimization"]
+    layout_rewrite = pass_results["layout_rewrite"]
+    gqa_repeat_rewrite = pass_results["gqa_repeat_rewrite"]
+    packed_qkv_head_projection_rewrite = pass_results["packed_qkv_head_projection_rewrite"]
+    head_projection_rewrite = pass_results["head_projection_rewrite"]
+    packed_gemm_rewrite = pass_results["packed_gemm_rewrite"]
+    packed_qkv_partial_head_split_rewrite = pass_results[
+        "packed_qkv_partial_head_split_rewrite"
+    ]
+    q_head_split_gather_rewrite = pass_results["q_head_split_gather_rewrite"]
+    slide_static_cache_rewrite = pass_results["slide_static_cache_rewrite"]
+    rmsnorm_rewrite = pass_results["rmsnorm_rewrite"]
+    skip_simplified_layer_norm_rewrite = pass_results["skip_simplified_layer_norm_rewrite"]
+    gather_index_rewrite = pass_results["gather_index_rewrite"]
+    rotary_embedding_rewrite = pass_results["rotary_embedding_rewrite"]
+    fused_gqa_attention_rewrite = pass_results["fused_gqa_attention_rewrite"]
+    fused_mha_attention_rewrite = pass_results["fused_mha_attention_rewrite"]
+    squeeze_concat_rewrite = pass_results["squeeze_concat_rewrite"]
+    unsqueeze_transpose_squeeze_rewrite = pass_results["unsqueeze_transpose_squeeze_rewrite"]
+    attention_scale_folding = pass_results["attention_scale_folding"]
+    zero_softmax_bias_add_prune = pass_results["zero_softmax_bias_add_prune"]
+    spatial_qk_head_layout_rewrite = pass_results["spatial_qk_head_layout_rewrite"]
+    temporal_attention_bhsd_rewrite = pass_results["temporal_attention_bhsd_rewrite"]
+    final_z_only_rewrite = pass_results["final_z_only_rewrite"]
     validation = {
         TOKENIZER_DECODER_NAME: {"skipped": not args.validate},
         DYNAMICS_UNCACHED_NAME: {"skipped": not args.validate},
