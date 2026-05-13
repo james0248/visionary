@@ -9,7 +9,8 @@ Chrome browser.
 ## Setup
 
 ```bash
-bun install
+cd webgpu_app
+bun install --frozen-lockfile
 bunx playwright install chrome
 ```
 
@@ -22,7 +23,7 @@ bun run benchmark:webgpu:ci
 ```
 
 The default scripts launch headed Google Chrome and require a hardware WebGPU adapter. On Apple
-Silicon this should report the M-series GPU in `webgpu_app/bench/results/latest.json`; it should not
+Silicon this should report the M-series GPU in `bench/results/latest.json`; it should not
 report SwiftShader.
 
 Benchmark controls are wrapper flags passed after `--`. Prefer these over leading shell environment
@@ -30,7 +31,7 @@ assignments:
 
 ```bash
 bun run benchmark:webgpu -- --grep @graph-capture --webgpu-benchmark-timed-runs 64
-bun run benchmark:webgpu -- --webgpu-benchmark-asset-base /webgpu_app/dream_arcade_assets/breakout
+bun run benchmark:webgpu -- --webgpu-benchmark-asset-base /dream_arcade_assets/breakout
 bun run benchmark:webgpu -- --webgpu-benchmark-graph-optimization-level extended
 bun run benchmark:webgpu -- --webgpu-benchmark-browser-profile safari
 bun run benchmark:webgpu -- --webgpu-benchmark-provider wasm --webgpu-benchmark-ort-module /node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs --webgpu-benchmark-wasm-num-threads 4
@@ -46,7 +47,7 @@ remains a diagnostic rather than the Safari default.
 Manual Safari URL while the static server is running:
 
 ```text
-http://127.0.0.1:4173/webgpu_app/bench/index.html?browserProfile=safari
+http://127.0.0.1:4173/bench/index.html?browserProfile=safari
 ```
 
 For a functional-only check in headless Chromium/SwiftShader:
@@ -71,10 +72,10 @@ The benchmark only runs when these cached demo artifacts are present in
 If those artifacts are missing, the benchmark writes a structured `blocked` result instead of running
 the old full-window graphs.
 
-Create the demo artifacts with:
+Create the demo artifacts from the repository root with:
 
 ```bash
-uv run python scripts/webgpu/export_dreamer4_onnx.py \
+uv run python webgpu_app/export/export_dreamer4_onnx.py \
   --tokenizer_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_tokenizer_small_2x \
   --tokenizer_step 1000000 \
   --dynamics_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_dynamics_small_2x \
@@ -85,7 +86,7 @@ uv run python scripts/webgpu/export_dreamer4_onnx.py \
   --export_cached \
   --validate \
   --overwrite
-uv run python scripts/webgpu/specialize_full_cache_entry.py \
+uv run python webgpu_app/export/specialize_full_cache_entry.py \
   --asset_dir webgpu_app/dream_arcade_assets/breakout
 ```
 
@@ -153,7 +154,7 @@ graph capture because part of the graph cannot be assigned to WebGPU, the test r
 
 ## Baselines
 
-`webgpu_app/bench/baselines/webgpu_benchmark_baseline.json` starts in warning mode. After cached
+`bench/baselines/webgpu_benchmark_baseline.json` starts in warning mode. After cached
 demo artifacts exist and stable results are collected on the target machine, add representative
 `streaming_frame` entries from `results/latest.json` and switch `policy.mode` to `fail` when
 regressions should break CI.
