@@ -266,6 +266,42 @@ def stress_dynamics_loader(args) -> dict[str, Any]:
     }
 
 
+def read_dynamics_indices(args) -> dict[str, Any]:
+    summaries = []
+    for data_dir in args.data_dirs:
+        source = DynamicsDataSource(data_dir.as_posix())
+        logger.info(
+            "Reading DynamicsDataSource indices from %s: records=%d indices=%s repeats=%d",
+            data_dir,
+            len(source),
+            args.indices,
+            args.repeats,
+        )
+        for repeat in range(int(args.repeats)):
+            for idx in args.indices:
+                record = source[int(idx)]
+                summaries.append(
+                    {
+                        "data_dir": data_dir.as_posix(),
+                        "repeat": repeat,
+                        "index": int(idx),
+                        "video_shape": list(record["video"].shape),
+                        "actions_shape": list(record["actions"].shape),
+                    }
+                )
+    return {
+        "mode": "read_dynamics_indices",
+        "settings": {
+            "indices": [int(idx) for idx in args.indices],
+            "repeats": int(args.repeats),
+        },
+        "totals": {
+            "reads": len(summaries),
+        },
+        "summaries": summaries,
+    }
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     parser = argparse.ArgumentParser(
@@ -280,6 +316,13 @@ def main() -> int:
         action="store_true",
         help="Use DynamicsDataSource plus Grain DataLoader to reproduce training-style reads.",
     )
+    parser.add_argument(
+        "--read_dynamics_indices",
+        action="store_true",
+        help="Read specific global DynamicsDataSource indices repeatedly.",
+    )
+    parser.add_argument("--indices", nargs="+", type=int, default=[])
+    parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--sequence_length", type=int, default=128)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--batches", type=int, default=1000)
@@ -325,6 +368,15 @@ def main() -> int:
         raise ValueError("--max_bad_records_per_shard must be positive")
 
     data_dirs = [Path(data_dir) for data_dir in args.data_dirs]
+    if args.read_dynamics_indices:
+        if not args.indices:
+            raise ValueError("--read_dynamics_indices requires --indices")
+        payload = read_dynamics_indices(args)
+        if args.report_path:
+            write_report(args.report_path, payload)
+        logger.info("Read-index summary: reads=%d", payload["totals"]["reads"])
+        return 0
+
     if args.stress_dynamics_loader:
         payload = stress_dynamics_loader(args)
         if args.report_path:

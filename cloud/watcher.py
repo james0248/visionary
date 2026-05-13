@@ -474,6 +474,38 @@ def queued_resource_metadata_mismatch_reason(
     return None
 
 
+def queued_resource_spec_mismatch_reason(
+    desc: dict[str, Any], candidate: dict[str, Any]
+) -> str | None:
+    node_specs = queued_resource_node_specs(desc)
+    if not node_specs:
+        return "missing nodeSpec"
+
+    expected_accelerator_type = str(candidate["accelerator_type"])
+    expected_runtime_version = str(candidate["runtime_version"])
+
+    for spec in node_specs:
+        node = spec.get("node", {})
+        if not isinstance(node, dict):
+            return "missing node"
+
+        actual_accelerator_type = str(node.get("acceleratorType", ""))
+        if actual_accelerator_type != expected_accelerator_type:
+            return (
+                "accelerator-type mismatch "
+                f"(expected {expected_accelerator_type}, found {actual_accelerator_type or 'missing'})"
+            )
+
+        actual_runtime_version = str(node.get("runtimeVersion", ""))
+        if actual_runtime_version != expected_runtime_version:
+            return (
+                "runtime-version mismatch "
+                f"(expected {expected_runtime_version}, found {actual_runtime_version or 'missing'})"
+            )
+
+    return None
+
+
 def gcs_object_exists(cfg: dict[str, Any], uri: str) -> bool:
     if not uri:
         return False
@@ -1029,11 +1061,13 @@ def main() -> None:
             indent=2,
         )
         queued_state = queued_resource_state(desc)
-        mismatch_reason = queued_resource_metadata_mismatch_reason(
-            desc,
-            expected_startup_script=starter_script_contents,
-            expected_payload_json=expected_payload_json,
-        )
+        mismatch_reason = queued_resource_spec_mismatch_reason(desc, candidate)
+        if mismatch_reason is None:
+            mismatch_reason = queued_resource_metadata_mismatch_reason(
+                desc,
+                expected_startup_script=starter_script_contents,
+                expected_payload_json=expected_payload_json,
+            )
         if mismatch_reason is not None:
             if queued_state in DELETE_IN_PROGRESS_STATES:
                 print(
