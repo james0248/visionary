@@ -5815,3 +5815,69 @@ Current bottleneck:
 - Native ORT CPU profiling on the exported graph pointed at `Gemm` plus layout-heavy
   `Unsqueeze`/`Concat`/`Gather`/`Transpose` work, but the graph-level controls above did not
   produce a faster browser WASM path.
+
+### Chrome Pure-WASM Decoder MHA Trial
+
+Goal:
+- Continue the pure WASM search without changing `sample_steps=2`.
+- Gate graph changes with exporter `--validate` against the JAX baseline before benchmarking.
+
+What changed:
+- Added an opt-in WASM export flag, `--wasm_mha_decoder_fusion`, that extends the existing MHA
+  rewrite to the single-frame decoder artifact.
+- The decoder path now can fuse both:
+  - unmasked `bqhd,bkhd->bhqk` / `bhqk,bkhd->bqhd` islands
+  - masked spatial `bhqd,bhkd->bhqk` / `bhqk,bkhd->bqhd` islands when the attention bias can be
+    passed as the fused op's optional attention-bias input.
+
+Validated export:
+
+```bash
+uv run python webgpu_app/export/export_dreamer4_onnx.py \
+  --tokenizer_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_tokenizer_small_2x \
+  --tokenizer_step 1000000 \
+  --dynamics_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_dynamics_small_2x \
+  --dynamics_step 1000000 \
+  --out_dir webgpu_app/dream_arcade_assets/breakout_wasm_decoder_bhqd_mha \
+  --export_target wasm \
+  --wasm_mha_decoder_fusion \
+  --seq_len 64 \
+  --sample_steps 2 \
+  --export_cached \
+  --validate \
+  --overwrite
+```
+
+Validation/result:
+- JAX export validation passed.
+- `breakout_tokenizer_decoder_b1_t1` rewrote `8` decoder MHA islands:
+  `6` BHQD masked islands with attention bias and `2` BQHD islands.
+- `breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2` kept the previously accepted
+  `35` temporal/BQHD dynamics MHA rewrites.
+- Headed Chrome pure-WASM benchmark with output validation passed:
+  - Artifact: `/dream_arcade_assets/breakout_wasm_decoder_bhqd_mha`
+  - ORT module: `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`
+  - Threads: `wasmNumThreads=4`
+  - Runtime graph optimization: `basic`
+  - Timed runs: `16`
+  - Streaming: `18.21 fps`, `54.93 ms/frame`
+  - Dynamics: `40.06 ms`
+  - Decoder: `14.76 ms`
+
+Interpretation:
+- This is JAX-valid and directionally improves the fresh same-session default rerun
+  (`17.47 fps`, dynamics `41.42 ms`, decoder `15.66 ms`), but it does not beat the previous best
+  recorded WASM run (`19.84 fps`).
+- Native ORT CPU profiling of the decoder showed the rewrite replaced the decoder's large
+  `Einsum`/`Softmax` work with `MultiHeadAttention` and reduced total decoder attention time, but
+  browser end-to-end FPS is still dominated by dynamics and runtime variance.
+
+Additional controls before stopping:
+- `ort.jspi.min.mjs` was output-valid but slower: `16.05 fps`, dynamics about `45.5 ms`, decoder
+  about `16.6 ms`.
+- Existing slide-entry artifact was output-valid but much slower: `11.28 fps`; the JavaScript CPU
+  cache slide/rebase path cost about `31.4 ms/frame`.
+- Explicit `breakout_tokenizer_decode_z_b1_t1` decoder artifact was output-valid but slower than
+  the default decoder path in the same window: `17.92 fps`, decoder about `15.0 ms`.
+- A longer `64`-run headed default rerun completed after the stop request and stayed below target:
+  `16.53 fps`, dynamics about `43.18 ms`, decoder about `17.23 ms`.

@@ -377,6 +377,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--wasm_mha_decoder_fusion",
+        action="store_true",
+        help=(
+            "WASM export only: fuse matched single-frame decoder attention islands into "
+            "com.microsoft::MultiHeadAttention. This includes masked BHQD islands when "
+            "the attention bias can be passed through the fused op."
+        ),
+    )
+    parser.add_argument(
         "--context_latents",
         type=Path,
         default=None,
@@ -5101,6 +5110,8 @@ def fuse_manual_gqa_attention_for_webgpu(
 def fuse_manual_mha_attention_for_webgpu(
     path: Path,
     enabled: bool,
+    include_bhqd_attention: bool = False,
+    include_attention_bias: bool = False,
 ) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
@@ -5111,6 +5122,8 @@ def fuse_manual_mha_attention_for_webgpu(
             "node_count_after": int(sum(before.values())),
             "rewrites": {},
             "rewrite_examples": [],
+            "include_bhqd_attention": include_bhqd_attention,
+            "include_attention_bias": include_attention_bias,
         }
 
     model = onnx.load(path.as_posix(), load_external_data=True)
@@ -5167,6 +5180,24 @@ def fuse_manual_mha_attention_for_webgpu(
         if array.size != 1:
             return None
         return float(array.reshape(()))
+
+    def parse_scaled_score(
+        value_name: str,
+    ) -> tuple[onnx.NodeProto | None, float | None, onnx.NodeProto | None]:
+        candidate = producer.get(value_name)
+        if candidate is not None and candidate.op_type == "Einsum":
+            return candidate, 1.0, None
+        if candidate is None or candidate.op_type != "Mul" or len(candidate.input) != 2:
+            return None, None, None
+        first = None
+        scale = None
+        for input_name in candidate.input:
+            input_producer = producer.get(input_name)
+            if input_producer is not None and input_producer.op_type == "Einsum":
+                first = input_producer
+            else:
+                scale = const_scalar(input_name)
+        return first, scale, candidate
 
     def squeeze_axes(node: onnx.NodeProto) -> tuple[int, ...] | None:
         if node.op_type != "Squeeze":
@@ -5335,6 +5366,64 @@ def fuse_manual_mha_attention_for_webgpu(
             ],
         )
 
+    def transpose_query_heads_for_mha(
+        source_name: str,
+        shape: tuple[int, ...],
+        prefix: str,
+    ) -> tuple[str, list[onnx.NodeProto]]:
+        if len(shape) != 4:
+            return flatten_heads(source_name, shape, prefix=prefix)
+        bqhd_name = f"{prefix}__bqhd"
+        flat_name, flat_nodes = flatten_heads(
+            bqhd_name,
+            (shape[0], shape[2], shape[1], shape[3]),
+            prefix=prefix,
+        )
+        return (
+            flat_name,
+            [
+                onnx.helper.make_node(
+                    "Transpose",
+                    [source_name],
+                    [bqhd_name],
+                    name=f"{prefix}__to_bqhd",
+                    perm=[0, 2, 1, 3],
+                ),
+                *flat_nodes,
+            ],
+        )
+
+    def infer_bhqd_attention_shapes(
+        score_shape: tuple[int, ...] | None,
+        output_shape: tuple[int, ...] | None,
+    ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]] | None:
+        if (
+            score_shape is None
+            or output_shape is None
+            or len(score_shape) != 4
+            or len(output_shape) != 4
+        ):
+            return None
+        batch, num_heads, query_tokens, key_tokens = (int(dim) for dim in score_shape)
+        if (
+            batch <= 0
+            or num_heads <= 0
+            or query_tokens <= 0
+            or key_tokens <= 0
+            or int(output_shape[0]) != batch
+            or int(output_shape[1]) != query_tokens
+            or int(output_shape[2]) != num_heads
+        ):
+            return None
+        head_dim = int(output_shape[3])
+        if head_dim <= 0:
+            return None
+        return (
+            (batch, num_heads, query_tokens, head_dim),
+            (batch, num_heads, key_tokens, head_dim),
+            (batch, key_tokens, num_heads, head_dim),
+        )
+
     replacements: dict[str, list[onnx.NodeProto]] = {}
     skip_nodes: set[str] = set()
     rewrites = Counter()
@@ -5343,31 +5432,59 @@ def fuse_manual_mha_attention_for_webgpu(
     for softmax in model.graph.node:
         if softmax.op_type != "Softmax":
             continue
-        mul = producer.get(softmax.input[0])
-        first = None
-        scale = None
-        if mul is not None and mul.op_type == "Mul" and len(mul.input) == 2:
-            for input_name in mul.input:
-                candidate = producer.get(input_name)
-                if candidate is not None and candidate.op_type == "Einsum":
-                    first = candidate
-                else:
-                    scale = const_scalar(input_name)
-        else:
-            candidate = producer.get(softmax.input[0])
-            if candidate is not None and candidate.op_type == "Einsum":
-                first = candidate
-                scale = 1.0
+        bias_add = None
+        attention_bias_name = None
+        first, scale, mul = parse_scaled_score(softmax.input[0])
+        if first is None and include_attention_bias:
+            candidate_add = producer.get(softmax.input[0])
+            if (
+                candidate_add is not None
+                and candidate_add.op_type == "Add"
+                and len(candidate_add.input) == 2
+            ):
+                for input_name in candidate_add.input:
+                    candidate_first, candidate_scale, candidate_mul = parse_scaled_score(input_name)
+                    if candidate_first is not None and candidate_scale is not None:
+                        other_input = (
+                            candidate_add.input[1]
+                            if input_name == candidate_add.input[0]
+                            else candidate_add.input[0]
+                        )
+                        first = candidate_first
+                        scale = candidate_scale
+                        mul = candidate_mul
+                        bias_add = candidate_add
+                        attention_bias_name = other_input
+                        break
         if first is None or scale is None:
             continue
         second = single_consumer(softmax.output[0], "Einsum")
         first_equation = equation(first)
         second_equation = equation(second) if second is not None else ""
-        if first_equation != "bqhd,bkhd->bhqk" or second_equation != "bhqk,bkhd->bqhd":
+        is_bqhd_attention = (
+            first_equation == "bqhd,bkhd->bhqk" and second_equation == "bhqk,bkhd->bqhd"
+        )
+        is_bhqd_attention = (
+            first_equation == "bhqd,bhkd->bhqk" and second_equation == "bhqk,bkhd->bqhd"
+        )
+        if not (is_bqhd_attention or is_bhqd_attention):
+            continue
+        if is_bhqd_attention and not include_bhqd_attention:
             continue
         if second.input[0] != softmax.output[0]:
             continue
-        if mul is None or mul.op_type != "Mul":
+        if bias_add is not None:
+            if single_consumer(bias_add.output[0]) is not softmax:
+                continue
+            if mul is None:
+                if single_consumer(first.output[0]) is not bias_add:
+                    continue
+            else:
+                if single_consumer(first.output[0]) is not mul:
+                    continue
+                if single_consumer(mul.output[0]) is not bias_add:
+                    continue
+        elif mul is None or mul.op_type != "Mul":
             if single_consumer(first.output[0]) is not softmax:
                 continue
         else:
@@ -5383,6 +5500,13 @@ def fuse_manual_mha_attention_for_webgpu(
         k_shape = value_shapes.get(k_name)
         v_shape = value_shapes.get(v_name)
         output_shape = value_shapes.get(second.output[0])
+        if is_bhqd_attention and (q_shape is None or k_shape is None or v_shape is None):
+            inferred_shapes = infer_bhqd_attention_shapes(
+                value_shapes.get(first.output[0]),
+                output_shape,
+            )
+            if inferred_shapes is not None:
+                q_shape, k_shape, v_shape = inferred_shapes
         if (
             q_shape is None
             or k_shape is None
@@ -5394,14 +5518,28 @@ def fuse_manual_mha_attention_for_webgpu(
             or len(output_shape) != 4
         ):
             continue
-        if q_shape[0] != k_shape[0] or q_shape[0] != v_shape[0]:
-            continue
-        if k_shape[1] != v_shape[1] or k_shape[2:] != v_shape[2:]:
-            continue
-        if q_shape[2:] != k_shape[2:] or output_shape != q_shape:
-            continue
-        num_heads = int(q_shape[2])
-        head_dim = int(q_shape[3])
+        if is_bqhd_attention:
+            if q_shape[0] != k_shape[0] or q_shape[0] != v_shape[0]:
+                continue
+            if k_shape[1] != v_shape[1] or k_shape[2:] != v_shape[2:]:
+                continue
+            if q_shape[2:] != k_shape[2:] or output_shape != q_shape:
+                continue
+            num_heads = int(q_shape[2])
+            head_dim = int(q_shape[3])
+        else:
+            if q_shape[0] != k_shape[0] or q_shape[0] != v_shape[0]:
+                continue
+            if q_shape[1] != k_shape[1] or q_shape[1] != v_shape[2]:
+                continue
+            if q_shape[2] != output_shape[1] or q_shape[3] != output_shape[3]:
+                continue
+            if k_shape[2] != v_shape[1] or k_shape[3] != v_shape[3]:
+                continue
+            if output_shape[0] != q_shape[0] or output_shape[2] != q_shape[1]:
+                continue
+            num_heads = int(q_shape[1])
+            head_dim = int(q_shape[3])
         if num_heads <= 0 or head_dim <= 0:
             continue
 
@@ -5412,13 +5550,22 @@ def fuse_manual_mha_attention_for_webgpu(
 
         prefix = node_key(second)
         mha_raw_output = output_name if not output_squeeze_axes else f"{prefix}__mha_flat_output"
-        q_flat, q_nodes = flatten_heads(q_name, q_shape, prefix=f"{prefix}__mha_q")
-        k_flat, k_nodes = transpose_kv_heads_for_mha(k_name, k_shape, prefix=f"{prefix}__mha_k")
+        if is_bqhd_attention:
+            q_flat, q_nodes = flatten_heads(q_name, q_shape, prefix=f"{prefix}__mha_q")
+            k_flat, k_nodes = transpose_kv_heads_for_mha(k_name, k_shape, prefix=f"{prefix}__mha_k")
+        else:
+            q_flat, q_nodes = transpose_query_heads_for_mha(
+                q_name, q_shape, prefix=f"{prefix}__mha_q"
+            )
+            k_flat, k_nodes = (k_name, [])
         v_flat, v_nodes = transpose_kv_heads_for_mha(v_name, v_shape, prefix=f"{prefix}__mha_v")
+        mha_inputs = [q_flat, k_flat, v_flat]
+        if attention_bias_name:
+            mha_inputs.extend(["", "", attention_bias_name])
         mha_nodes = [
             onnx.helper.make_node(
                 "MultiHeadAttention",
-                [q_flat, k_flat, v_flat],
+                mha_inputs,
                 [mha_raw_output],
                 name=f"{prefix}__multi_head_attention",
                 domain="com.microsoft",
@@ -5447,8 +5594,15 @@ def fuse_manual_mha_attention_for_webgpu(
         skip_nodes.update({node_key(first), node_key(softmax), *merge_skip_nodes})
         if mul is not None and mul.op_type == "Mul":
             skip_nodes.add(node_key(mul))
+        if bias_add is not None:
+            skip_nodes.add(node_key(bias_add))
         rewrites["multi_head_attention"] += 1
-        rewrites["bqhd_multi_head_attention"] += 1
+        if is_bqhd_attention:
+            rewrites["bqhd_multi_head_attention"] += 1
+        else:
+            rewrites["bhqd_multi_head_attention"] += 1
+        if attention_bias_name:
+            rewrites["attention_bias"] += 1
         if len(examples) < 12:
             examples.append(
                 {
@@ -5460,6 +5614,7 @@ def fuse_manual_mha_attention_for_webgpu(
                     "num_heads": num_heads,
                     "head_dim": head_dim,
                     "scale": float(scale),
+                    "attention_bias": attention_bias_name,
                     "output_squeeze_axes": list(output_squeeze_axes),
                 }
             )
@@ -5509,11 +5664,13 @@ def fuse_manual_mha_attention_for_webgpu(
         "enabled": True,
         "tool": "custom_multi_head_attention_rewrite",
         "reason": (
-            "Replace mask-free manual attention islands with "
+            "Replace matched manual attention islands with "
             "com.microsoft::MultiHeadAttention after K/V heads have already been "
             "materialized. This preserves the explicit graph's attention semantics "
             "while testing ORT fused attention kernels."
         ),
+        "include_bhqd_attention": include_bhqd_attention,
+        "include_attention_bias": include_attention_bias,
         "node_count_before": int(sum(before.values())),
         "node_count_after": int(sum(after.values())),
         "rewrites": {key: int(value) for key, value in rewrites.items()},
@@ -7390,6 +7547,7 @@ def main() -> None:
     )
 
     pass_names = {
+        "tokenizer_decoder_step": TOKENIZER_DECODER_STEP_NAME,
         "tokenizer_decode_z_step": TOKENIZER_DECODE_Z_STEP_NAME,
         "dynamics_cached_prefill": DYNAMICS_CACHED_PREFILL_NAME,
         "dynamics_cached_prefill_layer": DYNAMICS_CACHED_PREFILL_LAYER_NAME,
@@ -8657,10 +8815,16 @@ def main() -> None:
             "post_export_spatial_gqa_fusion": args.fuse_spatial_gqa_attention,
             "post_export_mha_fusion": (
                 args.fuse_mha_attention
-                or (args.export_target == "wasm" and args.wasm_mha_dynamics_fusion)
+                or (
+                    args.export_target == "wasm"
+                    and (args.wasm_mha_dynamics_fusion or args.wasm_mha_decoder_fusion)
+                )
             ),
             "wasm_mha_dynamics_fusion": (
                 args.export_target == "wasm" and args.wasm_mha_dynamics_fusion
+            ),
+            "wasm_mha_decoder_fusion": (
+                args.export_target == "wasm" and args.wasm_mha_decoder_fusion
             ),
         },
         "layout_rewrite": {

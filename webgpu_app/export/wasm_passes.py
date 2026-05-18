@@ -24,6 +24,7 @@ class WasmPassOptions:
     skip_spatial_qk_head_layout_rewrite: bool
     skip_temporal_attention_bhsd_rewrite: bool
     wasm_mha_dynamics_fusion: bool
+    wasm_mha_decoder_fusion: bool
 
 
 def wasm_pass_options_from_args(args) -> WasmPassOptions:
@@ -43,6 +44,7 @@ def wasm_pass_options_from_args(args) -> WasmPassOptions:
         skip_spatial_qk_head_layout_rewrite=args.skip_spatial_qk_head_layout_rewrite,
         skip_temporal_attention_bhsd_rewrite=args.skip_temporal_attention_bhsd_rewrite,
         wasm_mha_dynamics_fusion=args.wasm_mha_dynamics_fusion,
+        wasm_mha_decoder_fusion=args.wasm_mha_decoder_fusion,
     )
 
 
@@ -187,11 +189,25 @@ def run_wasm_passes(
     wasm_mha_artifacts = {
         names["dynamics_cached_sample_append_context_slide_full_cache"],
     }
+    wasm_mha_decoder_artifacts = {
+        names["tokenizer_decoder_step"],
+    }
     fused_mha_attention_rewrite = {
         name: rewrites["fuse_mha_attention"](
             path,
-            enabled=options.wasm_mha_dynamics_fusion and name in wasm_mha_artifacts,
+            enabled=(
+                (options.wasm_mha_dynamics_fusion and name in wasm_mha_artifacts)
+                or (options.wasm_mha_decoder_fusion and name in wasm_mha_decoder_artifacts)
+            ),
+            include_bhqd_attention=(
+                options.wasm_mha_decoder_fusion and name in wasm_mha_decoder_artifacts
+            ),
+            include_attention_bias=(
+                options.wasm_mha_decoder_fusion and name in wasm_mha_decoder_artifacts
+            ),
         )
+        if name in wasm_mha_artifacts or name in wasm_mha_decoder_artifacts
+        else rewrites["fuse_mha_attention"](path, enabled=False)
         for name, path in exported_paths.items()
     }
 
