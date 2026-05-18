@@ -34,7 +34,7 @@ bun run benchmark:webgpu -- --grep @graph-capture --webgpu-benchmark-timed-runs 
 bun run benchmark:webgpu -- --webgpu-benchmark-asset-base /dream_arcade_assets/breakout
 bun run benchmark:webgpu -- --webgpu-benchmark-graph-optimization-level extended
 bun run benchmark:webgpu -- --webgpu-benchmark-browser-profile safari
-bun run benchmark:webgpu -- --webgpu-benchmark-provider wasm --webgpu-benchmark-ort-module /node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs --webgpu-benchmark-wasm-num-threads 4
+bun run benchmark:webgpu -- --webgpu-benchmark-provider wasm --webgpu-benchmark-asset-base /dream_arcade_assets/breakout_wasm --webgpu-benchmark-ort-module /node_modules/onnxruntime-web/dist/ort.wasm.min.mjs --webgpu-benchmark-wasm-num-threads 4 --webgpu-benchmark-step-artifact breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2
 ```
 
 When opened directly in Safari, the benchmark uses the same valid dynamics path as the demo:
@@ -90,6 +90,24 @@ uv run python webgpu_app/export/specialize_full_cache_entry.py \
   --asset_dir webgpu_app/dream_arcade_assets/breakout
 ```
 
+Create WASM-specific artifacts in a separate directory so backend-specific ONNX rewrites do not
+overwrite the WebGPU artifacts:
+
+```bash
+uv run python webgpu_app/export/export_dreamer4_onnx.py \
+  --tokenizer_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_tokenizer_small_2x \
+  --tokenizer_step 1000000 \
+  --dynamics_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_dynamics_small_2x \
+  --dynamics_step 1000000 \
+  --out_dir webgpu_app/dream_arcade_assets/breakout_wasm \
+  --export_target wasm \
+  --seq_len 64 \
+  --sample_steps 2 \
+  --export_cached \
+  --validate \
+  --overwrite
+```
+
 ## Measured Path
 
 The benchmark models one generated demo frame as:
@@ -135,9 +153,18 @@ On the same machine, the validated Safari path is still far behind Chrome: Safar
 transformer kernels are much slower without that feature. Treat Safari graph-capture FPS as invalid
 unless `streaming_frame.output_validation.status` is `passed`.
 
-The pure WASM bundle is a valid Safari control path and can be selected with `provider=wasm`,
-`ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs`, and `wasmNumThreads=4`.
-It is faster than one-thread WASM but still far below Chrome's WebGPU path on this model.
+The pure WASM path can be selected with `provider=wasm`,
+`ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`, and `wasmNumThreads=4`.
+The external `.wasm` loader is faster than the bundled WASM wrapper in the current local benchmark,
+but it is still far below Chrome's WebGPU path on this model. On WASM, prefer
+`breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2`; it returns full updated cache
+tensors and avoids the JavaScript CPU entry-cache slide/rebase update. Use
+`--export_target wasm` when generating WASM assets; that profile can use WASM-supported fused CPU
+ops without changing the WebGPU export. It fuses the dynamics hot path's temporal MHA by default
+and leaves spatial/BHQD MHA unfused because that benchmarked slower in headed Chrome's WASM CPU
+path. Keep validating
+`wasmNumThreads` per browser and machine; higher thread counts were noisier in local headed Chrome
+runs.
 
 ## Graph Capture
 

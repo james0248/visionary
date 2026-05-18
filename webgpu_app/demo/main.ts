@@ -51,6 +51,7 @@ const requestedBrowserProfile = String(configValue('browserProfile', 'auto')).to
 const detectedBrowserProfile = detectBrowserProfile(navigator.userAgent);
 const browserProfile =
   requestedBrowserProfile === 'auto' ? detectedBrowserProfile : requestedBrowserProfile;
+const requestedBackend = String(configValue('backend', 'auto')).toLowerCase();
 const DECODER_EXPORT_NAME = configValue('decoderExport', null);
 const FULL_CACHE_STEP_EXPORT_NAME = configValue('fullCacheStepExport', null);
 const SAFARI_SAFE_FULL_CACHE_STEP_EXPORT_NAME =
@@ -66,6 +67,9 @@ const STEP_EXPORT_FALLBACKS = parseConfigJson('stepExportFallbacks', [
   'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2',
 ]);
 const FULL_CACHE_STEP_EXPORT_FALLBACKS = parseConfigJson('fullCacheStepExportFallbacks', [
+  ...(requestedBackend === 'wasm'
+    ? ['breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2']
+    : []),
   ...(browserProfile === 'safari' ? [SAFARI_SAFE_FULL_CACHE_STEP_EXPORT_NAME] : []),
   'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2',
   'breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2',
@@ -78,11 +82,19 @@ const DEFAULT_DECODER_GRAPH_CAPTURE = browserProfile === 'safari';
 const DEFAULT_PREFILL_INITIAL_CACHE = browserProfile === 'safari';
 const DEFAULT_GPU_PATCH_RENDERER = true;
 const DEFAULT_GRAPH_OPTIMIZATION_LEVEL = 'basic';
-const DEFAULT_ORT_MODULE = `/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs`;
+const DEFAULT_WASM_NUM_THREADS = 4;
+const DEFAULT_ORT_MODULE =
+  requestedBackend === 'wasm'
+    ? `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`
+    : `/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs`;
 const DEFAULT_ORT_WASM_BASE = `/node_modules/onnxruntime-web/dist/`;
+const wasmNumThreadsParam = Number(configValue('wasmNumThreads', DEFAULT_WASM_NUM_THREADS));
+const WASM_NUM_THREADS =
+  Number.isInteger(wasmNumThreadsParam) && wasmNumThreadsParam > 0 ? wasmNumThreadsParam : null;
 const ort = await import(resolveUrl(configValue('ortModule', DEFAULT_ORT_MODULE)));
 configureOrt(ort, {
   wasmPaths: resolveUrl(configValue('ortWasmBase', DEFAULT_ORT_WASM_BASE)),
+  wasmNumThreads: WASM_NUM_THREADS,
 });
 const createGpuTensorFromCpu = (device, tensor) =>
   createGpuTensorFromCpuWithOrt(ort, device, tensor);
@@ -691,11 +703,21 @@ function validateInitialCache(stepSpec, initialK, initialV, initialLength) {
 }
 
 function stepNamesForSpec(stepSpec) {
+  const entryK = optionalOutputName(stepSpec, 'candidate_k_entry');
+  const entryV = optionalOutputName(stepSpec, 'candidate_v_entry');
+  const fullCacheK = optionalOutputName(stepSpec, 'candidate_k_cache');
+  const fullCacheV = optionalOutputName(stepSpec, 'candidate_v_cache');
+  const k = entryK ?? fullCacheK;
+  const v = entryV ?? fullCacheV;
+  if (!k || !v) {
+    throw new Error(`${stepSpec.name} must output candidate cache entries or full candidate caches`);
+  }
   return {
     finalZ: requiredOutputName(stepSpec, 'final_z'),
-    k: requiredOutputName(stepSpec, 'candidate_k_entry'),
-    v: requiredOutputName(stepSpec, 'candidate_v_entry'),
+    k,
+    v,
     length: optionalOutputName(stepSpec, 'candidate_cache_length'),
+    cacheUpdate: entryK && entryV ? 'entry' : 'full',
   };
 }
 
@@ -2335,7 +2357,8 @@ async function createRuntimeForBackend(backend, loaded) {
       device &&
       preallocateStepOutputsEnabled &&
       stepRuntime.session &&
-      !stepRuntime.graphCaptureEnabled
+      !stepRuntime.graphCaptureEnabled &&
+      stepNames.cacheUpdate === 'entry'
         ? createGpuOutputFetches(device, loaded.stepSpec, [stepNames.finalZ, stepNames.k, stepNames.v])
         : null;
     const fullStepOutputFetches =
@@ -2344,7 +2367,8 @@ async function createRuntimeForBackend(backend, loaded) {
       preallocateStepOutputsEnabled &&
       loaded.fullStepSpec &&
       fullStepNames &&
-      !fullStepRuntime?.graphCaptureEnabled
+      !fullStepRuntime?.graphCaptureEnabled &&
+      fullStepNames.cacheUpdate === 'entry'
         ? createGpuOutputFetches(device, loaded.fullStepSpec, [
             fullStepNames.finalZ,
             fullStepNames.k,
@@ -2387,9 +2411,11 @@ async function createRuntimeForBackend(backend, loaded) {
     reuseFinalZOutputAsDecoderInput(fullGraphCapture, loaded.fullStepSpec, fullStepNames, decoderInput);
 
     const cacheUpdater =
-      backend === 'webgpu'
-        ? createEntryCacheUpdater(device, loaded.stepSpec, loaded.manifest)
-        : createCpuEntryCacheUpdater(loaded.stepSpec, loaded.manifest);
+      stepNames.cacheUpdate === 'entry'
+        ? backend === 'webgpu'
+          ? createEntryCacheUpdater(device, loaded.stepSpec, loaded.manifest)
+          : createCpuEntryCacheUpdater(loaded.stepSpec, loaded.manifest)
+        : null;
 
     const loadedRuntime = {
       backend,
@@ -2489,11 +2515,15 @@ async function loadRuntime() {
   const fullStepSpec = fullCacheStepEnabled
     ? findFirstOptionalExport(manifest, [
         FULL_CACHE_STEP_EXPORT_NAME,
+        requestedBackend === 'wasm'
+          ? manifest.demo_generation?.preferred_full_cache_step_export_wasm
+          : null,
+        ...(requestedBackend === 'wasm' ? FULL_CACHE_STEP_EXPORT_FALLBACKS : []),
         browserProfile === 'safari'
           ? manifest.demo_generation?.preferred_full_cache_step_export_safari
           : null,
         manifest.demo_generation?.preferred_full_cache_step_export,
-        ...FULL_CACHE_STEP_EXPORT_FALLBACKS,
+        ...(requestedBackend === 'wasm' ? [] : FULL_CACHE_STEP_EXPORT_FALLBACKS),
       ])
     : null;
   const prefillSpec = prefillInitialCacheRequested
@@ -2764,21 +2794,39 @@ async function generateFrame() {
   renderPatches(runtime, patches);
   disposeGpuTensorUnlessPinnedAfterSubmittedWork(runtime.device, patches, runtime.pinnedOutputTensors);
 
-  runtime.cacheUpdater.update(
-    runtime.cache,
-    outputs[activeStep.names.k],
-    outputs[activeStep.names.v],
-    runtime.cache.length,
-  );
-  if (cacheUpdateFenceEnabled && runtime.device) await runtime.device.queue.onSubmittedWorkDone();
-  if (activeStep.names.length) {
-    runtime.cache.length = outputs[activeStep.names.length];
+  if (activeStep.names.cacheUpdate === 'entry') {
+    if (!runtime.cacheUpdater) {
+      throw new Error('Entry-cache dynamics output requires a cache updater.');
+    }
+    runtime.cacheUpdater.update(
+      runtime.cache,
+      outputs[activeStep.names.k],
+      outputs[activeStep.names.v],
+      runtime.cache.length,
+    );
+    if (cacheUpdateFenceEnabled && runtime.device) await runtime.device.queue.onSubmittedWorkDone();
+    if (activeStep.names.length) {
+      runtime.cache.length = outputs[activeStep.names.length];
+    } else {
+      advanceCacheLength(runtime.cache.length, runtime.contextLength);
+    }
+    if (!preserveStepOutputs) {
+      disposeGpuTensorAfterSubmittedWork(runtime.device, outputs[activeStep.names.k]);
+      disposeGpuTensorAfterSubmittedWork(runtime.device, outputs[activeStep.names.v]);
+    }
   } else {
-    advanceCacheLength(runtime.cache.length, runtime.contextLength);
-  }
-  if (!preserveStepOutputs) {
-    disposeGpuTensorAfterSubmittedWork(runtime.device, outputs[activeStep.names.k]);
-    disposeGpuTensorAfterSubmittedWork(runtime.device, outputs[activeStep.names.v]);
+    const previousCache = runtime.cache;
+    const nextLength = activeStep.names.length ? outputs[activeStep.names.length] : previousCache.length;
+    runtime.cache = {
+      k: outputs[activeStep.names.k],
+      v: outputs[activeStep.names.v],
+      length: nextLength,
+    };
+    if (!activeStep.names.length) {
+      advanceCacheLength(runtime.cache.length, runtime.contextLength);
+    }
+    disposeGpuTensorAfterSubmittedWork(runtime.device, previousCache.k);
+    disposeGpuTensorAfterSubmittedWork(runtime.device, previousCache.v);
   }
 
   frameCount += 1;

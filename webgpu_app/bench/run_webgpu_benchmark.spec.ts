@@ -65,6 +65,9 @@ async function runBenchmark(
   if (process.env.WEBGPU_BENCHMARK_STEP_ARTIFACT) {
     params.set('stepArtifact', process.env.WEBGPU_BENCHMARK_STEP_ARTIFACT);
   }
+  if (process.env.WEBGPU_BENCHMARK_DECODER_ARTIFACT) {
+    params.set('decoderArtifact', process.env.WEBGPU_BENCHMARK_DECODER_ARTIFACT);
+  }
   if (process.env.WEBGPU_BENCHMARK_ASSET_BASE) {
     params.set('assetBase', process.env.WEBGPU_BENCHMARK_ASSET_BASE);
   }

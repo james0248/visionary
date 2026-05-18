@@ -101,6 +101,7 @@ const DEFAULT_CONFIG = {
   graphOptimizationLevel: 'basic',
   prefillArtifact: null,
   stepArtifact: 'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2',
+  decoderArtifact: null,
   assetBase: ASSET_DIR,
   browserProfile: 'auto',
   profiling: false,
@@ -179,6 +180,7 @@ function parseConfig() {
     prefillArtifact: params.get('prefillArtifact') ?? DEFAULT_CONFIG.prefillArtifact,
     stepArtifact:
       params.get('stepArtifact') ?? browserDefaults.stepArtifact ?? DEFAULT_CONFIG.stepArtifact,
+    decoderArtifact: params.get('decoderArtifact') ?? DEFAULT_CONFIG.decoderArtifact,
     assetBase: params.get('assetBase') ?? DEFAULT_CONFIG.assetBase,
     browserProfile,
     detectedBrowserProfile,
@@ -760,10 +762,13 @@ function resolveDemoSpecs(manifest, config = DEFAULT_CONFIG) {
   const stepNames = config.stepArtifact
     ? [config.stepArtifact, ...REQUIRED_ARTIFACTS.step]
     : [...manifestStepNames, ...REQUIRED_ARTIFACTS.step];
+  const decoderNames = config.decoderArtifact
+    ? [config.decoderArtifact, ...REQUIRED_ARTIFACTS.decoder]
+    : [...manifestDecoderNames, ...REQUIRED_ARTIFACTS.decoder];
   return {
     prefill: findSpec(exportsByName, prefillNames),
     step: findSpec(exportsByName, stepNames),
-    decoder: findSpec(exportsByName, [...manifestDecoderNames, ...REQUIRED_ARTIFACTS.decoder]),
+    decoder: findSpec(exportsByName, decoderNames),
   };
 }
 

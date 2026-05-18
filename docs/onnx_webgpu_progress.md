@@ -5752,3 +5752,66 @@ Rejected Gemm-to-MatMul Safari trial:
   - Temporary `MatMul` artifact: about `1.31 fps`, dynamics about `669 ms`.
 - Conclusion: Safari's ORT WebGPU `MatMul` kernels are not a replacement for the current `Gemm`
   kernels on this graph.
+
+### Chrome Pure-WASM Export Split
+
+Goal:
+- Improve the pure WASM CPU fallback without changing `sample_steps=2`.
+- Keep graph changes gated by exporter `--validate` against the JAX baseline.
+- Keep WASM artifacts separate from WebGPU artifacts because ORT WebGPU and ORT WASM support
+  different useful fused/layout operations.
+
+What worked:
+- Added `export_dreamer4_onnx.py --export_target wasm` with a separate WASM pass pipeline.
+- The WASM profile uses the full-cache slide dynamics step
+  `breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2`; it returns full
+  `candidate_k_cache`/`candidate_v_cache` tensors and avoids the JavaScript entry-cache update.
+- The browser WASM path uses the external ORT `.wasm` loader:
+  `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`.
+- The WASM pass fuses only the dynamics hot path's temporal/BQHD attention islands into
+  `com.microsoft::MultiHeadAttention`. The validated default export rewrote `35` temporal MHA
+  islands and left decoder/spatial attention unfused.
+- Best headed Chrome pure-WASM result in this iteration:
+  - Artifact: `/dream_arcade_assets/breakout_wasm_default_mha`
+  - Provider: `wasm`
+  - ORT module: `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`
+  - Threads: `wasmNumThreads=4`
+  - Runtime graph optimization: `graphOptimizationLevel=basic`
+  - Timed runs: `16`
+  - Output validation: passed
+  - JAX export validation: passed
+  - Streaming: `19.84 fps`, `50.40 ms/frame`
+  - Dynamics: `36.77 ms`
+  - Decoder: `13.50 ms`
+
+Rejected WASM controls from this iteration:
+- Fusing all matched dynamics MHA islands, including spatial/BHQD, was JAX-valid but slower:
+  `17.14 fps`, dynamics about `41.41 ms`, decoder about `16.77 ms`.
+- Disabling the singleton reshape rewrite was JAX-valid but lost temporal MHA fusion and regressed
+  to `13.91 fps`.
+- Decoder MHA fusion was JAX-valid but only rewrote `2` decoder islands and regressed to
+  `17.00 fps`.
+- Disabling SwiGLU Gemm packing was JAX-valid but slower at `17.72 fps`.
+- `onnxsim` on the demo hot path was JAX-valid but slower at `16.84 fps`.
+- WASM thread count:
+  - `1` thread: `10.42 fps`
+  - `2` threads: `16.87 fps`
+  - `4` threads: best at `19.84 fps`
+  - `8` threads: `14.01 fps`
+- Runtime `graphOptimizationLevel`:
+  - `basic`: best at `19.84 fps`
+  - `extended`: valid but slightly slower at `19.75 fps`
+  - `disabled`: slower at `16.23 fps`
+  - `all`: Chrome closed during navigation, so no valid result
+- Browser ORT WASM session options did not help:
+  - `enableCpuMemArena=true`: `18.04 fps`
+  - `enableMemPattern=true`: `14.19 fps`
+  - both enabled: `5.11 fps`
+  - `executionMode=parallel`: `15.62 fps`
+
+Current bottleneck:
+- The best validated pure-WASM path is still well short of `30 fps`.
+- Dynamics remains the dominant cost at roughly `37 ms/frame`; decoder adds roughly `13.5 ms`.
+- Native ORT CPU profiling on the exported graph pointed at `Gemm` plus layout-heavy
+  `Unsqueeze`/`Concat`/`Gather`/`Transpose` work, but the graph-level controls above did not
+  produce a faster browser WASM path.

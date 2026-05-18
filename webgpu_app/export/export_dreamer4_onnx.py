@@ -26,6 +26,10 @@ from webgpu_app.export.onnx_artifacts import (
     snapshot_raw_artifacts,
 )
 from webgpu_app.export.validation import validate_outputs, validate_single_output
+from webgpu_app.export.wasm_passes import (
+    run_wasm_passes,
+    wasm_pass_options_from_args,
+)
 from webgpu_app.export.webgpu_passes import (
     run_webgpu_passes,
     webgpu_pass_options_from_args,
@@ -68,20 +72,14 @@ def sample_export_names(sample_steps: int) -> dict[str, str]:
     suffix = f"s{sample_steps}"
     return {
         "cached_sample_step": f"breakout_dynamics_cached_sample_step_b1_t1_{suffix}",
-        "cached_sample_step_slide": (
-            f"breakout_dynamics_cached_sample_step_slide_b1_t1_{suffix}"
-        ),
+        "cached_sample_step_slide": (f"breakout_dynamics_cached_sample_step_slide_b1_t1_{suffix}"),
         "append_context": f"breakout_dynamics_sample_append_context_b1_t1_{suffix}",
         "append_context_entry": (
-            "breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_"
-            f"{suffix}"
+            f"breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_{suffix}"
         ),
-        "append_context_slide": (
-            f"breakout_dynamics_sample_append_context_slide_b1_t1_{suffix}"
-        ),
+        "append_context_slide": (f"breakout_dynamics_sample_append_context_slide_b1_t1_{suffix}"),
         "append_context_slide_full_cache": (
-            "breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_"
-            f"{suffix}"
+            f"breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_{suffix}"
         ),
         "append_context_slide_entry": (
             f"breakout_dynamics_sample_append_context_slide_entry_b1_t1_{suffix}"
@@ -111,12 +109,8 @@ def set_sample_export_names(sample_steps: int) -> None:
     DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME = names[
         "append_context_slide_full_cache"
     ]
-    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME = names[
-        "append_context_slide_entry"
-    ]
-    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME = names[
-        "append_context_slide_layer"
-    ]
+    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME = names["append_context_slide_entry"]
+    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME = names["append_context_slide_layer"]
 
 
 set_sample_export_names(4)
@@ -141,7 +135,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional directory where the freshly exported ONNX files are copied before "
-            "any simplification, ORT optimization, or WebGPU graph rewrites. Use this "
+            "any simplification, ORT optimization, or backend-specific graph rewrites. Use this "
             "with webgpu_app/export/compare_raw_optimized_onnx.py as a behavior-preserving "
             "optimization gate."
         ),
@@ -156,6 +150,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--atol", type=float, default=0.05)
     parser.add_argument("--rtol", type=float, default=0.05)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--export_target",
+        choices=("webgpu", "wasm"),
+        default="webgpu",
+        help=(
+            "Backend profile for post-export graph rewrites. The WebGPU target keeps "
+            "the accepted WebGPU layout pipeline; the WASM target uses a separate "
+            "pass pipeline for browser CPU execution."
+        ),
+    )
     parser.add_argument(
         "--simplify_onnx",
         action="store_true",
@@ -363,6 +367,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--skip_wasm_mha_dynamics_fusion",
+        dest="wasm_mha_dynamics_fusion",
+        action="store_false",
+        default=True,
+        help=(
+            "WASM export only: do not fuse the preferred full-cache dynamics step "
+            "attention islands into com.microsoft::MultiHeadAttention."
+        ),
+    )
+    parser.add_argument(
         "--context_latents",
         type=Path,
         default=None,
@@ -457,6 +471,37 @@ def export_to_onnx(
     onnx.checker.check_model(output_path.as_posix())
 
 
+def ensure_static_int32_output(path: Path, output_name: str, value: int) -> dict[str, Any]:
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    graph_outputs = {output.name for output in model.graph.output}
+    if output_name not in graph_outputs:
+        return {
+            "enabled": False,
+            "reason": f"{output_name!r} is not a graph output",
+        }
+
+    produced = {output for node in model.graph.node for output in node.output}
+    initializer_names = {initializer.name for initializer in model.graph.initializer}
+    if output_name in produced or output_name in initializer_names:
+        return {
+            "enabled": True,
+            "changed": False,
+            "reason": f"{output_name!r} already exists",
+        }
+
+    model.graph.initializer.append(
+        onnx.numpy_helper.from_array(np.asarray([value], dtype=np.int32), name=output_name)
+    )
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+    return {
+        "enabled": True,
+        "changed": True,
+        "output_name": output_name,
+        "value": value,
+    }
+
+
 def op_counts(path: Path) -> Counter[str]:
     model = onnx.load(path.as_posix(), load_external_data=False)
     return Counter(node.op_type for node in model.graph.node)
@@ -500,7 +545,9 @@ def prune_graph_to_outputs(model: onnx.ModelProto) -> dict[str, int]:
 
     kept_nodes = [node for node in model.graph.node if node_key(node) in required_nodes]
     kept_initializers = [
-        initializer for initializer in model.graph.initializer if initializer.name in required_values
+        initializer
+        for initializer in model.graph.initializer
+        if initializer.name in required_values
     ]
     graph_io = {value.name for value in model.graph.input}
     graph_io.update(value.name for value in model.graph.output)
@@ -1288,11 +1335,14 @@ def rewrite_squeeze_concat_for_webgpu(path: Path, enabled: bool = True) -> dict[
         expected_unsqueezed_output[original_concat_axis] = sum(
             shape[original_concat_axis] for shape in input_shapes
         )
-        if tuple(
-            dim
-            for axis, dim in enumerate(expected_unsqueezed_output)
-            if axis not in normalized_axes
-        ) != concat_output_shape:
+        if (
+            tuple(
+                dim
+                for axis, dim in enumerate(expected_unsqueezed_output)
+                if axis not in normalized_axes
+            )
+            != concat_output_shape
+        ):
             continue
 
         prefix = concat.name or concat.output[0]
@@ -1502,9 +1552,7 @@ def rewrite_unsqueeze_transpose_squeeze_for_webgpu(
     }
 
 
-def rewrite_spatial_qk_head_layout_for_webgpu(
-    path: Path, enabled: bool = True
-) -> dict[str, Any]:
+def rewrite_spatial_qk_head_layout_for_webgpu(path: Path, enabled: bool = True) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
         return {
@@ -1517,9 +1565,7 @@ def rewrite_spatial_qk_head_layout_for_webgpu(
         }
 
     model = onnx.load(path.as_posix(), load_external_data=True)
-    initializers = {
-        initializer.name: initializer for initializer in model.graph.initializer
-    }
+    initializers = {initializer.name: initializer for initializer in model.graph.initializer}
     producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -1679,7 +1725,9 @@ def rewrite_spatial_qk_head_layout_for_webgpu(
                     "rotary": rotary.name,
                     "post_transpose": post_transpose.name if post_transpose is not None else None,
                     "post_consumer": post_consumer.name if post_consumer is not None else None,
-                    "post_consumer_op": post_consumer.op_type if post_consumer is not None else None,
+                    "post_consumer_op": post_consumer.op_type
+                    if post_consumer is not None
+                    else None,
                     "concat": concat.name,
                     "heads": len(concat.input),
                     "old_unsqueeze_axes": [0, 2],
@@ -1720,9 +1768,7 @@ def rewrite_spatial_qk_head_layout_for_webgpu(
     }
 
 
-def rewrite_temporal_attention_bhsd_for_webgpu(
-    path: Path, enabled: bool = True
-) -> dict[str, Any]:
+def rewrite_temporal_attention_bhsd_for_webgpu(path: Path, enabled: bool = True) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
         return {
@@ -1825,11 +1871,7 @@ def rewrite_temporal_attention_bhsd_for_webgpu(
         if norm is None or norm.op_type != "SimplifiedLayerNormalization":
             return None
         concat = producer.get(norm.input[0])
-        if (
-            concat is None
-            or concat.op_type != "Concat"
-            or int(attr_value(concat, "axis", -1)) != 2
-        ):
+        if concat is None or concat.op_type != "Concat" or int(attr_value(concat, "axis", -1)) != 2:
             return None
         input_shape = value_shapes.get(concat.output[0])
         if input_shape is None or len(input_shape) != 4:
@@ -2126,7 +2168,11 @@ def rewrite_entry_cache_io_bhntd_for_webgpu(path: Path, enabled: bool = True) ->
     examples: list[dict[str, Any]] = []
 
     for node in model.graph.node:
-        if node.op_type != "Slice" or len(node.input) < 4 or node.input[0] not in {"k_cache", "v_cache"}:
+        if (
+            node.op_type != "Slice"
+            or len(node.input) < 4
+            or node.input[0] not in {"k_cache", "v_cache"}
+        ):
             continue
         starts_name, ends_name, axes_name = node.input[1], node.input[2], node.input[3]
         if not all(name in initializer_arrays for name in (starts_name, ends_name, axes_name)):
@@ -2688,8 +2734,7 @@ def rewrite_packed_qkv_head_projection_for_webgpu(
     }
     initializers = {initializer.name: initializer for initializer in model.graph.initializer}
     initializer_arrays = {
-        name: onnx.numpy_helper.to_array(initializer)
-        for name, initializer in initializers.items()
+        name: onnx.numpy_helper.to_array(initializer) for name, initializer in initializers.items()
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -2779,7 +2824,9 @@ def rewrite_packed_qkv_head_projection_for_webgpu(
             split_outputs.append(f"{reshape.output[0]}__packed_qkv_head")
             unsqueeze_outputs.append(reshape.output[0])
 
-        first_gemm = min((item[0] for item in ordered), key=lambda node: list(model.graph.node).index(node))
+        first_gemm = min(
+            (item[0] for item in ordered), key=lambda node: list(model.graph.node).index(node)
+        )
         prefix = first_gemm.name or first_gemm.output[0]
         packed_weight_name = f"{prefix}__packed_qkv_head_weight"
         packed_output_name = f"{prefix}__packed_qkv_head_output"
@@ -2788,8 +2835,12 @@ def rewrite_packed_qkv_head_projection_for_webgpu(
         packed_weight = np.concatenate(weights, axis=1)
         new_initializers.extend(
             [
-                onnx.numpy_helper.from_array(packed_weight.astype(weights[0].dtype), packed_weight_name),
-                onnx.numpy_helper.from_array(np.asarray(split_sizes, dtype=np.int64), split_sizes_name),
+                onnx.numpy_helper.from_array(
+                    packed_weight.astype(weights[0].dtype), packed_weight_name
+                ),
+                onnx.numpy_helper.from_array(
+                    np.asarray(split_sizes, dtype=np.int64), split_sizes_name
+                ),
                 onnx.numpy_helper.from_array(np.asarray([0], dtype=np.int64), unsqueeze_axes_name),
             ]
         )
@@ -3180,8 +3231,7 @@ def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> d
             head_dim = output_shape[-1]
             head_axis = len(output_shape) - 2
             split_outputs = [
-                f"{reshape.output[0]}__flat_head_{head_idx}"
-                for head_idx in range(head_count)
+                f"{reshape.output[0]}__flat_head_{head_idx}" for head_idx in range(head_count)
             ]
             split_sizes = add_i64_initializer(
                 f"{reshape.name or reshape.output[0]}__split_sizes",
@@ -3254,8 +3304,7 @@ def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> d
             head_dim = input_shape[-1]
             head_axis = len(input_shape) - 2
             split_outputs = [
-                f"{reshape.output[0]}__ranked_head_{head_idx}"
-                for head_idx in range(head_count)
+                f"{reshape.output[0]}__ranked_head_{head_idx}" for head_idx in range(head_count)
             ]
             split_sizes = add_i64_initializer(
                 f"{reshape.name or reshape.output[0]}__merge_split_sizes",
@@ -3697,8 +3746,7 @@ def pack_sibling_gemms_for_webgpu(
     }
     initializers = {initializer.name: initializer for initializer in model.graph.initializer}
     initializer_arrays = {
-        name: onnx.numpy_helper.to_array(initializer)
-        for name, initializer in initializers.items()
+        name: onnx.numpy_helper.to_array(initializer) for name, initializer in initializers.items()
     }
 
     def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
@@ -3844,10 +3892,7 @@ def pack_sibling_gemms_for_webgpu(
             else:
                 rewritten_nodes.append(node)
         used_inputs = {
-            input_name
-            for node in rewritten_nodes
-            for input_name in node.input
-            if input_name
+            input_name for node in rewritten_nodes for input_name in node.input if input_name
         }
         kept_initializers = [
             initializer
@@ -3885,8 +3930,7 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializers = {initializer.name: initializer for initializer in model.graph.initializer}
     initializer_arrays = {
-        name: onnx.numpy_helper.to_array(initializer)
-        for name, initializer in initializers.items()
+        name: onnx.numpy_helper.to_array(initializer) for name, initializer in initializers.items()
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -3901,7 +3945,9 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
 
     def split_sizes(node: onnx.NodeProto) -> tuple[int, ...] | None:
         if len(node.input) >= 2 and node.input[1] in initializer_arrays:
-            return tuple(int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1))
+            return tuple(
+                int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1)
+            )
         return None
 
     replacements: dict[str, onnx.NodeProto] = {}
@@ -4058,7 +4104,9 @@ def rewrite_q_head_split_gather_for_webgpu(path: Path) -> dict[str, Any]:
     def axes_input(node: onnx.NodeProto) -> tuple[int, ...] | None:
         if len(node.input) < 2 or node.input[1] not in initializer_arrays:
             return None
-        return tuple(int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1))
+        return tuple(
+            int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1)
+        )
 
     indices_name = "head_gather_indices_8x32"
     unsqueeze_axis0_name = "head_gather_unsqueeze_axis0"
@@ -4297,15 +4345,10 @@ def remove_zero_softmax_bias_adds_for_webgpu(path: Path) -> dict[str, Any]:
         rewritten_nodes.append(node)
 
     used_inputs = {
-        input_name
-        for node in rewritten_nodes
-        for input_name in node.input
-        if input_name
+        input_name for node in rewritten_nodes for input_name in node.input if input_name
     }
     kept_initializers = [
-        initializer
-        for initializer in model.graph.initializer
-        if initializer.name in used_inputs
+        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
     ]
     kept_value_info = [
         value for value in model.graph.value_info if value.name not in stale_value_info
@@ -4576,10 +4619,9 @@ def fuse_manual_gqa_attention_for_webgpu(
                 factored = False
                 break
         if factored and factored_concat is not None:
-            if (
-                int(attr_value(factored_concat, "axis", 0)) == 3
-                and list(factored_concat.input) == list(split.output)
-            ):
+            if int(attr_value(factored_concat, "axis", 0)) == 3 and list(
+                factored_concat.input
+            ) == list(split.output):
                 squeeze = single_consumer(factored_concat.output[0], "Squeeze")
                 axes = squeeze_axes(squeeze) if squeeze is not None else None
                 if axes is not None and 2 in axes and all(axis in (0, 1, 2) for axis in axes):
@@ -4736,7 +4778,11 @@ def fuse_manual_gqa_attention_for_webgpu(
         first = None
         scale = None
         mul: onnx.NodeProto | None = None
-        if softmax_input is not None and softmax_input.op_type == "Mul" and len(softmax_input.input) == 2:
+        if (
+            softmax_input is not None
+            and softmax_input.op_type == "Mul"
+            and len(softmax_input.input) == 2
+        ):
             mul = softmax_input
             for input_name in mul.input:
                 candidate = producer.get(input_name)
@@ -5008,10 +5054,7 @@ def fuse_manual_gqa_attention_for_webgpu(
                 rewritten_nodes.append(node)
 
         used_inputs = {
-            input_name
-            for node in rewritten_nodes
-            for input_name in node.input
-            if input_name
+            input_name for node in rewritten_nodes for input_name in node.input if input_name
         }
         kept_initializers = [
             initializer
@@ -5370,12 +5413,8 @@ def fuse_manual_mha_attention_for_webgpu(
         prefix = node_key(second)
         mha_raw_output = output_name if not output_squeeze_axes else f"{prefix}__mha_flat_output"
         q_flat, q_nodes = flatten_heads(q_name, q_shape, prefix=f"{prefix}__mha_q")
-        k_flat, k_nodes = transpose_kv_heads_for_mha(
-            k_name, k_shape, prefix=f"{prefix}__mha_k"
-        )
-        v_flat, v_nodes = transpose_kv_heads_for_mha(
-            v_name, v_shape, prefix=f"{prefix}__mha_v"
-        )
+        k_flat, k_nodes = transpose_kv_heads_for_mha(k_name, k_shape, prefix=f"{prefix}__mha_k")
+        v_flat, v_nodes = transpose_kv_heads_for_mha(v_name, v_shape, prefix=f"{prefix}__mha_v")
         mha_nodes = [
             onnx.helper.make_node(
                 "MultiHeadAttention",
@@ -5437,10 +5476,7 @@ def fuse_manual_mha_attention_for_webgpu(
                 rewritten_nodes.append(node)
 
         used_inputs = {
-            input_name
-            for node in rewritten_nodes
-            for input_name in node.input
-            if input_name
+            input_name for node in rewritten_nodes for input_name in node.input if input_name
         }
         kept_initializers = [
             initializer
@@ -5476,7 +5512,7 @@ def fuse_manual_mha_attention_for_webgpu(
             "Replace mask-free manual attention islands with "
             "com.microsoft::MultiHeadAttention after K/V heads have already been "
             "materialized. This preserves the explicit graph's attention semantics "
-            "while testing ORT WebGPU fused attention kernels."
+            "while testing ORT fused attention kernels."
         ),
         "node_count_before": int(sum(before.values())),
         "node_count_after": int(sum(after.values())),
@@ -5651,12 +5687,8 @@ def rewrite_rotary_embedding_for_webgpu(path: Path) -> dict[str, Any]:
         sequence_length = direct_sequence_length
         num_heads = direct_num_heads
         if cos_cache is None or sin_cache is None:
-            cos_cache = add_cache_initializer(
-                cos_const, transposed_sequence_length, half_dim
-            )
-            sin_cache = add_cache_initializer(
-                sin_const, transposed_sequence_length, half_dim
-            )
+            cos_cache = add_cache_initializer(cos_const, transposed_sequence_length, half_dim)
+            sin_cache = add_cache_initializer(sin_const, transposed_sequence_length, half_dim)
             use_transpose = True
             sequence_length = transposed_sequence_length
             num_heads = transposed_num_heads
@@ -5685,15 +5717,15 @@ def rewrite_rotary_embedding_for_webgpu(path: Path) -> dict[str, Any]:
 
         replacement_nodes.append(
             onnx.helper.make_node(
-            "RotaryEmbedding",
-            [rotary_input, position_ids_name, cos_cache, sin_cache],
-            [rotary_output],
-            name=f"{concat.name or concat.output[0]}__rotary_embedding",
-            domain="com.microsoft",
-            interleaved=0,
-            num_heads=num_heads,
-            rotary_embedding_dim=0,
-            scale=1.0,
+                "RotaryEmbedding",
+                [rotary_input, position_ids_name, cos_cache, sin_cache],
+                [rotary_output],
+                name=f"{concat.name or concat.output[0]}__rotary_embedding",
+                domain="com.microsoft",
+                interleaved=0,
+                num_heads=num_heads,
+                rotary_embedding_dim=0,
+                scale=1.0,
             )
         )
         if use_transpose:
@@ -5930,7 +5962,9 @@ def rewrite_one_position_rotary_transposes_for_webgpu(path: Path) -> dict[str, A
             continue
         rewritten_nodes.append(replacements.get(key, node))
 
-    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    used_inputs = {
+        input_name for node in rewritten_nodes for input_name in node.input if input_name
+    }
     kept_initializers = [
         initializer for initializer in model.graph.initializer if initializer.name in used_inputs
     ]
@@ -6404,8 +6438,7 @@ def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
         if (
             len(following_users) == 1
             and following_users[0].op_type == "Transpose"
-            and tuple(int(item) for item in attr_value(following_users[0], "perm", ()))
-            == (1, 0, 2)
+            and tuple(int(item) for item in attr_value(following_users[0], "perm", ())) == (1, 0, 2)
         ):
             following_transpose = following_users[0]
             restored_axes = (1 - axis,)
@@ -6421,10 +6454,7 @@ def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
                 axis == 1
                 and len(post_add_transpose_users) == 1
                 and post_add_transpose_users[0].op_type == "Transpose"
-                and tuple(
-                    int(item)
-                    for item in attr_value(post_add_transpose_users[0], "perm", ())
-                )
+                and tuple(int(item) for item in attr_value(post_add_transpose_users[0], "perm", ()))
                 == (0, 2, 1, 3)
             ):
                 following_transpose = post_add_transpose_users[0]
@@ -6468,9 +6498,7 @@ def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
         following_transpose.op_type = "Unsqueeze"
         del following_transpose.attribute[:]
         del following_transpose.input[:]
-        following_transpose.input.extend(
-            [residual_add.output[0], axes_initializer(restored_axes)]
-        )
+        following_transpose.input.extend([residual_add.output[0], axes_initializer(restored_axes)])
 
         remove_nodes.update(
             {
@@ -6536,7 +6564,9 @@ def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
             rewritten_nodes.append(insert_before[key])
         rewritten_nodes.append(node)
 
-    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    used_inputs = {
+        input_name for node in rewritten_nodes for input_name in node.input if input_name
+    }
     kept_initializers = [
         initializer for initializer in model.graph.initializer if initializer.name in used_inputs
     ]
@@ -6975,12 +7005,8 @@ def main() -> None:
             "layer_cache": jnp.zeros(dyn_shapes.layer_cache, dtype=jnp.float32),
             "cache_length": jnp.asarray([dyn_shapes.context_length], dtype=jnp.int32),
             "sample_position_index": jnp.asarray([dyn_shapes.context_length], dtype=jnp.int32),
-            "context_position_index": jnp.asarray(
-                [dyn_shapes.context_length - 1], dtype=jnp.int32
-            ),
-            "attention_mask": jnp.ones(
-                (1, 1, 1, dyn_shapes.context_length + 1), dtype=jnp.float32
-            ),
+            "context_position_index": jnp.asarray([dyn_shapes.context_length - 1], dtype=jnp.int32),
+            "attention_mask": jnp.ones((1, 1, 1, dyn_shapes.context_length + 1), dtype=jnp.float32),
         }
         layer_count = dyn_shapes.temporal_blocks
         k_layer_names = tuple(f"k_cache_{i}" for i in range(layer_count))
@@ -7363,59 +7389,69 @@ def main() -> None:
         else {"enabled": False, "reason": "--raw_out_dir not set"}
     )
 
-    pass_results = run_webgpu_passes(
-        exported_paths,
-        webgpu_pass_options_from_args(args),
-        names={
-            "tokenizer_decode_z_step": TOKENIZER_DECODE_Z_STEP_NAME,
-            "dynamics_cached_prefill": DYNAMICS_CACHED_PREFILL_NAME,
-            "dynamics_cached_prefill_layer": DYNAMICS_CACHED_PREFILL_LAYER_NAME,
-            "dynamics_cached_sample_step": DYNAMICS_CACHED_SAMPLE_STEP_NAME,
-            "dynamics_cached_sample_step_slide": DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME,
-            "dynamics_cached_sample_append_context": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
-            "dynamics_cached_sample_append_context_entry": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
-            ),
-            "dynamics_cached_sample_append_context_slide": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME
-            ),
-            "dynamics_cached_sample_append_context_slide_full_cache": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
-            ),
-            "dynamics_cached_sample_append_context_slide_entry": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-            ),
-            "dynamics_cached_sample_append_context_slide_layer": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
-            ),
-        },
-        rewrites={
-            "simplify": simplify_onnx_for_webgpu,
-            "optimize": optimize_onnx_for_webgpu,
-            "singleton_reshapes": rewrite_singleton_reshapes_for_webgpu,
-            "gqa_repeats": rewrite_gqa_repeats_for_webgpu,
-            "packed_qkv_head_projection": rewrite_packed_qkv_head_projection_for_webgpu,
-            "head_projection_layout": rewrite_head_projection_reshapes_with_layout_ops_for_webgpu,
-            "head_projection_einsum": rewrite_head_projection_reshapes_for_webgpu,
-            "pack_sibling_gemms": pack_sibling_gemms_for_webgpu,
-            "packed_qkv_partial_head_split": rewrite_packed_qkv_split_partial_heads_for_webgpu,
-            "q_head_split_gather": rewrite_q_head_split_gather_for_webgpu,
-            "slide_static_cache": rewrite_slide_static_cache_ops_for_webgpu,
-            "rmsnorm": rewrite_rmsnorm_for_webgpu,
-            "skip_simplified_layer_norm": fuse_skip_simplified_layer_norm_for_webgpu,
-            "gather_index": rewrite_gather_int64_casts_for_webgpu,
-            "rotary_embedding": rewrite_rotary_embedding_for_webgpu,
-            "fuse_gqa_attention": fuse_manual_gqa_attention_for_webgpu,
-            "fuse_mha_attention": fuse_manual_mha_attention_for_webgpu,
-            "squeeze_concat": rewrite_squeeze_concat_for_webgpu,
-            "unsqueeze_transpose_squeeze": rewrite_unsqueeze_transpose_squeeze_for_webgpu,
-            "attention_scale_folding": fold_attention_scale_into_query_norm_for_webgpu,
-            "zero_softmax_bias_adds": remove_zero_softmax_bias_adds_for_webgpu,
-            "spatial_qk_head_layout": rewrite_spatial_qk_head_layout_for_webgpu,
-            "temporal_attention_bhsd": rewrite_temporal_attention_bhsd_for_webgpu,
-            "entry_final_z_only": rewrite_entry_final_z_only_for_webgpu,
-        },
-    )
+    pass_names = {
+        "tokenizer_decode_z_step": TOKENIZER_DECODE_Z_STEP_NAME,
+        "dynamics_cached_prefill": DYNAMICS_CACHED_PREFILL_NAME,
+        "dynamics_cached_prefill_layer": DYNAMICS_CACHED_PREFILL_LAYER_NAME,
+        "dynamics_cached_sample_step": DYNAMICS_CACHED_SAMPLE_STEP_NAME,
+        "dynamics_cached_sample_step_slide": DYNAMICS_CACHED_SAMPLE_STEP_SLIDE_NAME,
+        "dynamics_cached_sample_append_context": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_NAME,
+        "dynamics_cached_sample_append_context_entry": (
+            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME
+        ),
+        "dynamics_cached_sample_append_context_slide": (
+            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_NAME
+        ),
+        "dynamics_cached_sample_append_context_slide_full_cache": (
+            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+        ),
+        "dynamics_cached_sample_append_context_slide_entry": (
+            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+        ),
+        "dynamics_cached_sample_append_context_slide_layer": (
+            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_LAYER_NAME
+        ),
+    }
+    pass_rewrites = {
+        "simplify": simplify_onnx_for_webgpu,
+        "optimize": optimize_onnx_for_webgpu,
+        "singleton_reshapes": rewrite_singleton_reshapes_for_webgpu,
+        "gqa_repeats": rewrite_gqa_repeats_for_webgpu,
+        "packed_qkv_head_projection": rewrite_packed_qkv_head_projection_for_webgpu,
+        "head_projection_layout": rewrite_head_projection_reshapes_with_layout_ops_for_webgpu,
+        "head_projection_einsum": rewrite_head_projection_reshapes_for_webgpu,
+        "pack_sibling_gemms": pack_sibling_gemms_for_webgpu,
+        "packed_qkv_partial_head_split": rewrite_packed_qkv_split_partial_heads_for_webgpu,
+        "q_head_split_gather": rewrite_q_head_split_gather_for_webgpu,
+        "slide_static_cache": rewrite_slide_static_cache_ops_for_webgpu,
+        "rmsnorm": rewrite_rmsnorm_for_webgpu,
+        "skip_simplified_layer_norm": fuse_skip_simplified_layer_norm_for_webgpu,
+        "gather_index": rewrite_gather_int64_casts_for_webgpu,
+        "rotary_embedding": rewrite_rotary_embedding_for_webgpu,
+        "fuse_gqa_attention": fuse_manual_gqa_attention_for_webgpu,
+        "fuse_mha_attention": fuse_manual_mha_attention_for_webgpu,
+        "squeeze_concat": rewrite_squeeze_concat_for_webgpu,
+        "unsqueeze_transpose_squeeze": rewrite_unsqueeze_transpose_squeeze_for_webgpu,
+        "attention_scale_folding": fold_attention_scale_into_query_norm_for_webgpu,
+        "zero_softmax_bias_adds": remove_zero_softmax_bias_adds_for_webgpu,
+        "spatial_qk_head_layout": rewrite_spatial_qk_head_layout_for_webgpu,
+        "temporal_attention_bhsd": rewrite_temporal_attention_bhsd_for_webgpu,
+        "entry_final_z_only": rewrite_entry_final_z_only_for_webgpu,
+    }
+    if args.export_target == "wasm":
+        pass_results = run_wasm_passes(
+            exported_paths,
+            wasm_pass_options_from_args(args),
+            names=pass_names,
+            rewrites=pass_rewrites,
+        )
+    else:
+        pass_results = run_webgpu_passes(
+            exported_paths,
+            webgpu_pass_options_from_args(args),
+            names=pass_names,
+            rewrites=pass_rewrites,
+        )
     simplification = pass_results["simplification"]
     optimization = pass_results["optimization"]
     layout_rewrite = pass_results["layout_rewrite"]
@@ -7423,9 +7459,7 @@ def main() -> None:
     packed_qkv_head_projection_rewrite = pass_results["packed_qkv_head_projection_rewrite"]
     head_projection_rewrite = pass_results["head_projection_rewrite"]
     packed_gemm_rewrite = pass_results["packed_gemm_rewrite"]
-    packed_qkv_partial_head_split_rewrite = pass_results[
-        "packed_qkv_partial_head_split_rewrite"
-    ]
+    packed_qkv_partial_head_split_rewrite = pass_results["packed_qkv_partial_head_split_rewrite"]
     q_head_split_gather_rewrite = pass_results["q_head_split_gather_rewrite"]
     slide_static_cache_rewrite = pass_results["slide_static_cache_rewrite"]
     rmsnorm_rewrite = pass_results["rmsnorm_rewrite"]
@@ -7441,6 +7475,17 @@ def main() -> None:
     spatial_qk_head_layout_rewrite = pass_results["spatial_qk_head_layout_rewrite"]
     temporal_attention_bhsd_rewrite = pass_results["temporal_attention_bhsd_rewrite"]
     final_z_only_rewrite = pass_results["final_z_only_rewrite"]
+    static_output_repairs = {
+        name: {"enabled": False, "reason": "no static graph output repair needed"}
+        for name in exported_paths
+    }
+    if args.export_cached:
+        for name in (DYNAMICS_CACHED_PREFILL_NAME, DYNAMICS_CACHED_PREFILL_LAYER_NAME):
+            static_output_repairs[name] = ensure_static_int32_output(
+                exported_paths[name],
+                "cache_length",
+                dyn_shapes.context_length,
+            )
     validation = {
         TOKENIZER_DECODER_NAME: {"skipped": not args.validate},
         DYNAMICS_UNCACHED_NAME: {"skipped": not args.validate},
@@ -7789,9 +7834,9 @@ def main() -> None:
                 )
             )
             entry_final_z_aliases_pred_z = bool(
-                final_z_only_rewrite[
-                    DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-                ].get("final_z_aliases_pred_z", False)
+                final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME].get(
+                    "final_z_aliases_pred_z", False
+                )
             )
             entry_expected = {
                 "final_z": sample_append_context_slide_entry_expected[
@@ -8540,9 +8585,9 @@ def main() -> None:
             entry["name"]
         ]
         entry["packed_gemm_rewrite"] = packed_gemm_rewrite[entry["name"]]
-        entry["packed_qkv_partial_head_split_rewrite"] = (
-            packed_qkv_partial_head_split_rewrite[entry["name"]]
-        )
+        entry["packed_qkv_partial_head_split_rewrite"] = packed_qkv_partial_head_split_rewrite[
+            entry["name"]
+        ]
         entry["q_head_split_gather_rewrite"] = q_head_split_gather_rewrite[entry["name"]]
         entry["skip_simplified_layer_norm_rewrite"] = skip_simplified_layer_norm_rewrite[
             entry["name"]
@@ -8556,13 +8601,10 @@ def main() -> None:
         ]
         entry["attention_scale_folding"] = attention_scale_folding[entry["name"]]
         entry["zero_softmax_bias_add_prune"] = zero_softmax_bias_add_prune[entry["name"]]
-        entry["spatial_qk_head_layout_rewrite"] = spatial_qk_head_layout_rewrite[
-            entry["name"]
-        ]
-        entry["temporal_attention_bhsd_rewrite"] = temporal_attention_bhsd_rewrite[
-            entry["name"]
-        ]
+        entry["spatial_qk_head_layout_rewrite"] = spatial_qk_head_layout_rewrite[entry["name"]]
+        entry["temporal_attention_bhsd_rewrite"] = temporal_attention_bhsd_rewrite[entry["name"]]
         entry["final_z_only_rewrite"] = final_z_only_rewrite[entry["name"]]
+        entry["static_output_repair"] = static_output_repairs[entry["name"]]
 
     demo_generation = None
     if args.export_cached:
@@ -8573,6 +8615,9 @@ def main() -> None:
             "preferred_step_export": DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_ENTRY_NAME,
             "preferred_prefill_export": DYNAMICS_CACHED_PREFILL_NAME,
             "preferred_decoder_export": TOKENIZER_DECODER_STEP_NAME,
+            "preferred_full_cache_step_export_wasm": (
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+            ),
             "decode_z": {
                 "source": "final_z_after_velocity_update",
                 "dynamics_shape": list(dyn_shapes.step_z),
@@ -8601,6 +8646,7 @@ def main() -> None:
             "onnx": version_or_unknown(onnx),
             "onnxruntime": version_or_unknown(ort),
         },
+        "export_target": args.export_target,
         "attention_export": {
             "implementation": args.attention_lowering,
             "layout": args.attention_layout,
@@ -8609,7 +8655,13 @@ def main() -> None:
             "split_gqa": "manual_attention_split_by_kv_head_without_kv_repeat",
             "post_export_gqa_fusion": args.fuse_gqa_attention,
             "post_export_spatial_gqa_fusion": args.fuse_spatial_gqa_attention,
-            "post_export_mha_fusion": args.fuse_mha_attention,
+            "post_export_mha_fusion": (
+                args.fuse_mha_attention
+                or (args.export_target == "wasm" and args.wasm_mha_dynamics_fusion)
+            ),
+            "wasm_mha_dynamics_fusion": (
+                args.export_target == "wasm" and args.wasm_mha_dynamics_fusion
+            ),
         },
         "layout_rewrite": {
             "singleton_reshape_to_squeeze_unsqueeze": not args.skip_singleton_reshape_rewrite,

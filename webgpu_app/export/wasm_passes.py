@@ -8,7 +8,7 @@ from webgpu_app.export.pass_utils import RewriteFn, disabled, run_all
 
 
 @dataclass(frozen=True)
-class WebGpuPassOptions:
+class WasmPassOptions:
     simplify_onnx: bool
     simplify_demo_only: bool
     skip_onnx_optimization: bool
@@ -18,18 +18,16 @@ class WebGpuPassOptions:
     pack_qkv_gemm: bool
     pack_swiglu_gemm: bool
     rotary_embedding_rewrite: bool
-    fuse_gqa_attention: bool
-    fuse_spatial_gqa_attention: bool
-    fuse_mha_attention: bool
     skip_squeeze_concat_rewrite: bool
     skip_unsqueeze_transpose_squeeze_rewrite: bool
     skip_attention_scale_folding: bool
     skip_spatial_qk_head_layout_rewrite: bool
     skip_temporal_attention_bhsd_rewrite: bool
+    wasm_mha_dynamics_fusion: bool
 
 
-def webgpu_pass_options_from_args(args) -> WebGpuPassOptions:
-    return WebGpuPassOptions(
+def wasm_pass_options_from_args(args) -> WasmPassOptions:
+    return WasmPassOptions(
         simplify_onnx=args.simplify_onnx,
         simplify_demo_only=args.simplify_demo_only,
         skip_onnx_optimization=args.skip_onnx_optimization,
@@ -39,20 +37,18 @@ def webgpu_pass_options_from_args(args) -> WebGpuPassOptions:
         pack_qkv_gemm=args.pack_qkv_gemm,
         pack_swiglu_gemm=args.pack_swiglu_gemm,
         rotary_embedding_rewrite=args.rotary_embedding_rewrite,
-        fuse_gqa_attention=args.fuse_gqa_attention,
-        fuse_spatial_gqa_attention=args.fuse_spatial_gqa_attention,
-        fuse_mha_attention=args.fuse_mha_attention,
         skip_squeeze_concat_rewrite=args.skip_squeeze_concat_rewrite,
         skip_unsqueeze_transpose_squeeze_rewrite=args.skip_unsqueeze_transpose_squeeze_rewrite,
         skip_attention_scale_folding=args.skip_attention_scale_folding,
         skip_spatial_qk_head_layout_rewrite=args.skip_spatial_qk_head_layout_rewrite,
         skip_temporal_attention_bhsd_rewrite=args.skip_temporal_attention_bhsd_rewrite,
+        wasm_mha_dynamics_fusion=args.wasm_mha_dynamics_fusion,
     )
 
 
-def run_webgpu_passes(
+def run_wasm_passes(
     exported_paths: dict[str, Path],
-    options: WebGpuPassOptions,
+    options: WasmPassOptions,
     names: dict[str, str],
     rewrites: dict[str, RewriteFn],
 ) -> dict[str, dict[str, dict[str, Any]]]:
@@ -131,6 +127,74 @@ def run_webgpu_passes(
         names["dynamics_cached_sample_append_context_slide_entry"],
     }
 
+    packed_qkv_partial_head_split_rewrite = run_all(
+        exported_paths, rewrites["packed_qkv_partial_head_split"]
+    )
+    q_head_split_gather_rewrite = run_all(exported_paths, rewrites["q_head_split_gather"])
+    slide_static_cache_rewrite = {
+        name: rewrites["slide_static_cache"](path)
+        if name in slide_artifacts
+        else {"enabled": False, "reason": "not a steady-state slide artifact"}
+        for name, path in exported_paths.items()
+    }
+    rmsnorm_rewrite = run_all(exported_paths, rewrites["rmsnorm"])
+    skip_simplified_layer_norm_rewrite = run_all(
+        exported_paths, rewrites["skip_simplified_layer_norm"]
+    )
+    gather_index_rewrite = run_all(exported_paths, rewrites["gather_index"])
+    rotary_embedding_rewrite = (
+        run_all(exported_paths, rewrites["rotary_embedding"])
+        if options.rotary_embedding_rewrite
+        else disabled(exported_paths, "--rotary_embedding_rewrite not set")
+    )
+    fused_gqa_attention_rewrite = disabled(
+        exported_paths,
+        "WASM export uses the MHA fusion pass for the matched hot-path attention islands",
+    )
+    squeeze_concat_rewrite = {
+        name: rewrites["squeeze_concat"](path, enabled=not options.skip_squeeze_concat_rewrite)
+        for name, path in exported_paths.items()
+    }
+    unsqueeze_transpose_squeeze_rewrite = {
+        name: rewrites["unsqueeze_transpose_squeeze"](
+            path, enabled=not options.skip_unsqueeze_transpose_squeeze_rewrite
+        )
+        for name, path in exported_paths.items()
+    }
+    attention_scale_folding = {
+        name: rewrites["attention_scale_folding"](
+            path, enabled=not options.skip_attention_scale_folding
+        )
+        for name, path in exported_paths.items()
+    }
+    zero_softmax_bias_add_prune = run_all(exported_paths, rewrites["zero_softmax_bias_adds"])
+    spatial_qk_head_layout_rewrite = {
+        name: rewrites["spatial_qk_head_layout"](
+            path, enabled=not options.skip_spatial_qk_head_layout_rewrite
+        )
+        for name, path in exported_paths.items()
+    }
+    temporal_attention_bhsd_rewrite = {
+        name: rewrites["temporal_attention_bhsd"](
+            path, enabled=not options.skip_temporal_attention_bhsd_rewrite
+        )
+        for name, path in exported_paths.items()
+    }
+    final_z_only_rewrite = {
+        name: rewrites["entry_final_z_only"](path, enabled=name in final_z_only_artifacts)
+        for name, path in exported_paths.items()
+    }
+    wasm_mha_artifacts = {
+        names["dynamics_cached_sample_append_context_slide_full_cache"],
+    }
+    fused_mha_attention_rewrite = {
+        name: rewrites["fuse_mha_attention"](
+            path,
+            enabled=options.wasm_mha_dynamics_fusion and name in wasm_mha_artifacts,
+        )
+        for name, path in exported_paths.items()
+    }
+
     return {
         "simplification": simplification,
         "optimization": optimization,
@@ -139,69 +203,20 @@ def run_webgpu_passes(
         "packed_qkv_head_projection_rewrite": packed_qkv_head_projection_rewrite,
         "head_projection_rewrite": head_projection_rewrite,
         "packed_gemm_rewrite": packed_gemm_rewrite,
-        "packed_qkv_partial_head_split_rewrite": run_all(
-            exported_paths, rewrites["packed_qkv_partial_head_split"]
-        ),
-        "q_head_split_gather_rewrite": run_all(exported_paths, rewrites["q_head_split_gather"]),
-        "slide_static_cache_rewrite": {
-            name: rewrites["slide_static_cache"](path)
-            if name in slide_artifacts
-            else {"enabled": False, "reason": "not a steady-state slide artifact"}
-            for name, path in exported_paths.items()
-        },
-        "rmsnorm_rewrite": run_all(exported_paths, rewrites["rmsnorm"]),
-        "skip_simplified_layer_norm_rewrite": run_all(
-            exported_paths, rewrites["skip_simplified_layer_norm"]
-        ),
-        "gather_index_rewrite": run_all(exported_paths, rewrites["gather_index"]),
-        "rotary_embedding_rewrite": (
-            run_all(exported_paths, rewrites["rotary_embedding"])
-            if options.rotary_embedding_rewrite
-            else disabled(exported_paths, "--rotary_embedding_rewrite not set")
-        ),
-        "fused_gqa_attention_rewrite": {
-            name: rewrites["fuse_gqa_attention"](
-                path,
-                enabled=options.fuse_gqa_attention or options.fuse_spatial_gqa_attention,
-                fuse_spatial=options.fuse_spatial_gqa_attention,
-            )
-            for name, path in exported_paths.items()
-        },
-        "fused_mha_attention_rewrite": {
-            name: rewrites["fuse_mha_attention"](path, enabled=options.fuse_mha_attention)
-            for name, path in exported_paths.items()
-        },
-        "squeeze_concat_rewrite": {
-            name: rewrites["squeeze_concat"](path, enabled=not options.skip_squeeze_concat_rewrite)
-            for name, path in exported_paths.items()
-        },
-        "unsqueeze_transpose_squeeze_rewrite": {
-            name: rewrites["unsqueeze_transpose_squeeze"](
-                path, enabled=not options.skip_unsqueeze_transpose_squeeze_rewrite
-            )
-            for name, path in exported_paths.items()
-        },
-        "attention_scale_folding": {
-            name: rewrites["attention_scale_folding"](
-                path, enabled=not options.skip_attention_scale_folding
-            )
-            for name, path in exported_paths.items()
-        },
-        "zero_softmax_bias_add_prune": run_all(exported_paths, rewrites["zero_softmax_bias_adds"]),
-        "spatial_qk_head_layout_rewrite": {
-            name: rewrites["spatial_qk_head_layout"](
-                path, enabled=not options.skip_spatial_qk_head_layout_rewrite
-            )
-            for name, path in exported_paths.items()
-        },
-        "temporal_attention_bhsd_rewrite": {
-            name: rewrites["temporal_attention_bhsd"](
-                path, enabled=not options.skip_temporal_attention_bhsd_rewrite
-            )
-            for name, path in exported_paths.items()
-        },
-        "final_z_only_rewrite": {
-            name: rewrites["entry_final_z_only"](path, enabled=name in final_z_only_artifacts)
-            for name, path in exported_paths.items()
-        },
+        "packed_qkv_partial_head_split_rewrite": packed_qkv_partial_head_split_rewrite,
+        "q_head_split_gather_rewrite": q_head_split_gather_rewrite,
+        "slide_static_cache_rewrite": slide_static_cache_rewrite,
+        "rmsnorm_rewrite": rmsnorm_rewrite,
+        "skip_simplified_layer_norm_rewrite": skip_simplified_layer_norm_rewrite,
+        "gather_index_rewrite": gather_index_rewrite,
+        "rotary_embedding_rewrite": rotary_embedding_rewrite,
+        "fused_gqa_attention_rewrite": fused_gqa_attention_rewrite,
+        "fused_mha_attention_rewrite": fused_mha_attention_rewrite,
+        "squeeze_concat_rewrite": squeeze_concat_rewrite,
+        "unsqueeze_transpose_squeeze_rewrite": unsqueeze_transpose_squeeze_rewrite,
+        "attention_scale_folding": attention_scale_folding,
+        "zero_softmax_bias_add_prune": zero_softmax_bias_add_prune,
+        "spatial_qk_head_layout_rewrite": spatial_qk_head_layout_rewrite,
+        "temporal_attention_bhsd_rewrite": temporal_attention_bhsd_rewrite,
+        "final_z_only_rewrite": final_z_only_rewrite,
     }
