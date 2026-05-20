@@ -7148,6 +7148,9 @@ Rejected / kept out:
   - Retested split-session `graphOptimizationLevel` after rebuilding the browser bundle from the
     committed source: `all` remained best at `31.15 fps` on the short Chromium window, while
     `extended` measured `29.34 fps` and `basic` measured `28.63 fps`.
+  - Retested WASM session memory options under split. `enableMemPattern=true` validated but
+    measured `29.56 fps`; `enableCpuMemArena=true` validated but measured `29.50 fps`. Keep the
+    default session memory options.
 - After adding automatic wrapper rebuilds, short default validation windows still passed:
   Chromium WASM `30.24 fps` with `split_wasm_dynamics=true`; WebKit/Safari-family WASM
   `31.78 fps` with `split_wasm_dynamics=false`.
