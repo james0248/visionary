@@ -7330,6 +7330,15 @@ Rejected / kept out:
   `3/3` default remains best at `35.89 fps`; `4/3` validated but regressed to `31.51 fps`, and
   `2/3` validated but measured `34.72 fps`. Keep Safari/WebKit at `wasmNumThreads=3` and
   `decoderWorkerNumThreads=3`.
+- Rejected applying the decoder-style primitive RMSNorm lowering to the current split dynamics
+  graphs. The copied generated-asset trial replaced `144` sample and `71` entry
+  `SimplifiedLayerNormalization` sites with primitive arithmetic, expanding the split graphs
+  `2308 -> 3028` and `1178 -> 1533`. Native ORT stayed close but not bit-exact against the
+  accepted split files (`final_z` max abs `6.9e-6`, K entry `1.27e-5`, V entry `5.0e-6`). Browser
+  output and latent validation passed, but the result was only noise-level in Chrome (`38.24 fps`
+  versus an adjacent accepted control at `37.41 fps`, both below the earlier accepted `38.45 fps`
+  window) and not a reliable WebKit win (`35.49 fps` in the final trial window). Keep primitive
+  RMSNorm limited to the decoder artifacts.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
