@@ -7378,6 +7378,12 @@ Rejected / kept out:
   at `37.68 fps`. Tested alternatives also passed output and latent validation but regressed:
   `2/3` measured `36.19 fps`, and `4/3` measured `33.55 fps`. Keep the current Safari/WebKit
   thread split.
+- Rejected post-head-time offline ORT `ENABLE_ALL` serialization of the split sample/entry graphs.
+  The copied generated-asset trial was native-ORT bit-exact against the accepted head-time split
+  files and persisted ORT's score-matmul fusions (`sample 2236 -> 2212` with `24` `FusedMatMul`
+  nodes, `entry 1167 -> 1155` with `12` `FusedMatMul` nodes), but Chrome output and latent
+  validation regressed to `37.39 fps` / `26.75 ms`. Keep the browser runtime optimizer on the
+  accepted split graphs instead of serializing `ENABLE_ALL` output after the late split passes.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
