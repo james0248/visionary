@@ -7126,6 +7126,15 @@ Rejected / kept out:
     future experiments.
   - WebKit/Safari-family default after the guard, 64 timed frames: output and numerical validation
     passed, `32.92 fps`, `30.37 ms/frame`, `split_wasm_dynamics=false`, `wasmNumThreads=3`.
+- Rejected post-split Chromium runtime retunes:
+  - Decoder worker thread counts under split remained worse than the `3`-thread default:
+    `1` thread `29.86 fps`, `2` threads `29.63 fps`, `4` threads `29.32 fps`; all passed output
+    and latent validation but regressed the same short window.
+  - Main WASM thread counts under split also remained worse than the `4`-thread Chromium default:
+    `2` threads `25.93 fps`, `3` threads `28.73 fps`, and `5` threads `26.06 fps`; all passed
+    validation but were slower.
+  - Releasing the original full-step session after split session compilation validated but slowed
+    the short Chromium window to `28.99 fps`; keep the full-step session resident as the fallback.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
