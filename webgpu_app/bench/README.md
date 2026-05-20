@@ -152,8 +152,9 @@ without visible-frame validation should be treated as invalid.
 
 The pure WASM path can be selected with `provider=wasm`; the demo then defaults to
 `assetBase=/dream_arcade_assets/breakout_wasm_default_mha`,
-`ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`, `wasmNumThreads=4`, and the
-decoder worker pipeline with `decoderWorkerNumThreads=3`.
+`ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`, browser-selected
+`wasmNumThreads` (`4` in Chrome, `3` in Safari/WebKit), and the decoder worker pipeline with
+`decoderWorkerNumThreads=3`.
 The current actual-demo WASM baseline remains below the 60 fps target but is materially faster than
 the generic WebGPU asset set: about `33.5 fps` in Chrome and `27.4 fps` in WebKit on the local
 machine with the WASM entry-slide artifact. Keep validating `wasmNumThreads` and decoder worker

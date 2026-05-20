@@ -36,8 +36,10 @@ The maintained benchmark surface is latency plus graph capture:
 - Benchmark controls should be passed as wrapper flags after `--`, for example
   `--webgpu-benchmark-asset-base` or `--webgpu-benchmark-timed-runs`, instead of leading shell
   environment assignments.
-- `provider=wasm` benchmark defaults now explicitly use the WASM asset set, `ort.wasm.min.mjs`,
-  `wasmNumThreads=4`, and the decoder worker pipeline with `decoderWorkerNumThreads=3`.
+- `provider=wasm` benchmark defaults now explicitly use the WASM asset set and
+  `ort.wasm.min.mjs`, then let the demo choose the browser-specific WASM thread count
+  (`4` in Chrome, `3` in Safari/WebKit). The decoder worker pipeline defaults to
+  `decoderWorkerNumThreads=3`.
 - Generated results stay under `webgpu_app/bench/results/` and should not be committed.
 
 Rejected or inactive paths:
@@ -104,7 +106,7 @@ Rejected or inactive paths:
 - Split the demo defaults so `backend=wasm` uses:
   - `assetBase=/dream_arcade_assets/breakout_wasm_default_mha`
   - `ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`
-  - `wasmNumThreads=4`
+  - `wasmNumThreads=4` in Chrome and `3` in Safari/WebKit
   - decoder worker pipeline with `decoderWorkerNumThreads=3`
 - The benchmark now passes those same defaults for `provider=wasm` and records the resolved
   `asset_base`, `ort_module_url`, `wasm_num_threads`, and `graph_optimization_level` from the
@@ -130,6 +132,13 @@ Rejected or inactive paths:
   - Serializing the entry graph through ORT `ORT_ENABLE_ALL` was CPU-exact against the accepted
     graph and reduced `3419 -> 3383` nodes, but browser validation was slower at `31.8 fps`.
     The ignored trial artifact and manifest entry were removed.
+- WebKit/Safari-family thread retest found a better main-thread count than Chrome:
+  - `4/3` adjacent control: `29.83 fps`.
+  - `3/3`: `32.76 fps` on a short validated window.
+  - `4/2`, `4/1`, `3/2`, and `2/2` did not beat `3/3`.
+  Promoted the demo's Safari/WebKit WASM main-thread default to `3` while leaving Chrome at `4`;
+  the benchmark no longer forces `wasmNumThreads=4` for provider `wasm`, so it records the actual
+  browser-selected runtime default.
 
 ## Iteration Log
 
