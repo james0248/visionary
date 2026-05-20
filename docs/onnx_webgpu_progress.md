@@ -7162,6 +7162,12 @@ Rejected / kept out:
   context-entry graph reduced decoder contention but lost overlap; a 64-frame Chromium validation
   measured `32.90 fps`, effectively the same as the adjacent immediate-start control at
   `32.93 fps`. Keep immediate decoder start after sample `final_z`.
+- Rejected folding the hot split graphs' action embedding `Gather -> Add(constant)` patterns into
+  pre-added gather tables. The rewrite was exactly equivalent in native ORT for split sample
+  `final_z` and split entry `candidate_k_entry` / `candidate_v_entry` (`max abs diff 0.0`), but it
+  only changed native timing by noise-level amounts (`sample ~10.09 ms -> ~10.08 ms`,
+  `entry ~4.79 ms -> ~4.73 ms`) and the actual Chromium demo benchmark regressed to `29.22 fps`
+  despite passing output and latent validation. Restore the plain extracted split ONNX files.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
