@@ -97,6 +97,7 @@ const DEFAULT_DECODER_WORKER_PIPELINE = requestedBackend === 'wasm';
 const DEFAULT_DECODER_WORKER_NUM_THREADS = 3;
 const DEFAULT_SPLIT_WASM_DYNAMICS =
   requestedBackend === 'wasm' && (browserProfile === 'chromium' || browserProfile === 'safari');
+const SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT = 'layer_batch_token_head_time_dim';
 const explicitOrtModule = explicitConfigValue('ortModule');
 const wasmOrtModule = configValue('wasmOrtModule', DEFAULT_ORT_MODULE);
 const ortModuleConfig =
@@ -762,7 +763,7 @@ function splitDynamicsPath(path, suffix) {
   return path.replace(/\.onnx$/i, `${suffix}.onnx`);
 }
 
-function splitWasmDynamicsSpecsForSpec(stepSpec) {
+function splitWasmDynamicsSpecsForSpec(stepSpec, manifest) {
   const inputs = stepSpec.inputs ?? {};
   const outputs = stepSpec.outputs ?? {};
   const finalZSpec = outputs.final_z;
@@ -780,16 +781,28 @@ function splitWasmDynamicsSpecsForSpec(stepSpec) {
   ) {
     return null;
   }
+  const splitMetadata = manifest?.demo_generation?.split_wasm_dynamics ?? {};
+  const cacheLayout =
+    splitMetadata.cache_layout === SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT
+      ? SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT
+      : null;
+  const cacheInputShape =
+    cacheLayout && Array.isArray(splitMetadata.cache_input_shape)
+      ? splitMetadata.cache_input_shape.map((value) => Number(value))
+      : null;
+  const splitCacheInputSpec = (spec) =>
+    cacheInputShape ? { ...spec, shape: cacheInputShape } : spec;
   const sampleSpec = {
     ...stepSpec,
     name: `${stepSpec.name}_sample_only_final_z`,
     path: splitDynamicsPath(stepSpec.path, '_sample_only_final_z'),
+    cache_layout: cacheLayout,
     external_data: [],
     inputs: {
       sample_noise: inputs.sample_noise,
       actions: inputs.actions,
-      k_cache: inputs.k_cache,
-      v_cache: inputs.v_cache,
+      k_cache: splitCacheInputSpec(inputs.k_cache),
+      v_cache: splitCacheInputSpec(inputs.v_cache),
     },
     outputs: {
       final_z: finalZSpec,
@@ -799,13 +812,14 @@ function splitWasmDynamicsSpecsForSpec(stepSpec) {
     ...stepSpec,
     name: `${stepSpec.name}_context_entry_from_final_z`,
     path: splitDynamicsPath(stepSpec.path, '_context_entry_from_final_z'),
+    cache_layout: cacheLayout,
     external_data: [],
     inputs: {
       final_z: finalZSpec,
       context_noise: inputs.context_noise,
       actions: inputs.actions,
-      k_cache: inputs.k_cache,
-      v_cache: inputs.v_cache,
+      k_cache: splitCacheInputSpec(inputs.k_cache),
+      v_cache: splitCacheInputSpec(inputs.v_cache),
     },
     outputs: {
       candidate_k_entry: kEntrySpec,
@@ -822,6 +836,7 @@ function splitWasmDynamicsSpecsForSpec(stepSpec) {
       length: null,
       cacheUpdate: 'entry',
     },
+    cacheLayout,
   };
 }
 
@@ -1864,7 +1879,9 @@ function cacheContractFromSpec(spec, manifest) {
     throw new Error('Entry-cache update currently supports float32 caches only.');
   }
   const cacheLayout =
-    manifest.cache_contract?.tensors?.k_cache?.layout ?? 'layer_batch_token_time_head_dim';
+    spec.cache_layout ??
+    manifest.cache_contract?.tensors?.k_cache?.layout ??
+    'layer_batch_token_time_head_dim';
   let layers;
   let batch;
   let tokens;
@@ -2740,6 +2757,62 @@ function cloneCpuTensor(tensor) {
   return new ort.Tensor(tensor.type, new ArrayType(tensor.data), [...tensor.dims]);
 }
 
+function transposeTimeHeadCacheTensor(tensor, targetShape) {
+  if (tensor.type !== 'float32') {
+    throw new Error(`Head-time cache transpose requires float32 data, got ${tensor.type}.`);
+  }
+  const [layers, batch, tokens, contextLength, heads, headDim] = tensor.dims;
+  const expectedShape = [layers, batch, tokens, heads, contextLength, headDim];
+  if (!sameShape(targetShape, expectedShape)) {
+    throw new Error(
+      `Cannot transpose cache ${formatShape(tensor.dims)} to requested ${formatShape(targetShape)}.`,
+    );
+  }
+  const source = tensor.data;
+  const transposed = new Float32Array(source.length);
+  const oldTimeStride = heads * headDim;
+  const oldTokenStride = contextLength * oldTimeStride;
+  const oldBatchStride = tokens * oldTokenStride;
+  const newTimeStride = headDim;
+  const newHeadStride = contextLength * headDim;
+  const newTokenStride = heads * newHeadStride;
+  const newBatchStride = tokens * newTokenStride;
+  for (let layer = 0; layer < layers; layer += 1) {
+    for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+      const oldBatchBase = (layer * batch + batchIndex) * oldBatchStride;
+      const newBatchBase = (layer * batch + batchIndex) * newBatchStride;
+      for (let token = 0; token < tokens; token += 1) {
+        const oldTokenBase = oldBatchBase + token * oldTokenStride;
+        const newTokenBase = newBatchBase + token * newTokenStride;
+        for (let time = 0; time < contextLength; time += 1) {
+          const oldTimeBase = oldTokenBase + time * oldTimeStride;
+          for (let head = 0; head < heads; head += 1) {
+            const oldBase = oldTimeBase + head * headDim;
+            const newBase = newTokenBase + head * newHeadStride + time * newTimeStride;
+            transposed.set(source.subarray(oldBase, oldBase + headDim), newBase);
+          }
+        }
+      }
+    }
+  }
+  return new ort.Tensor('float32', transposed, targetShape);
+}
+
+function initialCacheForSplitLayout(initialCache, splitWasmDynamics) {
+  const targetShape = splitWasmDynamics?.sampleSpec?.inputs?.k_cache?.shape ?? null;
+  if (splitWasmDynamics?.cacheLayout !== SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT || !targetShape) {
+    return initialCache;
+  }
+  if (sameShape(initialCache.k.dims, targetShape) && sameShape(initialCache.v.dims, targetShape)) {
+    return initialCache;
+  }
+  return {
+    k: transposeTimeHeadCacheTensor(initialCache.k, targetShape),
+    v: transposeTimeHeadCacheTensor(initialCache.v, targetShape),
+    length: initialCache.length,
+  };
+}
+
 function cacheFromInitialArtifacts(device, initialCache, backend) {
   if (backend !== 'webgpu') {
     return {
@@ -3106,11 +3179,16 @@ async function createRuntimeForBackend(backend, loaded) {
     if (backend === 'webgpu' && !device) {
       throw new Error('WebGPU session was created but ORT did not expose a GPU device.');
     }
-    const initialCache = {
-      k: loaded.initialK,
-      v: loaded.initialV,
-      length: loaded.initialLength,
-    };
+    const activeSplitWasmDynamics =
+      backend === 'wasm' && splitSampleSession && splitEntrySession ? loaded.splitWasmDynamics : null;
+    const initialCache = initialCacheForSplitLayout(
+      {
+        k: loaded.initialK,
+        v: loaded.initialV,
+        length: loaded.initialLength,
+      },
+      activeSplitWasmDynamics,
+    );
     const patchRenderer =
       backend === 'webgpu' && device && gpuPatchRendererEnabled
         ? createWebgpuPatchRenderer(device, elements.canvas, loaded.contextManifest.preprocessor)
@@ -3177,13 +3255,14 @@ async function createRuntimeForBackend(backend, loaded) {
     }
     reuseFinalZOutputAsDecoderInput(fullGraphCapture, loaded.fullStepSpec, fullStepNames, decoderInput);
 
+    const cacheUpdateSpec = activeSplitWasmDynamics?.entrySpec ?? loaded.fullStepSpec;
     cacheUpdater =
       fullStepNames.cacheUpdate === 'entry'
         ? backend === 'webgpu'
           ? createEntryCacheUpdater(device, loaded.fullStepSpec, loaded.manifest)
           : typeof Worker === 'function'
-            ? createWorkerEntryCacheUpdater(loaded.fullStepSpec, loaded.manifest)
-            : createCpuEntryCacheUpdater(loaded.fullStepSpec, loaded.manifest)
+            ? createWorkerEntryCacheUpdater(cacheUpdateSpec, loaded.manifest)
+            : createCpuEntryCacheUpdater(cacheUpdateSpec, loaded.manifest)
         : null;
     decoderWorker =
       backend === 'wasm' && decoderWorkerPipelineEnabled && typeof Worker === 'function'
@@ -3238,6 +3317,7 @@ async function createRuntimeForBackend(backend, loaded) {
       patchRenderMap: createPatchRenderMap(loaded.contextManifest.preprocessor),
       cacheUpdater,
       splitWasmDynamics: Boolean(backend === 'wasm' && splitSampleSession && splitEntrySession),
+      splitWasmCacheLayout: activeSplitWasmDynamics?.cacheLayout ?? null,
       graphCapture: null,
       fullGraphCapture,
       decoderGraphCapture: decoderRuntime.graphCaptureEnabled || decoderGraphCapturePending,
@@ -3356,7 +3436,7 @@ async function loadRuntime() {
   setStatus('Loading ONNX models');
   const splitWasmDynamicsSpecs =
     requestedBackend === 'wasm' && splitWasmDynamicsEnabled
-      ? splitWasmDynamicsSpecsForSpec(fullStepSpec)
+      ? splitWasmDynamicsSpecsForSpec(fullStepSpec, manifest)
       : null;
   const splitSampleBytesPromise = splitWasmDynamicsSpecs
     ? fetchOptionalBytes(

@@ -106,9 +106,17 @@ def export_split_wasm_dynamics_models(
         ["candidate_k_entry", "candidate_v_entry"],
         check_model=False,
     )
-    split_rewrites = {
+    mha_gqa_pretranspose_rewrites = {
         "sample_only_final_z": rewrite_split_mha_gqa_pretranspose_for_wasm(sample_path),
         "context_entry_from_final_z": rewrite_split_mha_gqa_pretranspose_for_wasm(entry_path),
+    }
+    cache_bhntd_rewrites = {
+        "sample_only_final_z": rewrite_split_cache_bhntd_for_wasm(sample_path),
+        "context_entry_from_final_z": rewrite_split_cache_bhntd_for_wasm(entry_path),
+    }
+    split_rewrites = {
+        "mha_gqa_pretranspose": mha_gqa_pretranspose_rewrites,
+        "cache_bhntd": cache_bhntd_rewrites,
     }
     return (sample_path, entry_path), split_rewrites
 
@@ -4714,6 +4722,304 @@ def rewrite_split_mha_gqa_pretranspose_for_wasm(
     }
 
 
+def rewrite_split_cache_bhntd_for_wasm(
+    path: Path,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = ("Transpose", "Concat", "Gather", "Slice", "Squeeze")
+    cache_layout = "layer_batch_token_head_time_dim"
+    if not enabled:
+        return {
+            "enabled": False,
+            "reason": "split WASM BHNTD cache rewrite disabled",
+            "cache_layout": None,
+            "cache_input_shape": None,
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    graph_inputs = {value.name: value for value in model.graph.input}
+    cache_shapes = {
+        name: _tensor_shape(graph_inputs[name])
+        for name in ("k_cache", "v_cache")
+        if name in graph_inputs
+    }
+    if set(cache_shapes) != {"k_cache", "v_cache"}:
+        return {
+            "enabled": False,
+            "tool": "custom_split_cache_bhntd_rewrite",
+            "reason": "graph does not expose monolithic k_cache/v_cache inputs",
+            "cache_layout": None,
+            "cache_input_shape": None,
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+    k_shape = cache_shapes["k_cache"]
+    v_shape = cache_shapes["v_cache"]
+    if k_shape is None or v_shape is None or len(k_shape) != 6 or k_shape != v_shape:
+        return {
+            "enabled": False,
+            "tool": "custom_split_cache_bhntd_rewrite",
+            "reason": f"unsupported cache input shapes k={k_shape} v={v_shape}",
+            "cache_layout": None,
+            "cache_input_shape": None,
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    layers, batch, tokens, context_length, heads, head_dim = k_shape
+    if context_length <= heads:
+        return {
+            "enabled": False,
+            "tool": "custom_split_cache_bhntd_rewrite",
+            "reason": f"cache shape already appears head-major or ambiguous: {k_shape}",
+            "cache_layout": cache_layout,
+            "cache_input_shape": list(k_shape),
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    cache_input_shape = (layers, batch, tokens, heads, context_length, head_dim)
+    for name in ("k_cache", "v_cache"):
+        _set_tensor_shape(graph_inputs[name], cache_input_shape)
+
+    initializer_by_name = {initializer.name: initializer for initializer in model.graph.initializer}
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    producer = {output: node for node in model.graph.node for output in node.output}
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    existing_value_names = {
+        value.name
+        for value in (
+            list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info)
+        )
+    }
+    existing_value_names.update(initializer.name for initializer in model.graph.initializer)
+    existing_value_names.update(output for node in model.graph.node for output in node.output)
+    existing_node_names = {node.name for node in model.graph.node if node.name}
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def set_attr(node: onnx.NodeProto, name: str, value: Any) -> None:
+        for attr in node.attribute:
+            if attr.name == name:
+                attr.CopyFrom(onnx.helper.make_attribute(name, value))
+                return
+        node.attribute.append(onnx.helper.make_attribute(name, value))
+
+    def unique_value_name(base: str) -> str:
+        if base not in existing_value_names:
+            existing_value_names.add(base)
+            return base
+        suffix = 1
+        while f"{base}__{suffix}" in existing_value_names:
+            suffix += 1
+        value_name = f"{base}__{suffix}"
+        existing_value_names.add(value_name)
+        return value_name
+
+    def unique_node_name(base: str) -> str:
+        if base not in existing_node_names:
+            existing_node_names.add(base)
+            return base
+        suffix = 1
+        while f"{base}__{suffix}" in existing_node_names:
+            suffix += 1
+        node_name = f"{base}__{suffix}"
+        existing_node_names.add(node_name)
+        return node_name
+
+    def replace_initializer(name: str, values: np.ndarray) -> None:
+        initializer = initializer_by_name[name]
+        values = values.astype(np.int64)
+        initializer.CopyFrom(onnx.numpy_helper.from_array(values, name))
+        initializer_arrays[name] = values
+
+    rewrites = Counter()
+    examples: list[dict[str, Any]] = []
+    remove_nodes: set[str] = set()
+    insert_before: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    swapped_initializers: set[str] = set()
+
+    for node in model.graph.node:
+        if (
+            node.op_type != "Slice"
+            or len(node.input) < 4
+            or node.input[0] not in {"k_cache", "v_cache"}
+        ):
+            continue
+        starts_name, ends_name, axes_name = node.input[1], node.input[2], node.input[3]
+        if not all(name in initializer_arrays for name in (starts_name, ends_name, axes_name)):
+            continue
+        axes = np.asarray(initializer_arrays[axes_name]).reshape(-1)
+        if tuple(int(axis) for axis in axes) != (0, 1, 2, 3, 4, 5):
+            continue
+        for name in (starts_name, ends_name):
+            if name in swapped_initializers:
+                continue
+            values = np.asarray(initializer_arrays[name]).reshape(-1).copy()
+            values[3], values[4] = values[4], values[3]
+            replace_initializer(name, values)
+            swapped_initializers.add(name)
+        rewrites["cache_slice_bounds_seen"] += 1
+
+    for gather in list(model.graph.node):
+        if (
+            gather.op_type != "Gather"
+            or len(gather.input) < 2
+            or int(attr_value(gather, "axis", -1)) != 1
+        ):
+            continue
+        transpose = producer.get(gather.input[0])
+        if (
+            transpose is None
+            or transpose.op_type != "Transpose"
+            or list(attr_value(transpose, "perm", [])) != [0, 2, 1, 3]
+            or len(transpose.input) != 1
+            or len(transpose.output) != 1
+        ):
+            continue
+        concat = producer.get(transpose.input[0])
+        if (
+            concat is None
+            or concat.op_type != "Concat"
+            or len(concat.input) != 2
+            or int(attr_value(concat, "axis", -1)) != 1
+        ):
+            continue
+        cache_input, current_input = concat.input
+        cache_producer = producer.get(cache_input)
+        if cache_producer is None or cache_producer.op_type != "Squeeze":
+            continue
+
+        set_attr(concat, "axis", 2)
+        current_producer = producer.get(current_input)
+        if (
+            current_producer is not None
+            and current_producer.op_type == "Transpose"
+            and list(attr_value(current_producer, "perm", [])) == [0, 2, 1, 3]
+            and len(current_producer.input) == 1
+            and len(current_producer.output) == 1
+        ):
+            concat.input[1] = current_producer.input[0]
+            rewrites["current_k_bhsd_reused"] += 1
+            if consumers.get(current_producer.output[0], []) == [concat]:
+                remove_nodes.add(node_key(current_producer))
+                rewrites["current_k_transpose_removed"] += 1
+        elif (
+            current_producer is not None
+            and current_producer.op_type == "Concat"
+            and int(attr_value(current_producer, "axis", -1)) == 2
+        ):
+            if consumers.get(current_producer.output[0], []) == [concat]:
+                set_attr(current_producer, "axis", 1)
+                rewrites["current_v_concat_axis_changed"] += 1
+            else:
+                current_bhsd = unique_value_name(f"{current_producer.output[0]}__bhntd_current")
+                current_concat = onnx.helper.make_node(
+                    "Concat",
+                    list(current_producer.input),
+                    [current_bhsd],
+                    name=unique_node_name(f"{node_key(current_producer)}__bhntd_current"),
+                    axis=1,
+                )
+                concat.input[1] = current_bhsd
+                insert_before[node_key(concat)].append(current_concat)
+                rewrites["current_v_parallel_concat_inserted"] += 1
+        else:
+            continue
+
+        gather.input[0] = concat.output[0]
+        remove_nodes.add(node_key(transpose))
+        rewrites["post_concat_transpose_removed"] += 1
+        rewrites["temporal_concat_axis_changed"] += 1
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "gather": gather.name,
+                    "concat": concat.name,
+                    "removed_transpose": transpose.name,
+                }
+            )
+
+    rewrites["cache_slice_initializers_swapped"] = len(swapped_initializers)
+    if not rewrites["post_concat_transpose_removed"]:
+        return {
+            "enabled": True,
+            "tool": "custom_split_cache_bhntd_rewrite",
+            "reason": "no eligible split MHA cache paths found",
+            "cache_layout": cache_layout,
+            "cache_input_shape": list(cache_input_shape),
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {key: int(value) for key, value in rewrites.items()},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in remove_nodes:
+            continue
+        rewritten_nodes.extend(insert_before.get(key, []))
+        rewritten_nodes.append(node)
+
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.value_info[:]
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_split_cache_bhntd_rewrite",
+        "reason": (
+            "Expose split WASM cache inputs as [layer,batch,token,head,time,dim] "
+            "so MHA K/V paths concatenate compact cache/current tensors directly in "
+            "B,H,S,D layout and skip per-layer cache transposes."
+        ),
+        "cache_layout": cache_layout,
+        "cache_input_shape": list(cache_input_shape),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+    }
+
+
 def fuse_manual_gqa_attention_for_webgpu(
     path: Path, enabled: bool, fuse_spatial: bool = False
 ) -> dict[str, Any]:
@@ -8284,11 +8590,18 @@ def main() -> None:
     split_wasm_dynamics = None
     if split_wasm_dynamics_model_paths is not None:
         split_sample_path, split_entry_path = split_wasm_dynamics_model_paths
+        cache_bhntd_rewrites = split_wasm_dynamics_rewrites.get("cache_bhntd", {})
+        sample_cache_bhntd_rewrite = cache_bhntd_rewrites.get("sample_only_final_z", {})
         split_wasm_dynamics = {
             "available": True,
             "sample_only_final_z": export_file_metadata(split_sample_path),
             "context_entry_from_final_z": export_file_metadata(split_entry_path),
-            "mha_gqa_pretranspose_rewrite": split_wasm_dynamics_rewrites,
+            "mha_gqa_pretranspose_rewrite": split_wasm_dynamics_rewrites.get(
+                "mha_gqa_pretranspose", {}
+            ),
+            "cache_bhntd_rewrite": cache_bhntd_rewrites,
+            "cache_layout": sample_cache_bhntd_rewrite.get("cache_layout"),
+            "cache_input_shape": sample_cache_bhntd_rewrite.get("cache_input_shape"),
         }
 
     demo_generation = None

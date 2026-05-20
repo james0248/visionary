@@ -7348,6 +7348,20 @@ Rejected / kept out:
   an adjacent accepted control at `38.07 fps`, below the earlier accepted `38.45 fps` window) and
   WebKit regressed to `34.48 fps`. Reject; removing the singleton layout nodes does not reliably
   improve ORT WASM's steady-state execution on the current split graphs.
+- Accepted a split-only head-time cache ABI rewrite for the WASM sample/entry dynamics graphs. The
+  pass changes the split cache inputs from `[layer,batch,token,time,head,dim]` to
+  `[layer,batch,token,head,time,dim]`, then rewrites the split MHA K/V cache paths so cache and
+  current K/V concatenate directly in compact B,H,S,D layout before the GQA head gather. It removes
+  `72` sample transposes (`2308 -> 2236` nodes) and `22` entry transposes while inserting `11`
+  parallel entry V-current concats (`1178 -> 1167` nodes). Native ORT stayed bit-exact against the
+  accepted split files when fed transposed K/V caches (`max_abs 0.0` for `final_z`,
+  `candidate_k_entry`, and `candidate_v_entry`). The demo keeps the served initial-cache sidecars in
+  the original layout and transposes them in memory only when the split WASM metadata requests the
+  head-time cache layout, so the WebGPU/full-step ABI is not changed. Browser output and latent
+  validation passed through the actual demo proxy: Chrome measured `39.92 fps` / `25.05 ms`, with
+  dynamics `22.90 ms` (`sample 15.27 ms`, `entry 7.59 ms`), and WebKit measured `37.68 fps` /
+  `26.54 ms`, with dynamics `24.04 ms` (`sample 16.06 ms`, `entry 7.94 ms`). Keep this as the new
+  split WASM default.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
@@ -7356,8 +7370,8 @@ Current WASM conclusion:
   primitive RMSNorm rewrite, the worker-backed JavaScript cache updater for WASM, the decoder
   worker pipeline with `decoderWorkerNumThreads=3`, browser-specific main WASM threads
   (`4` for Chrome/Chromium and `3` for Safari/WebKit), ORT WASM `graphOptimizationLevel=all`,
-  split-only MHA GQA pretranspose for the derived split files, and split dynamics when those derived
-  files are present in Chrome/Chromium or Safari/WebKit.
-- The current validated default windows are about `38.5 fps` in headed Chrome and `35.9 fps` in
+  split-only MHA GQA pretranspose plus head-time split cache inputs for the derived split files, and
+  split dynamics when those derived files are present in Chrome/Chromium or Safari/WebKit.
+- The current validated default windows are about `39.9 fps` in headed Chrome and `37.7 fps` in
   WebKit/Safari-family, both preserving `sample_steps=2` and passing visual plus WASM latent
   validation. The `30 fps` target is reached, but the requested `60 fps` target is not.
