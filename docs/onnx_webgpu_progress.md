@@ -7168,6 +7168,13 @@ Rejected / kept out:
   only changed native timing by noise-level amounts (`sample ~10.09 ms -> ~10.08 ms`,
   `entry ~4.79 ms -> ~4.73 ms`) and the actual Chromium demo benchmark regressed to `29.22 fps`
   despite passing output and latent validation. Restore the plain extracted split ONNX files.
+- Rejected replacing the accepted temporal `MultiHeadAttention` split graphs with
+  `GroupQueryAttention`. An export trial that enabled the existing GQA pass before MHA did not
+  match the WASM slide-entry graph after the current layout rewrites (`0` GQA rewrites), so it fell
+  back to the slower explicit MatMul attention path. A direct prototype that rewrote each accepted
+  MHA back to compact-K/V GQA was CPU-exact (`max abs diff 0.0`) but regressed native ORT timing:
+  split sample `~10.0 ms -> ~13.0 ms`, split entry `~4.7 ms -> ~6.1 ms`. Keep the accepted MHA
+  fusion for temporal dynamics.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
