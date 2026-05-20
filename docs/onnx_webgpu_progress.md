@@ -7235,6 +7235,14 @@ Rejected / kept out:
   dynamics `27.21 ms` (`sample 18.12 ms`, `entry 9.05 ms`), behind the restored plain split control
   at `34.32 fps`. The action input is not a material bottleneck, and four action-specialized
   sessions would add load/compile complexity without evidence of a payoff.
+- Rejected a deeper decoder-worker queue as a contention workaround. A temporary query flag allowed
+  two pending decoder frames before rendering, preserving exact decoded frames but adding display
+  latency. Chrome output and latent validation passed, but all tested thread pairings were slower
+  than the one-frame default/control: depth `2` with one decoder thread measured `31.77 fps`
+  (`31.48 ms`, decoder total `72.04 ms`), depth `2` with two decoder threads measured `33.54 fps`
+  (`29.81 ms`, decoder total `68.03 ms`), and depth `2` with the normal three decoder threads
+  measured `31.13 fps` (`32.12 ms`, decoder total `73.60 ms`). Keep the current one-frame decoder
+  pipeline; deeper buffering increases decoder backlog and does not reduce dynamics contention.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
