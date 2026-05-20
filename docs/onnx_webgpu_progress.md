@@ -7424,6 +7424,12 @@ Rejected / kept out:
   `38.35 fps` / `26.08 ms`, with dynamics `23.82 ms`, below the adjacent default control at
   `38.90 fps` and below the accepted `39.92 fps` window. Keep the current head-time split graphs
   without this stack-concat lowering.
+- Rejected a post-head-time Chrome `wasmNumThreads=4` / `decoderWorkerNumThreads=1` contention
+  retune. It reduced dynamics to `22.55 ms` (`sample 15.12 ms`, `entry 7.39 ms`) and kept cache
+  wait at `1.41 ms`, but the slower decoder introduced `5.66 ms` mean decoder wait and full
+  streaming regressed to `32.85 fps` / `30.45 ms`. Keep the three-thread decoder worker; this also
+  confirms that even the lower-contention dynamics/cache path remains above the `16.7 ms` 60fps
+  frame budget.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
