@@ -7258,6 +7258,10 @@ Rejected / kept out:
   plain split control: `34.21 fps` / `29.23 ms`, dynamics `26.97 ms` (`sample 18.09 ms`,
   `entry 8.85 ms`) and decoder total `39.08 ms`. Keep the plain extracted split files and plain
   decoder asset.
+- Rejected enabling ORT WASM session option `set_denormal_as_zero=1` for the demo sessions. Chrome
+  output and latent validation still passed, but the actual-demo window regressed to `33.65 fps` /
+  `29.72 ms`, with dynamics `27.41 ms` and decoder total `39.76 ms`. Keep the default ORT session
+  options.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
