@@ -3194,6 +3194,7 @@ async function createRuntimeForBackend(backend, loaded) {
       assetBase: ASSET_DIR,
       ortModuleUrl: ORT_MODULE_URL,
       wasmNumThreads: WASM_NUM_THREADS,
+      decoderWorkerNumThreads,
       graphOptimizationLevel,
       manifest: loaded.manifest,
       contextManifest: loaded.contextManifest,

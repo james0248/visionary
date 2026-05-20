@@ -7267,6 +7267,8 @@ Rejected / kept out:
   window regressed to `29.06 fps` / `34.41 ms`; dynamics slowed sharply to `32.15 ms`
   (`sample 21.54 ms`, `entry 10.57 ms`) while decoder total rose to `45.85 ms`. Keep the current
   Chromium defaults of four main WASM threads and three decoder-worker threads.
+- Added `decoder_worker_num_threads` to the demo runtime snapshot captured by the benchmark JSON so
+  future WASM thread-retune results report both thread pools rather than only `wasm_num_threads`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

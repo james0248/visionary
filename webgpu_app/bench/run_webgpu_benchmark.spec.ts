@@ -341,6 +341,7 @@ async function runtimeSnapshot(page: Page) {
       asset_base: runtime.assetBase ?? null,
       ort_module_url: runtime.ortModuleUrl ?? null,
       wasm_num_threads: runtime.wasmNumThreads ?? null,
+      decoder_worker_num_threads: runtime.decoderWorkerNumThreads ?? null,
       graph_optimization_level: runtime.graphOptimizationLevel ?? null,
       context_name: runtime.contextManifest.name ?? null,
       initial_cache_name: runtime.initialCacheManifest.name ?? null,
