@@ -7326,6 +7326,10 @@ Rejected / kept out:
   failed before timing: proxy session creation detached the shared model `ArrayBuffer`, and decoder
   worker setup then failed with `Cannot perform ArrayBuffer.prototype.slice on a detached
   ArrayBuffer`. Keep ORT WASM proxy disabled.
+- Retested Safari/WebKit main WASM thread count after promoting split dynamics. The current
+  `3/3` default remains best at `35.89 fps`; `4/3` validated but regressed to `31.51 fps`, and
+  `2/3` validated but measured `34.72 fps`. Keep Safari/WebKit at `wasmNumThreads=3` and
+  `decoderWorkerNumThreads=3`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
