@@ -7391,6 +7391,16 @@ Rejected / kept out:
 - Rejected post-head-time runtime `graphOptimizationLevel=extended`. The first Chrome window looked
   promising at `40.39 fps`, but the repeat fell back to `38.44 fps`, and WebKit regressed to
   `35.84 fps`. Keep the WASM default at `graphOptimizationLevel=all`.
+- Rejected a repeated-query-head split cache ABI trial on top of the accepted head-time cache
+  graphs. The copied generated-asset trial changed split cache inputs from compact KV heads
+  `[12,1,36,2,64,32]` to repeated query heads `[12,1,36,8,64,32]`, rewrote the MHA K/V paths to
+  gather only the current-token K/V before concatenating with the repeated cache, and expanded the
+  entry graph outputs from compact entries to repeated entries. Native ORT stayed bit-exact for
+  `final_z` and for expanded `candidate_k_entry` / `candidate_v_entry` (`max_abs 0.0`). Chrome
+  output and latent validation passed, but actual-demo timing regressed badly to `30.15 fps` /
+  `33.16 ms`; dynamics rose to `27.18 ms` and cache-update wait rose to `5.11 ms` because the cache
+  tensor became 4x larger. Reject this ABI despite removing the large post-concat gather work; the
+  bigger cache and update cost dominate before it can approach 60fps.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
