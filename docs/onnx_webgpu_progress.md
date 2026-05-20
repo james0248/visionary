@@ -7430,6 +7430,22 @@ Rejected / kept out:
   streaming regressed to `32.85 fps` / `30.45 ms`. Keep the three-thread decoder worker; this also
   confirms that even the lower-contention dynamics/cache path remains above the `16.7 ms` 60fps
   frame budget.
+- Rejected current full-step WASM with split dynamics disabled. It passed output and latent
+  validation, but measured only `33.79 fps` / `29.59 ms`, with unsplit dynamics at `27.24 ms`.
+  Keep the split sample/entry path despite the extra session boundary because it is still much
+  faster and overlaps decoder work better.
+- Rejected two more post-head-time Chrome thread balances. `wasmNumThreads=3` /
+  `decoderWorkerNumThreads=2` passed validation at `38.41 fps` / `26.03 ms`, and `2/2` passed at
+  `36.36 fps` / `27.50 ms`. Neither beats the accepted four-main-thread/three-decoder-thread
+  default or the earlier near-default `3/3` noise window, so keep `4/3`.
+- Rejected replacing the current MHA GQA repeated-head `Gather(axis=1)` nodes with
+  `Split(axis=1) -> Concat(axis=1)` materialization while keeping compact cache inputs. The copied
+  generated-asset trial removed `48` sample and `22` entry gathers, adding matching split/concat
+  nodes (`sample 2236 -> 2284`, `entry 1167 -> 1189`). Native ORT stayed bit-exact against the
+  accepted head-time files (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and
+  `candidate_v_entry`), but Chrome output and latent validation regressed to `34.37 fps` /
+  `29.10 ms`, with dynamics `26.84 ms`. ORT WASM's `Gather` implementation is still cheaper than
+  replacing it with many small split/concat copies for this shape.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
