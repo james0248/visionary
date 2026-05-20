@@ -7212,6 +7212,21 @@ Rejected / kept out:
   `31.56 fps` / `31.69 ms`; `ort.wasm.bundle.min.mjs` validated but regressed to `28.29 fps` /
   `35.35 ms`. A temporary query-plumbed `env.wasm.simd='relaxed'` trial also validated but measured
   `32.12 fps` / `31.13 ms`. Keep the default `ort.wasm.min.mjs` module and default SIMD setting.
+- Rejected collapsing split-graph `Unsqueeze* -> Concat(axis=inserted)` stack patterns into
+  lower-rank `Concat -> Reshape`. The generated-asset prototype was native ORT exact against the
+  plain extracted split graphs (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and
+  `candidate_v_entry`) and removed many layout nodes: sample graph `2308 -> 2044` nodes by removing
+  `384` `Unsqueeze` nodes through `120` stack-concat rewrites, entry graph `1178 -> 1035` nodes by
+  removing `204` `Unsqueeze` nodes through `61` rewrites. The actual Chrome demo benchmark still
+  did not improve: the trial passed output and latent validation at `34.02 fps` / `29.39 ms`, while
+  the restored plain extracted split control passed at `34.32 fps` / `29.14 ms`. Keep the plain
+  extracted split files; `Reshape` replacements do not help ORT WASM here.
+- Post-restore browser-family sanity passed before documenting the rejected trial:
+  - Chrome WASM, 64 timed frames, split enabled: output and latent validation passed at `34.32 fps`
+    / `29.14 ms`, dynamics `26.91 ms` (`sample 18.09 ms`, `entry 8.77 ms`), cache wait
+    `1.45 ms`.
+  - WebKit/Safari-family WASM, 64 timed frames, split disabled: output and latent validation passed
+    at `32.65 fps` / `30.63 ms`, dynamics `28.22 ms`, cache wait `1.13 ms`, `wasmNumThreads=3`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
