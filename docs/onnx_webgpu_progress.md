@@ -7310,8 +7310,9 @@ Rejected / kept out:
 - Rejected a post-pretranspose Chrome thread retune. With the optimized split graphs, the default
   `wasmNumThreads=4` / `decoderWorkerNumThreads=3` still won the short validated windows at
   `38.45 fps`. Tested alternatives all passed output and latent validation but regressed:
-  `3/3` measured `37.85 fps`, `4/2` measured `37.39 fps`, and `5/2` measured only `31.10 fps`.
-  Keep the current Chrome split of four main WASM threads and three decoder-worker threads.
+  `3/3` measured `37.85 fps`, `4/2` measured `37.39 fps`, `5/2` measured only `31.10 fps`, and
+  `4/1` measured `32.71 fps` because decoder wait rose to `4.48 ms`. Keep the current Chrome split
+  of four main WASM threads and three decoder-worker threads.
 - Rejected post-pretranspose runtime controls that did not improve the validated Chrome split path:
   `graphOptimizationLevel=extended` passed at `38.00 fps`, below the default `all` window, and
   `graphOptimizationLevel=basic` passed but regressed to `34.87 fps`. A temporary runtime change
