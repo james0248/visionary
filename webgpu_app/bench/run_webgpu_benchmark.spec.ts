@@ -493,6 +493,20 @@ async function writeResult(result: BenchmarkResult, resultPath = RESULT_PATH) {
   await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`);
 }
 
+async function writeLatestResults(
+  result: BenchmarkResult,
+  testInfo: { project: { name: string } },
+  resultPath = RESULT_PATH,
+) {
+  await writeResult(result, resultPath);
+  const parsedPath = path.parse(resultPath);
+  const projectName = testInfo.project.name.replace(/[^a-z0-9_-]+/gi, '_').toLowerCase();
+  await writeResult(
+    result,
+    path.join(parsedPath.dir, `${parsedPath.name}_${projectName}${parsedPath.ext}`),
+  );
+}
+
 function expectPassedBenchmark(result: BenchmarkResult) {
   expect(result.status, result.message ?? '').toBe('passed');
   expect(result.schema_version).toBe(3);
@@ -512,21 +526,21 @@ function expectPassedBenchmark(result: BenchmarkResult) {
   expect(result.demo.final.cache_length).toBe(result.demo.final.context_length);
 }
 
-test('webgpu benchmark smoke @smoke', async ({ page }) => {
+test('webgpu benchmark smoke @smoke', async ({ page }, testInfo) => {
   const result = await runBenchmark(page, 'streaming');
-  await writeResult(result);
+  await writeLatestResults(result, testInfo);
   expectPassedBenchmark(result);
 });
 
-test('webgpu demo streaming benchmark @output_validation', async ({ page }) => {
+test('webgpu demo streaming benchmark @output_validation', async ({ page }, testInfo) => {
   const result = await runBenchmark(page, 'streaming');
-  await writeResult(result);
+  await writeLatestResults(result, testInfo);
   expectPassedBenchmark(result);
 });
 
-test('webgpu demo streaming benchmark graph capture @graph-capture', async ({ page }) => {
+test('webgpu demo streaming benchmark graph capture @graph-capture', async ({ page }, testInfo) => {
   const result = await runBenchmark(page, 'streaming', { graphCapture: true });
-  await writeResult(result, GRAPH_CAPTURE_RESULT_PATH);
+  await writeLatestResults(result, testInfo, GRAPH_CAPTURE_RESULT_PATH);
   expectPassedBenchmark(result);
   expect(result.demo.final.full_graph_capture || result.demo.final.decoder_graph_capture).toBe(true);
 });

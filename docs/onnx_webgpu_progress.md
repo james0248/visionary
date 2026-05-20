@@ -7473,6 +7473,12 @@ Rejected / kept out:
   update work near `1.22 ms`, but the worker-owned dynamics still cost `26.11 ms` (`sample
   15.62 ms`, `entry 9.11 ms`) and decoder overlap was not enough to beat the accepted in-thread
   split path. Do not keep the flag or worker code; this is slower and adds another runtime variant.
+- Refreshed the accepted WASM controls after removing the worker prototype from the source tree:
+  Chrome passed visual/latent validation at `40.45 fps` / `24.72 ms`, and WebKit/Safari-family
+  passed at `38.08 fps` / `26.26 ms`. Also tightened benchmark result bookkeeping: each run still
+  writes the compatibility `latest.json`, but now also writes project-scoped companions such as
+  `latest_chromium.json` and `latest_webkit.json` so the Chrome result is not hidden by the
+  required WebKit follow-up run.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

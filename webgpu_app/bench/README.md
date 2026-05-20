@@ -146,6 +146,11 @@ context_tau_effective = 29 / 32
 Fetch time, session creation time, warmup, and browser metadata are reported separately from
 steady-state frame timing.
 
+For compatibility, each benchmark invocation still writes `results/latest.json` or
+`results/graph_capture_latest.json`. It also writes a project-scoped companion such as
+`results/latest_chromium.json` or `results/latest_webkit.json`, so Chrome and WebKit/Safari-family
+checks can be compared after running both commands.
+
 Safari-profile and WebKit runs are valid only when `streaming_frame.output_validation.status` is
 `passed`. The benchmark records the selected graph-capture state in `demo.final`, so a fast number
 without visible-frame validation should be treated as invalid.
