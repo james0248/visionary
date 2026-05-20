@@ -139,6 +139,20 @@ Rejected or inactive paths:
   Promoted the demo's Safari/WebKit WASM main-thread default to `3` while leaving Chrome at `4`;
   the benchmark no longer forces `wasmNumThreads=4` for provider `wasm`, so it records the actual
   browser-selected runtime default.
+- Rejected follow-up runtime/data-movement probes on the actual-demo proxy:
+  - Chrome high main-thread counts were clearly worse than the `4/3` split: `7/2` and `7/3` were
+    about `24 fps`, `8/2` and `8/3` were about `21-23 fps`, and `10/2` was about `20 fps`.
+  - Temporarily exposing `ort.env.wasm.simd="relaxed"` still validated but regressed a same-window
+    Chrome control from `33.68 fps` to `31.57 fps`.
+  - A SharedArrayBuffer-backed WASM K/V cache trial validated, but did not reduce worker cache wait
+    and measured `31.65 fps`; ORT's input handling for SAB-backed tensors is not a win here.
+  - Retested the latest published `onnxruntime-web@1.26.0` with matching JS and `.wasm` files staged
+    under ignored `node_modules/ort126`; output validation passed but Chrome measured `31.58 fps`,
+    slower than the pinned `1.24.3` control window.
+  - Native ORT CPU profiling of the current entry graph still points at the same structural costs:
+    `Gemm`, `Transpose`, `Gather`, `MultiHeadAttention`, `SimplifiedLayerNormalization`, and
+    `Unsqueeze` dominate. This matches the prior rejected GQA/materialization and layout-cleanup
+    trials; a larger dynamics-graph change is needed for another material WASM jump.
 
 ## Iteration Log
 
