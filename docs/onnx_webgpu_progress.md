@@ -7196,6 +7196,12 @@ Rejected / kept out:
   Chrome and WebKit both passed output/latent validation, but the short windows stayed in the
   normal noise band (Chrome `30.63 fps`, WebKit `31.30 fps`) and the microtask loop risks starving
   browser paints in the live demo. Keep the `MessageChannel` scheduler for zero-delay streaming.
+- Retested ORT re-optimization of the extracted split WASM models against the current generated
+  assets. A controlled Chrome A/B regenerated plain split files from the current full-step graph,
+  then re-ran `ORT_ENABLE_EXTENDED` on only those split files. Plain extraction passed output and
+  latent validation at `34.23 fps` / `29.21 ms`; re-optimized split files also validated but
+  regressed to `32.46 fps` / `30.81 ms` despite reducing the sample graph `2308 -> 2284` nodes and
+  the entry graph `1178 -> 1166` nodes. Keep the plain extracted split files.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
