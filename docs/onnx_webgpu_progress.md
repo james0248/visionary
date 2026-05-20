@@ -7479,6 +7479,11 @@ Rejected / kept out:
   writes the compatibility `latest.json`, but now also writes project-scoped companions such as
   `latest_chromium.json` and `latest_webkit.json` so the Chrome result is not hidden by the
   required WebKit follow-up run.
+- Rejected decoder-worker-only `graphOptimizationLevel` retunes. Keeping the main split WASM
+  sessions at `all` but compiling the decoder worker at `basic` passed Chrome validation and
+  measured `39.65 fps`; `extended` passed at `40.21 fps`. Neither beat the adjacent default
+  decoder-worker setting at `40.45 fps`, so keep the worker using the same `graphOptimizationLevel`
+  as the main WASM sessions.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
