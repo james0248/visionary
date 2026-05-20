@@ -58,16 +58,7 @@ def run_webgpu_passes(
 ) -> dict[str, dict[str, dict[str, Any]]]:
     demo_simplification_names = {
         names["tokenizer_decode_z_step"],
-        names["dynamics_cached_prefill"],
-        names["dynamics_cached_prefill_layer"],
-        names["dynamics_cached_sample_step"],
-        names["dynamics_cached_sample_step_slide"],
-        names["dynamics_cached_sample_append_context"],
-        names["dynamics_cached_sample_append_context_entry"],
-        names["dynamics_cached_sample_append_context_slide"],
-        names["dynamics_cached_sample_append_context_slide_full_cache"],
         names["dynamics_cached_sample_append_context_slide_entry"],
-        names["dynamics_cached_sample_append_context_slide_layer"],
     }
     if options.simplify_onnx:
         simplification = {
@@ -121,13 +112,7 @@ def run_webgpu_passes(
         )
         for name, path in exported_paths.items()
     }
-    slide_artifacts = {
-        names["dynamics_cached_sample_step_slide"],
-        names["dynamics_cached_sample_append_context_slide"],
-        names["dynamics_cached_sample_append_context_slide_layer"],
-    }
     final_z_only_artifacts = {
-        names["dynamics_cached_sample_append_context_entry"],
         names["dynamics_cached_sample_append_context_slide_entry"],
     }
 
@@ -144,9 +129,7 @@ def run_webgpu_passes(
         ),
         "q_head_split_gather_rewrite": run_all(exported_paths, rewrites["q_head_split_gather"]),
         "slide_static_cache_rewrite": {
-            name: rewrites["slide_static_cache"](path)
-            if name in slide_artifacts
-            else {"enabled": False, "reason": "not a steady-state slide artifact"}
+            name: {"enabled": False, "reason": "full-cache entry graph has no static slide inputs"}
             for name, path in exported_paths.items()
         },
         "rmsnorm_rewrite": run_all(exported_paths, rewrites["rmsnorm"]),

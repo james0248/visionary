@@ -11,15 +11,19 @@ import onnxruntime as ort
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create browser demo initial K/V cache artifacts from the exported prefix-step ONNX model."
+        description=(
+            "Create browser demo initial K/V cache artifacts from an auxiliary "
+            "cache-creation ONNX model. The browser export itself only needs the "
+            "full-cache dynamics graph."
+        )
     )
     parser.add_argument("--asset_dir", type=Path, default=Path("webgpu_app/assets"))
     parser.add_argument("--onnx_manifest", default="breakout_onnx_manifest.json")
-    parser.add_argument("--context_manifest", default="breakout_demo_context.json")
-    parser.add_argument("--mode", choices=("step", "prefill"), default="step")
-    parser.add_argument("--prefix_step_export", default="breakout_dynamics_step_cached_b1_t1")
-    parser.add_argument("--prefill_export", default="breakout_dynamics_prefill_cached_b1_t64")
-    parser.add_argument("--name", default="breakout_demo_initial_cache")
+    parser.add_argument("--context_manifest", default="breakout_demo_context_noop60_fire4.json")
+    parser.add_argument("--mode", choices=("step", "prefill"), required=True)
+    parser.add_argument("--prefix_step_export", default=None)
+    parser.add_argument("--prefill_export", default=None)
+    parser.add_argument("--name", default="breakout_demo_initial_cache_noop60_fire4")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -191,6 +195,8 @@ def main() -> None:
     signal_levels = load_array(asset_dir, context_arrays["signal_levels"])
 
     if args.mode == "prefill":
+        if args.prefill_export is None:
+            raise ValueError("--prefill_export is required when --mode=prefill.")
         cache, source_info = cache_from_prefill(
             asset_dir,
             manifest,
@@ -201,6 +207,8 @@ def main() -> None:
             args.prefill_export,
         )
     else:
+        if args.prefix_step_export is None:
+            raise ValueError("--prefix_step_export is required when --mode=step.")
         cache, source_info = cache_from_step_replay(
             asset_dir,
             manifest,
@@ -248,7 +256,7 @@ def main() -> None:
         },
         "notes": [
             "This cache is generated offline from the stored browser demo context latents.",
-            "The browser continues rollout with the cache-length entry graph and updates the fixed-size cache from per-frame K/V entries.",
+            "The browser starts with this full cache and continues rollout with the full-cache entry graph.",
         ],
     }
     manifest_out.write_text(json.dumps(cache_manifest, indent=2, sort_keys=True) + "\n")

@@ -28,26 +28,18 @@ from webgpu_app.export.export_dreamer4_onnx import (
 )
 
 
-FIXED_INPUTS = {
-    "sample_position_index",
-    "context_position_index",
-    "attention_mask",
-}
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Specialize the cache-length entry dynamics graph for the full-cache "
-            "steady state. The generated graph is equivalent to the source graph "
-            "when cache_length == context_length."
+            "Create the packed WebGPU full-cache entry dynamics graph from the exported "
+            "full-cache entry graph."
         )
     )
     parser.add_argument("--asset_dir", type=Path, required=True)
     parser.add_argument("--manifest", default="breakout_onnx_manifest.json")
     parser.add_argument(
         "--source_export",
-        default="breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2",
+        default="breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2",
     )
     parser.add_argument(
         "--target_export",

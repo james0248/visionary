@@ -81,8 +81,8 @@ def load_raw_manifest(raw_dir: Path) -> dict[str, Any]:
 def default_artifacts(manifest: dict[str, Any]) -> list[str]:
     demo = manifest.get("demo_generation", {})
     names = [
-        demo.get("preferred_prefill_export"),
-        demo.get("preferred_step_export"),
+        demo.get("preferred_full_cache_step_export"),
+        demo.get("preferred_full_cache_step_export_wasm"),
     ]
     decode_z = demo.get("decode_z")
     if isinstance(decode_z, dict):
