@@ -7085,6 +7085,10 @@ Rejected / kept out:
     `30.13 fps`, `33.19 ms/frame`.
   - WebKit/Safari-family WASM validation passed with `3` measured latent samples, `3` unique finite
     hashes, `31.96 fps`, `31.29 ms/frame`.
+- Rejected direct import of `/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs` as the
+  demo `ortModule`. The page never reached Ready; `configureOrt` failed because the direct module
+  does not expose the same `ort.env.wasm` surface as `ort.wasm.min.mjs`, and the browser also
+  reported a missing resource. Keep the standard `ort.wasm.min.mjs` loader.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
