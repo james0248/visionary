@@ -7453,6 +7453,14 @@ Rejected / kept out:
   where the demo could look acceptable initially and break around frame 60. Verification passed in
   both browser families with output and latent validation at frame 64: Chrome measured `39.59 fps`
   and WebKit/Safari-family measured `37.46 fps`.
+- Rejected replacing only the cache-slice `Squeeze -> Squeeze` chains in the accepted head-time
+  split graphs with one static `Reshape` each. The copied generated-asset trial removed `48` sample
+  and `44` entry `Squeeze` nodes while adding `24` and `22` reshapes (`sample 2236 -> 2212`,
+  `entry 1167 -> 1145`). Native ORT stayed bit-exact against the accepted head-time files
+  (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and `candidate_v_entry`). The first stricter
+  Chrome run looked slightly positive at `40.02 fps`, but the repeat fell to `39.56 fps`, matching
+  the stricter default control at `39.59 fps`. Reject as noise; this narrow squeeze cleanup is not
+  a reliable browser win.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
