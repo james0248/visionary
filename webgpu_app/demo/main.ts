@@ -25,6 +25,10 @@ function configValue(name, fallback) {
   return params.get(name) ?? scriptElement?.dataset?.[name] ?? globalConfig[name] ?? fallback;
 }
 
+function explicitConfigValue(name) {
+  return params.get(name) ?? globalConfig[name] ?? null;
+}
+
 function detectBrowserProfile(userAgent) {
   if (/Version\/[\d.]+ Safari\//.test(userAgent) && !/(Chrome|Chromium|CriOS|Edg)\//.test(userAgent)) {
     return 'safari';
@@ -42,15 +46,22 @@ function resolveBaseUrl(value) {
   return resolveUrl(value).replace(/\/$/, '');
 }
 
-const ASSET_DIR = resolveBaseUrl(configValue('assetBase', '/assets'));
-const MANIFEST_URL = `${ASSET_DIR}/${configValue('manifestName', 'breakout_onnx_manifest.json')}`;
-const CONTEXT_URL = `${ASSET_DIR}/${configValue('contextName', 'breakout_demo_context_noop60_fire4.json')}`;
-const INITIAL_CACHE_URL = `${ASSET_DIR}/${configValue('initialCacheName', 'breakout_demo_initial_cache_noop60_fire4.json')}`;
 const requestedBrowserProfile = String(configValue('browserProfile', 'auto')).toLowerCase();
 const detectedBrowserProfile = detectBrowserProfile(navigator.userAgent);
 const browserProfile =
   requestedBrowserProfile === 'auto' ? detectedBrowserProfile : requestedBrowserProfile;
 const requestedBackend = String(configValue('backend', 'auto')).toLowerCase();
+const DEFAULT_ASSET_BASE = '/dream_arcade_assets/breakout';
+const DEFAULT_WASM_ASSET_BASE = '/dream_arcade_assets/breakout_wasm_default_mha';
+const explicitAssetBase = explicitConfigValue('assetBase');
+const baseAssetBase = configValue('assetBase', DEFAULT_ASSET_BASE);
+const wasmAssetBase = configValue('wasmAssetBase', DEFAULT_WASM_ASSET_BASE);
+const ASSET_DIR = resolveBaseUrl(
+  requestedBackend === 'wasm' && !explicitAssetBase ? wasmAssetBase : baseAssetBase,
+);
+const MANIFEST_URL = `${ASSET_DIR}/${configValue('manifestName', 'breakout_onnx_manifest.json')}`;
+const CONTEXT_URL = `${ASSET_DIR}/${configValue('contextName', 'breakout_demo_context_noop60_fire4.json')}`;
+const INITIAL_CACHE_URL = `${ASSET_DIR}/${configValue('initialCacheName', 'breakout_demo_initial_cache_noop60_fire4.json')}`;
 const DECODER_EXPORT_NAME = configValue('decoderExport', null);
 const FULL_CACHE_STEP_EXPORT_NAME = configValue('fullCacheStepExport', null);
 const SAFARI_SAFE_FULL_CACHE_STEP_EXPORT_NAME =
@@ -84,10 +95,17 @@ const DEFAULT_ORT_MODULE =
 const DEFAULT_ORT_WASM_BASE = `/node_modules/onnxruntime-web/dist/`;
 const DEFAULT_DECODER_WORKER_PIPELINE = requestedBackend === 'wasm';
 const DEFAULT_DECODER_WORKER_NUM_THREADS = 3;
+const explicitOrtModule = explicitConfigValue('ortModule');
+const wasmOrtModule = configValue('wasmOrtModule', DEFAULT_ORT_MODULE);
+const ortModuleConfig =
+  explicitOrtModule ??
+  (requestedBackend === 'wasm'
+    ? wasmOrtModule
+    : scriptElement?.dataset?.ortModule ?? globalConfig.ortModule ?? DEFAULT_ORT_MODULE);
 const wasmNumThreadsParam = Number(configValue('wasmNumThreads', DEFAULT_WASM_NUM_THREADS));
 const WASM_NUM_THREADS =
   Number.isInteger(wasmNumThreadsParam) && wasmNumThreadsParam > 0 ? wasmNumThreadsParam : null;
-const ORT_MODULE_URL = resolveUrl(configValue('ortModule', DEFAULT_ORT_MODULE));
+const ORT_MODULE_URL = resolveUrl(ortModuleConfig);
 const ORT_WASM_BASE_URL = resolveUrl(configValue('ortWasmBase', DEFAULT_ORT_WASM_BASE));
 const ort = await import(ORT_MODULE_URL);
 configureOrt(ort, {
@@ -3022,6 +3040,10 @@ async function createRuntimeForBackend(backend, loaded) {
 
     const loadedRuntime = {
       backend,
+      assetBase: ASSET_DIR,
+      ortModuleUrl: ORT_MODULE_URL,
+      wasmNumThreads: WASM_NUM_THREADS,
+      graphOptimizationLevel,
       manifest: loaded.manifest,
       contextManifest: loaded.contextManifest,
       initialCacheManifest: loaded.initialCacheManifest,

@@ -87,7 +87,8 @@ uv run python webgpu_app/export/specialize_full_cache_entry.py \
 ```
 
 Create WASM-specific artifacts in a separate directory so backend-specific ONNX rewrites do not
-overwrite the WebGPU artifacts:
+overwrite the WebGPU artifacts. The benchmark and demo use this directory by default for
+`provider=wasm` / `backend=wasm`:
 
 ```bash
 uv run python webgpu_app/export/export_dreamer4_onnx.py \
@@ -95,7 +96,7 @@ uv run python webgpu_app/export/export_dreamer4_onnx.py \
   --tokenizer_step 1000000 \
   --dynamics_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_dynamics_small_2x \
   --dynamics_step 1000000 \
-  --out_dir webgpu_app/dream_arcade_assets/breakout_wasm \
+  --out_dir webgpu_app/dream_arcade_assets/breakout_wasm_default_mha \
   --export_target wasm \
   --seq_len 64 \
   --sample_steps 2 \
@@ -150,11 +151,13 @@ Safari-profile and WebKit runs are valid only when `streaming_frame.output_valid
 without visible-frame validation should be treated as invalid.
 
 The pure WASM path can be selected with `provider=wasm`; the demo then defaults to
+`assetBase=/dream_arcade_assets/breakout_wasm_default_mha`,
 `ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`, `wasmNumThreads=4`, and the
 decoder worker pipeline with `decoderWorkerNumThreads=3`.
-The current actual-demo WASM baseline is far below the 60 fps target: about `24.2 fps` in Chrome
-and `22.2 fps` in WebKit on the local machine with the un-packed full-cache entry graph. Keep
-validating `wasmNumThreads` and decoder worker settings per browser and machine.
+The current actual-demo WASM baseline remains below the 60 fps target but is materially faster than
+the generic WebGPU asset set: about `33.5 fps` in Chrome and `27.4 fps` in WebKit on the local
+machine with the WASM entry-slide artifact. Keep validating `wasmNumThreads` and decoder worker
+settings per browser and machine.
 
 ## Graph Capture
 

@@ -60,8 +60,10 @@ function visibleFrame(page: Page) {
 
 function benchmarkConfig(options: BenchmarkOptions) {
   const graphCapture = envFlag('WEBGPU_BENCHMARK_GRAPH_CAPTURE') || Boolean(options.graphCapture);
+  const provider = process.env.WEBGPU_BENCHMARK_PROVIDER ?? 'webgpu';
+  const wasmDefaults = provider === 'wasm';
   return {
-    provider: process.env.WEBGPU_BENCHMARK_PROVIDER ?? 'webgpu',
+    provider,
     warmupFrames: numberEnv('WEBGPU_BENCHMARK_WARMUP_RUNS', DEFAULT_WARMUP_FRAMES),
     timedFrames: numberEnv('WEBGPU_BENCHMARK_TIMED_RUNS', DEFAULT_TIMED_FRAMES),
     validationFrames: numberEnv('WEBGPU_BENCHMARK_VALIDATION_FRAMES', DEFAULT_VALIDATION_FRAMES),
@@ -74,12 +76,18 @@ function benchmarkConfig(options: BenchmarkOptions) {
     decoderArtifact: process.env.WEBGPU_BENCHMARK_DECODER_ARTIFACT ?? null,
     contextName: process.env.WEBGPU_BENCHMARK_CONTEXT_NAME ?? null,
     initialCacheName: process.env.WEBGPU_BENCHMARK_INITIAL_CACHE_NAME ?? null,
-    assetBase: process.env.WEBGPU_BENCHMARK_ASSET_BASE ?? null,
+    assetBase:
+      process.env.WEBGPU_BENCHMARK_ASSET_BASE ??
+      (wasmDefaults ? '/dream_arcade_assets/breakout_wasm_default_mha' : null),
     browserProfile: process.env.WEBGPU_BENCHMARK_BROWSER_PROFILE ?? null,
-    ortModule: process.env.WEBGPU_BENCHMARK_ORT_MODULE ?? null,
-    wasmNumThreads: process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS ?? null,
-    decoderWorkerPipeline: process.env.WEBGPU_BENCHMARK_DECODER_WORKER_PIPELINE ?? null,
-    decoderWorkerNumThreads: process.env.WEBGPU_BENCHMARK_DECODER_WORKER_NUM_THREADS ?? null,
+    ortModule:
+      process.env.WEBGPU_BENCHMARK_ORT_MODULE ??
+      (wasmDefaults ? '/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs' : null),
+    wasmNumThreads: process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS ?? (wasmDefaults ? '4' : null),
+    decoderWorkerPipeline:
+      process.env.WEBGPU_BENCHMARK_DECODER_WORKER_PIPELINE ?? (wasmDefaults ? 'true' : null),
+    decoderWorkerNumThreads:
+      process.env.WEBGPU_BENCHMARK_DECODER_WORKER_NUM_THREADS ?? (wasmDefaults ? '3' : null),
   };
 }
 
@@ -298,6 +306,10 @@ async function runtimeSnapshot(page: Page) {
         runtime.specs.step?.sample_steps ??
         runtime.manifest.demo_generation?.sample_steps ??
         null,
+      asset_base: runtime.assetBase ?? null,
+      ort_module_url: runtime.ortModuleUrl ?? null,
+      wasm_num_threads: runtime.wasmNumThreads ?? null,
+      graph_optimization_level: runtime.graphOptimizationLevel ?? null,
       context_name: runtime.contextManifest.name ?? null,
       initial_cache_name: runtime.initialCacheManifest.name ?? null,
     };

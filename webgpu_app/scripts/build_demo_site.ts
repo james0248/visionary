@@ -30,8 +30,13 @@ const copyAssets = args.get('--copy-assets') === 'true';
 const assetBase =
   args.get('--asset-base') ??
   (copyAssets ? './assets' : '/dream_arcade_assets/breakout');
+const wasmAssetBase =
+  args.get('--wasm-asset-base') ??
+  (copyAssets || args.has('--asset-base') ? assetBase : '/dream_arcade_assets/breakout_wasm_default_mha');
 const ortModule =
   args.get('--ort-module') ?? './vendor/onnxruntime-web/ort.webgpu.bundle.min.mjs';
+const wasmOrtModule =
+  args.get('--wasm-ort-module') ?? './vendor/onnxruntime-web/ort.wasm.min.mjs';
 const ortWasmBase = args.get('--ort-wasm-base') ?? './vendor/onnxruntime-web/';
 
 const demoDir = resolve('demo');
@@ -83,7 +88,9 @@ await buildDemoBrowserBundle(outDir);
 let html = readFileSync(join(demoDir, 'index.html'), 'utf8');
 html = html
   .replace(/data-asset-base="[^"]*"/, `data-asset-base="${assetBase}"`)
+  .replace(/data-wasm-asset-base="[^"]*"/, `data-wasm-asset-base="${wasmAssetBase}"`)
   .replace(/data-ort-module="[^"]*"/, `data-ort-module="${ortModule}"`)
+  .replace(/data-wasm-ort-module="[^"]*"/, `data-wasm-ort-module="${wasmOrtModule}"`)
   .replace(/data-ort-wasm-base="[^"]*"/, `data-ort-wasm-base="${ortWasmBase}"`);
 writeFileSync(join(outDir, 'index.html'), html);
 
@@ -93,6 +100,7 @@ copyFileSync(
   join(ortDistDir, 'ort.webgpu.bundle.min.mjs'),
   join(vendorDir, 'ort.webgpu.bundle.min.mjs'),
 );
+copyFileSync(join(ortDistDir, 'ort.wasm.min.mjs'), join(vendorDir, 'ort.wasm.min.mjs'));
 for (const file of readdirSync(ortDistDir)) {
   if (/^ort-wasm-simd-threaded(?!\.asyncify).*\.(mjs|wasm)$/.test(file)) {
     copyFileSync(join(ortDistDir, file), join(vendorDir, file));

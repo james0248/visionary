@@ -18,11 +18,15 @@ The branch now keeps the fp32 WebGPU path as the maintained demo/export target. 
 uses:
 - `sample_steps=2`.
 - Curated Breakout assets under `webgpu_app/dream_arcade_assets/breakout`.
+- A separate WASM-targeted asset set under
+  `webgpu_app/dream_arcade_assets/breakout_wasm_default_mha` when `backend=wasm`.
 - Offline full-cache context/cache artifacts:
   `breakout_demo_context_noop60_fire4.*` and `breakout_demo_initial_cache_noop60_fire4.*`.
 - A packed and partial-head-split-rewritten full-cache entry dynamics step graph for every generated
   frame:
   `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2.onnx`.
+- On the WASM path, the entry-slide graph selected from the WASM asset set:
+  `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2.onnx`.
 - A single-frame tokenizer decoder graph:
   `breakout_tokenizer_decoder_b1_t1.onnx`.
 
@@ -32,6 +36,8 @@ The maintained benchmark surface is latency plus graph capture:
 - Benchmark controls should be passed as wrapper flags after `--`, for example
   `--webgpu-benchmark-asset-base` or `--webgpu-benchmark-timed-runs`, instead of leading shell
   environment assignments.
+- `provider=wasm` benchmark defaults now explicitly use the WASM asset set, `ort.wasm.min.mjs`,
+  `wasmNumThreads=4`, and the decoder worker pipeline with `decoderWorkerNumThreads=3`.
 - Generated results stay under `webgpu_app/bench/results/` and should not be committed.
 
 Rejected or inactive paths:
@@ -89,6 +95,30 @@ Rejected or inactive paths:
 - Promoted `breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2` as the WASM default
   full-cache step artifact. WebGPU keeps the packed artifact, and Safari-profile WebGPU keeps the
   Safari-specific graph-capture-safe artifact.
+
+### 2026-05-21 Restored WASM Runtime Defaults
+
+- Found a post-refactor default mismatch: `demo/index.html` still provided
+  `data-ort-module=/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs`, so `backend=wasm`
+  could load the larger WebGPU bundle unless the benchmark passed an explicit `ortModule`.
+- Split the demo defaults so `backend=wasm` uses:
+  - `assetBase=/dream_arcade_assets/breakout_wasm_default_mha`
+  - `ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`
+  - `wasmNumThreads=4`
+  - decoder worker pipeline with `decoderWorkerNumThreads=3`
+- The benchmark now passes those same defaults for `provider=wasm` and records the resolved
+  `asset_base`, `ort_module_url`, `wasm_num_threads`, and `graph_optimization_level` from the
+  actual demo runtime snapshot.
+- No ONNX graph or sampling config changed; this restores the previously JAX/export-validated
+  WASM asset set as the default runtime path.
+- Short actual-demo validation windows after the fix:
+  - Chrome WASM no-override: `33.54 fps`, output validation passed, selected
+    `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2`,
+    `ort.wasm.min.mjs`, `wasmNumThreads=4`.
+  - WebKit/Safari-family WASM no-override: `27.39 fps`, output validation passed with the same
+    WASM artifact/runtime defaults.
+  - Chrome WebGPU no-override: `36.59 fps`, output validation passed and still selected the WebGPU
+    asset set under `dream_arcade_assets/breakout`.
 
 ## Iteration Log
 
