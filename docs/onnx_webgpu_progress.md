@@ -7307,6 +7307,11 @@ Rejected / kept out:
   now enables split WASM dynamics by default for Safari/WebKit as well as Chrome/Chromium. The
   promoted defaults validated at `38.45 fps` in Chrome and `35.89 fps` in WebKit, both with visual
   plus latent validation passing. Keep this export pass for the split WASM artifacts.
+- Rejected a post-pretranspose Chrome thread retune. With the optimized split graphs, the default
+  `wasmNumThreads=4` / `decoderWorkerNumThreads=3` still won the short validated windows at
+  `38.45 fps`. Tested alternatives all passed output and latent validation but regressed:
+  `3/3` measured `37.85 fps`, `4/2` measured `37.39 fps`, and `5/2` measured only `31.10 fps`.
+  Keep the current Chrome split of four main WASM threads and three decoder-worker threads.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
