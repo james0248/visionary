@@ -77,6 +77,9 @@ Rejected or inactive paths:
   window only, the demo records CPU `final_z` summaries for WASM frames; the benchmark now requires
   at least two unique finite latent hashes for `provider=wasm`. The timed window turns the hook off,
   so the reported FPS remains the normal demo stream path.
+- Updated the Playwright wrapper to rebuild `demo/main.js` before running the demo smoke or actual
+  demo benchmark specs. The generated bundle is ignored by git, so this prevents a clean worktree
+  from accidentally benchmarking stale code after local runtime probes.
 - Removed the benchmark-only browser entry from the build. `bun run build:webgpu:browser` now builds
   only `demo/main.ts`; the benchmark uses the built demo bundle directly.
 - Added a Playwright `webkit` project so the same WASM actual-demo benchmark can run under a
@@ -7145,6 +7148,9 @@ Rejected / kept out:
   - Retested split-session `graphOptimizationLevel` after rebuilding the browser bundle from the
     committed source: `all` remained best at `31.15 fps` on the short Chromium window, while
     `extended` measured `29.34 fps` and `basic` measured `28.63 fps`.
+- After adding automatic wrapper rebuilds, short default validation windows still passed:
+  Chromium WASM `30.24 fps` with `split_wasm_dynamics=true`; WebKit/Safari-family WASM
+  `31.78 fps` with `split_wasm_dynamics=false`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

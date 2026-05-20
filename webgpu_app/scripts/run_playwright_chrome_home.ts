@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 const chromeHome = process.env.PLAYWRIGHT_CHROME_HOME ?? '/private/tmp/visionary-chrome-home';
@@ -88,8 +88,28 @@ function parseArgs(args: string[]) {
   return { passthrough, env, attempts: Number.isFinite(attempts) ? attempts : 3 };
 }
 
-const parsedArgs = parseArgs(process.argv.slice(2));
+const rawArgs = process.argv.slice(2);
+const parsedArgs = parseArgs(rawArgs);
 const maxAttempts = parsedArgs.attempts;
+
+function shouldBuildBrowserEntryPoints(args: string[]) {
+  return args.some(
+    (arg) =>
+      arg === 'bench/run_webgpu_benchmark.spec.ts' ||
+      arg === 'demo/run_demo_smoke.spec.ts' ||
+      arg.endsWith('/bench/run_webgpu_benchmark.spec.ts') ||
+      arg.endsWith('/demo/run_demo_smoke.spec.ts'),
+  );
+}
+
+function buildBrowserEntryPoints() {
+  const result = spawnSync('bun', ['scripts/build_browser_entrypoints.ts'], {
+    stdio: 'inherit',
+    env: process.env,
+  });
+  if (result.signal) process.kill(process.pid, result.signal);
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
 
 function playwrightCommand() {
   if (process.env.PLAYWRIGHT_CLI) return process.env.PLAYWRIGHT_CLI;
@@ -148,6 +168,10 @@ function runAttempt(attempt) {
 
     process.exit(code ?? 1);
   });
+}
+
+if (shouldBuildBrowserEntryPoints(rawArgs)) {
+  buildBrowserEntryPoints();
 }
 
 runAttempt(1);
