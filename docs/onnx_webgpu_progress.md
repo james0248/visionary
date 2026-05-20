@@ -7188,6 +7188,10 @@ Rejected / kept out:
   a browser trial. The rewrite was CPU-exact (`max abs diff 0.0`) for split sample and entry, but
   native ORT timing was noise-level and mixed: sample `~10.17 ms -> ~10.09 ms`, entry
   `~4.73 ms -> ~4.77 ms`. This is too small and inconsistent to move the actual demo frame budget.
+- Rejected moving next-frame noise prefill until after the async cache worker launch. The intent was
+  to overlap random tensor filling with the worker cache update, but the short Chromium validation
+  regressed to `29.49 fps` / `33.91 ms` and cache timing did not improve (`cache wait 1.56 ms`,
+  `cache total 1.66 ms`). Keep the previous ordering.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
