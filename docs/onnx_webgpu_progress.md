@@ -7227,6 +7227,14 @@ Rejected / kept out:
     `1.45 ms`.
   - WebKit/Safari-family WASM, 64 timed frames, split disabled: output and latent validation passed
     at `32.65 fps` / `30.63 ms`, dynamics `28.22 ms`, cache wait `1.13 ms`, `wasmNumThreads=3`.
+- Rejected action-specialized split dynamics as a likely direction. A generated-asset probe replaced
+  the split sample and entry graphs' direct `actions` uses with a constant no-op action while
+  leaving the public `actions` input present. This approximates the best-case hot path for a
+  four-action session-selection scheme without changing benchmark controls. Chrome output and
+  latent validation still passed, but performance regressed to `33.79 fps` / `29.60 ms` with
+  dynamics `27.21 ms` (`sample 18.12 ms`, `entry 9.05 ms`), behind the restored plain split control
+  at `34.32 fps`. The action input is not a material bottleneck, and four action-specialized
+  sessions would add load/compile complexity without evidence of a payoff.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
