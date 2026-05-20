@@ -84,7 +84,11 @@ def split_wasm_dynamics_paths(source_path: Path) -> tuple[Path, Path]:
     )
 
 
-def export_split_wasm_dynamics_models(source_path: Path, *, overwrite: bool) -> tuple[Path, Path]:
+def export_split_wasm_dynamics_models(
+    source_path: Path,
+    *,
+    overwrite: bool,
+) -> tuple[tuple[Path, Path], dict[str, dict[str, Any]]]:
     sample_path, entry_path = split_wasm_dynamics_paths(source_path)
     ensure_output(sample_path, overwrite=overwrite)
     ensure_output(entry_path, overwrite=overwrite)
@@ -102,7 +106,11 @@ def export_split_wasm_dynamics_models(source_path: Path, *, overwrite: bool) -> 
         ["candidate_k_entry", "candidate_v_entry"],
         check_model=False,
     )
-    return sample_path, entry_path
+    split_rewrites = {
+        "sample_only_final_z": rewrite_split_mha_gqa_pretranspose_for_wasm(sample_path),
+        "context_entry_from_final_z": rewrite_split_mha_gqa_pretranspose_for_wasm(entry_path),
+    }
+    return (sample_path, entry_path), split_rewrites
 
 
 def parse_args() -> argparse.Namespace:
@@ -4510,6 +4518,202 @@ def rewrite_cache_layer_slices_as_gather_for_webgpu(path: Path) -> dict[str, Any
     }
 
 
+def rewrite_split_mha_gqa_pretranspose_for_wasm(
+    path: Path,
+    enabled: bool = True,
+) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = ("MultiHeadAttention", "Gather", "Transpose", "Concat", "Reshape")
+    if not enabled:
+        return {
+            "enabled": False,
+            "reason": "split WASM MHA GQA pretranspose rewrite disabled",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    producer = {output: node for node in model.graph.node for output in node.output}
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    existing_value_names = {
+        value.name
+        for value in (
+            list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info)
+        )
+    }
+    existing_value_names.update(initializer.name for initializer in model.graph.initializer)
+    existing_value_names.update(output for node in model.graph.node for output in node.output)
+    existing_node_names = {node.name for node in model.graph.node if node.name}
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def unique_value_name(base: str) -> str:
+        if base not in existing_value_names:
+            existing_value_names.add(base)
+            return base
+        suffix = 1
+        while f"{base}__{suffix}" in existing_value_names:
+            suffix += 1
+        value_name = f"{base}__{suffix}"
+        existing_value_names.add(value_name)
+        return value_name
+
+    def unique_node_name(base: str) -> str:
+        if base not in existing_node_names:
+            existing_node_names.add(base)
+            return base
+        suffix = 1
+        while f"{base}__{suffix}" in existing_node_names:
+            suffix += 1
+        node_name = f"{base}__{suffix}"
+        existing_node_names.add(node_name)
+        return node_name
+
+    replacements: dict[str, list[onnx.NodeProto]] = {}
+    skip_nodes: set[str] = set()
+    stale_value_info: set[str] = set()
+    rewrites = Counter()
+    examples: list[dict[str, Any]] = []
+
+    for mha in model.graph.node:
+        if mha.op_type != "MultiHeadAttention":
+            continue
+        for input_index, input_role in ((1, "key"), (2, "value")):
+            if len(mha.input) <= input_index:
+                continue
+            transpose = producer.get(mha.input[input_index])
+            if (
+                transpose is None
+                or transpose.op_type != "Transpose"
+                or len(transpose.input) != 1
+                or len(transpose.output) != 1
+                or list(attr_value(transpose, "perm", [])) != [0, 2, 1, 3]
+            ):
+                continue
+            if consumers.get(transpose.output[0], []) != [mha]:
+                continue
+
+            gather = producer.get(transpose.input[0])
+            if (
+                gather is None
+                or gather.op_type != "Gather"
+                or len(gather.input) < 2
+                or len(gather.output) != 1
+                or int(attr_value(gather, "axis", -1)) != 2
+            ):
+                continue
+            if consumers.get(gather.output[0], []) != [transpose]:
+                continue
+
+            gather_key = node_key(gather)
+            if gather_key in replacements:
+                continue
+
+            compact_bnsd_name = unique_value_name(
+                f"{gather.input[0]}__compact_bnsd_for_{transpose.output[0]}"
+            )
+            compact_transpose = onnx.helper.make_node(
+                "Transpose",
+                [gather.input[0]],
+                [compact_bnsd_name],
+                name=unique_node_name(f"{gather_key}__compact_to_bnsd"),
+                perm=[0, 2, 1, 3],
+            )
+            bnsd_gather = onnx.helper.make_node(
+                "Gather",
+                [compact_bnsd_name, gather.input[1]],
+                [transpose.output[0]],
+                name=unique_node_name(f"{node_key(transpose)}__gather_bnsd"),
+                axis=1,
+            )
+            replacements[gather_key] = [compact_transpose, bnsd_gather]
+            skip_nodes.add(node_key(transpose))
+            stale_value_info.add(gather.output[0])
+            rewrites["gqa_gather_pretranspose"] += 1
+            rewrites[f"{input_role}_gather_pretranspose"] += 1
+            if len(examples) < 12:
+                examples.append(
+                    {
+                        "multi_head_attention": mha.name,
+                        "input_role": input_role,
+                        "gather": gather.name,
+                        "transpose": transpose.name,
+                        "compact_input": gather.input[0],
+                        "indices": gather.input[1],
+                        "output": transpose.output[0],
+                    }
+                )
+
+    if not rewrites:
+        return {
+            "enabled": True,
+            "tool": "custom_split_mha_gqa_pretranspose_rewrite",
+            "reason": "no eligible split WASM MHA K/V Gather->Transpose islands found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    new_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in skip_nodes:
+            continue
+        if key in replacements:
+            new_nodes.extend(replacements[key])
+        else:
+            new_nodes.append(node)
+
+    used_inputs = {input_name for node in new_nodes for input_name in node.input if input_name}
+    kept_initializers = [
+        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
+    ]
+    kept_value_info = [
+        value for value in model.graph.value_info if value.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(new_nodes)
+    del model.graph.initializer[:]
+    model.graph.initializer.extend(kept_initializers)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_split_mha_gqa_pretranspose_rewrite",
+        "reason": (
+            "For split WASM dynamics graphs, move GQA K/V head repeat Gather after "
+            "the compact K/V Transpose feeding com.microsoft::MultiHeadAttention. "
+            "This preserves the B,N,S,D fused-MHA input shape while transposing the "
+            "smaller KV-head tensor before expanding repeated query heads."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+    }
+
+
 def fuse_manual_gqa_attention_for_webgpu(
     path: Path, enabled: bool, fuse_spatial: bool = False
 ) -> dict[str, Any]:
@@ -7711,8 +7915,12 @@ def main() -> None:
     temporal_attention_bhsd_rewrite = pass_results["temporal_attention_bhsd_rewrite"]
     final_z_only_rewrite = pass_results["final_z_only_rewrite"]
     split_wasm_dynamics_model_paths = None
+    split_wasm_dynamics_rewrites = None
     if args.export_cached and args.export_target == "wasm":
-        split_wasm_dynamics_model_paths = export_split_wasm_dynamics_models(
+        (
+            split_wasm_dynamics_model_paths,
+            split_wasm_dynamics_rewrites,
+        ) = export_split_wasm_dynamics_models(
             dynamics_sample_append_context_slide_entry_path,
             overwrite=args.overwrite,
         )
@@ -8073,6 +8281,16 @@ def main() -> None:
         entry["final_z_only_rewrite"] = final_z_only_rewrite[entry["name"]]
         entry["static_output_repair"] = static_output_repairs[entry["name"]]
 
+    split_wasm_dynamics = None
+    if split_wasm_dynamics_model_paths is not None:
+        split_sample_path, split_entry_path = split_wasm_dynamics_model_paths
+        split_wasm_dynamics = {
+            "available": True,
+            "sample_only_final_z": export_file_metadata(split_sample_path),
+            "context_entry_from_final_z": export_file_metadata(split_entry_path),
+            "mha_gqa_pretranspose_rewrite": split_wasm_dynamics_rewrites,
+        }
+
     demo_generation = None
     if args.export_cached:
         demo_generation = {
@@ -8096,6 +8314,7 @@ def main() -> None:
                     tok_shapes.channel_dim,
                 ],
             },
+            "split_wasm_dynamics": split_wasm_dynamics,
         }
 
     manifest = {

@@ -33,6 +33,10 @@ uses:
   starts the decoder worker after `final_z` is ready, then computes the context-cache entry on the
   main thread. Safari/WebKit keeps the unsplit graph by default because the split regressed its
   longer validated windows.
+- The derived split WASM dynamics files are post-processed by a split-only MHA GQA layout pass that
+  moves K/V head-repeat `Gather` after the compact K/V `Transpose` feeding fused MHA. This preserves
+  the fused `B,N,S,D` MHA input shape while transposing the 2-head compact K/V tensor instead of the
+  8-head repeated tensor.
 - A single-frame tokenizer decoder graph:
   `breakout_tokenizer_decoder_b1_t1.onnx`.
 
@@ -7291,6 +7295,15 @@ Rejected / kept out:
   validation passed, but the actual demo remained neutral/slightly slower at `34.13 fps` /
   `29.30 ms`, dynamics `27.04 ms` (`sample 18.09 ms`, `entry 8.91 ms`). Keep the existing
   `Slice -> Squeeze` cache-layer reads.
+- Accepted a split-only MHA GQA pretranspose rewrite for the derived WASM dynamics files. The pass
+  rewrites each split K/V `Gather(axis=2) -> Transpose(0,2,1,3)` feeding
+  `com.microsoft::MultiHeadAttention` into `Transpose(compact K/V) -> Gather(axis=1)`, moving the
+  repeated-head expansion after the compact K/V transpose. Native ORT stayed bit-exact against the
+  pre-rewrite split files (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and
+  `candidate_v_entry`). Chrome actual-demo validation passed at `37.84 fps` / `26.43 ms`, with
+  dynamics `24.24 ms` (`sample 16.19 ms`, `entry 8.01 ms`) and cache wait `1.46 ms`.
+  Safari-family/WebKit default validation still passed at `32.65 fps` / `30.63 ms` with split
+  dynamics disabled and `wasmNumThreads=3`. Keep this export pass for the split WASM artifacts.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
@@ -7298,8 +7311,9 @@ Current WASM conclusion:
   cleanup including ranked MHA query merges, the decoder singleton-key attention bypass, the decoder
   primitive RMSNorm rewrite, the worker-backed JavaScript cache updater for WASM, the decoder
   worker pipeline with `decoderWorkerNumThreads=3`, browser-specific main WASM threads
-  (`4` for Chrome/Chromium and `3` for Safari/WebKit), ORT WASM `graphOptimizationLevel=all`, and
-  Chrome/Chromium-only split dynamics when the derived split files are present.
-- The current validated default windows are about `33.6 fps` in headed Chrome and `32.9 fps` in
+  (`4` for Chrome/Chromium and `3` for Safari/WebKit), ORT WASM `graphOptimizationLevel=all`,
+  split-only MHA GQA pretranspose for the derived split files, and Chrome/Chromium-only split
+  dynamics when those derived files are present.
+- The current validated default windows are about `37.8 fps` in headed Chrome and `32.7 fps` in
   WebKit/Safari-family, both preserving `sample_steps=2` and passing visual plus WASM latent
   validation. The `30 fps` target is reached, but the requested `60 fps` target is not.
