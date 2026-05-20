@@ -7054,6 +7054,16 @@ Rejected / kept out:
     `1.12 ms`, `wasmNumThreads=3`.
   - Chrome WASM: `29.14 fps`, `34.31 ms/frame`, dynamics `30.04 ms`, cache wait `1.53 ms`,
     `wasmNumThreads=4`.
+- Retested lighter Chrome decoder-worker thread counts on the accepted bundle:
+  - `decoderWorkerNumThreads=2`: output validation passed at `30.26 fps`, `33.05 ms/frame`,
+    dynamics `28.81 ms`, cache wait `1.50 ms`.
+  - `decoderWorkerNumThreads=1`: output validation passed at `30.46 fps`, `32.83 ms/frame`,
+    dynamics `28.34 ms`, cache wait `1.35 ms`, but decoder wait became nonzero
+    (`0.46 ms` mean).
+  - Adjacent default `decoderWorkerNumThreads=3`: output validation passed at `31.53 fps`,
+    `31.72 ms/frame`, dynamics `27.60 ms`, cache wait `1.52 ms`.
+  - Conclusion: the current `3`-thread decoder worker remains the best default; lighter settings
+    are noise-level or slower and can expose decoder wait.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
