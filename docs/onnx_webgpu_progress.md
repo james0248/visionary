@@ -7401,6 +7401,10 @@ Rejected / kept out:
   `33.16 ms`; dynamics rose to `27.18 ms` and cache-update wait rose to `5.11 ms` because the cache
   tensor became 4x larger. Reject this ABI despite removing the large post-concat gather work; the
   bigger cache and update cost dominate before it can approach 60fps.
+- Rejected a post-head-time Chrome `wasmNumThreads=5` / `decoderWorkerNumThreads=3` retune. The
+  actual-demo proxy passed output and latent validation, but regressed to `31.19 fps` / `32.06 ms`;
+  dynamics rose to `29.44 ms` (`sample 19.39 ms`, `entry 10.01 ms`). Keep Chrome at the current
+  `4/3` split.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
