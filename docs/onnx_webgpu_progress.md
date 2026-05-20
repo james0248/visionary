@@ -7467,6 +7467,12 @@ Rejected / kept out:
   frame-64 visual/latent sampling passed in both browser families: Chrome measured `40.17 fps`, and
   WebKit/Safari-family measured `38.46 fps`, both above the `30 fps` gate. This is not the 60fps
   target, but it prevents a broken `~10 fps` path from being reported as benchmark-green.
+- Rejected moving split WASM dynamics and cache ownership into a dedicated worker. The temporary
+  query-flagged prototype passed Chrome visual and latent validation through frame 64, but regressed
+  to `37.31 fps` / `26.80 ms`. It removed main-thread cache-update wait (`0 ms`) and kept cache
+  update work near `1.22 ms`, but the worker-owned dynamics still cost `26.11 ms` (`sample
+  15.62 ms`, `entry 9.11 ms`) and decoder overlap was not enough to beat the accepted in-thread
+  split path. Do not keep the flag or worker code; this is slower and adds another runtime variant.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
