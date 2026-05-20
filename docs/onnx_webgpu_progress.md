@@ -7284,6 +7284,13 @@ Rejected / kept out:
   Chrome output and latent validation passed, but the actual-demo window regressed to `33.57 fps` /
   `29.79 ms`; cache wait rose slightly to `1.53 ms` and dynamics was `27.45 ms`. Keep the explicit
   copied K/V entry buffers before posting to the cache worker.
+- Rejected a current split-only cache-layer `Slice -> Squeeze` to scalar `Gather(axis=0)` rewrite.
+  The generated-asset probe replaced 24 sample split and 22 entry split layer-cache read pairs,
+  reducing split nodes (`sample 2308 -> 2284`, `entry 1178 -> 1156`) and staying native ORT
+  bit-exact (`max_abs 0.0` for `final_z` and entry K/V outputs). Chrome output and latent
+  validation passed, but the actual demo remained neutral/slightly slower at `34.13 fps` /
+  `29.30 ms`, dynamics `27.04 ms` (`sample 18.09 ms`, `entry 8.91 ms`). Keep the existing
+  `Slice -> Squeeze` cache-layer reads.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
