@@ -92,6 +92,15 @@ async function runBenchmark(
   if (process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS) {
     params.set('wasmNumThreads', process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS);
   }
+  if (process.env.WEBGPU_BENCHMARK_WORKER_CACHE_UPDATE) {
+    params.set('workerCacheUpdate', process.env.WEBGPU_BENCHMARK_WORKER_CACHE_UPDATE);
+  }
+  if (process.env.WEBGPU_BENCHMARK_DECODER_WORKER_PIPELINE) {
+    params.set('decoderWorkerPipeline', process.env.WEBGPU_BENCHMARK_DECODER_WORKER_PIPELINE);
+  }
+  if (process.env.WEBGPU_BENCHMARK_DECODER_WORKER_NUM_THREADS) {
+    params.set('decoderWorkerNumThreads', process.env.WEBGPU_BENCHMARK_DECODER_WORKER_NUM_THREADS);
+  }
   await page.goto(`/bench/index.html?${params.toString()}`);
   try {
     const result = await page.waitForFunction(

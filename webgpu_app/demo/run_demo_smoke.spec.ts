@@ -42,6 +42,19 @@ async function generateFrameInPage(page: Page) {
   return generatedFrameCount(page);
 }
 
+async function cacheSlotStats(page: Page) {
+  return page.evaluate(() => (window as any).visionaryDemoDebug.cacheSlotStats());
+}
+
+function expectContiguousFilledCache(stats: any, expectedLength: number) {
+  expect(stats.cacheLength).toBe(expectedLength);
+  expect(stats.activeFinite).toBe(true);
+  expect(stats.futureFinite).toBe(true);
+  expect(stats.activeNonZeroSlots).toBe(expectedLength);
+  expect(stats.activeMinMaxAbs).toBeGreaterThan(0);
+  expect(stats.futureMaxAbs).toBe(0);
+}
+
 test('world model demo loads its stylesheet @demo', async ({ page }) => {
   await page.goto(demoPath);
   await expect
@@ -88,6 +101,53 @@ test('world model demo changes the display over generated frames @demo', async (
   expect(new Set(samples).size).toBeGreaterThan(1);
 });
 
+test('world model demo fills and keeps the wasm cache over generated frames @demo', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(demoPath);
+  await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
+  const backend = await page.locator('#backend').textContent();
+  test.skip(!backend?.includes('wasm'), 'requires WASM');
+
+  await expect(visibleFrame(page)).toBeVisible();
+  const initialCacheState = await page.evaluate(() => {
+    const runtime = (window as any).visionaryDemoDebug.runtime;
+    return {
+      asyncCacheUpdater: Boolean(runtime.cacheUpdater?.async),
+      contextLength: runtime.contextLength,
+      decoderWorker: Boolean(runtime.decoderWorker),
+      initialLength: runtime.cache.length.data[0],
+    };
+  });
+  expect(initialCacheState.asyncCacheUpdater).toBe(true);
+  expect(initialCacheState.decoderWorker).toBe(true);
+  expect(initialCacheState.initialLength).toBeLessThan(initialCacheState.contextLength);
+
+  const sampledFrameHashes = new Map<number, string>();
+  const cacheLengths = new Map<number, number>();
+  const framesToFull = initialCacheState.contextLength - initialCacheState.initialLength;
+  const sampleFrames = new Set([1, 2, 4, framesToFull, framesToFull + 1, framesToFull + 2]);
+  for (let frameNumber = 1; frameNumber <= framesToFull + 2; frameNumber += 1) {
+    await generateFrameInPage(page);
+    if (!sampleFrames.has(frameNumber)) continue;
+    sampledFrameHashes.set(frameNumber, await visibleFramePixelHash(page));
+    cacheLengths.set(
+      frameNumber,
+      await page.evaluate(() => (window as any).visionaryDemoDebug.runtime.cache.length.data[0]),
+    );
+  }
+
+  expect(cacheLengths.get(1)).toBe(initialCacheState.initialLength + 1);
+  expect(cacheLengths.get(2)).toBe(initialCacheState.initialLength + 2);
+  expect(cacheLengths.get(4)).toBe(initialCacheState.initialLength + 4);
+  expect(cacheLengths.get(framesToFull)).toBe(initialCacheState.contextLength);
+  expect(cacheLengths.get(framesToFull + 1)).toBe(initialCacheState.contextLength);
+  expect(cacheLengths.get(framesToFull + 2)).toBe(initialCacheState.contextLength);
+  expect(new Set([...sampledFrameHashes.values()]).size).toBe(sampledFrameHashes.size);
+  expect(pageErrors).toEqual([]);
+});
+
 test('world model demo keeps safari profile on the valid dynamics path @demo', async ({ page }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
@@ -102,14 +162,17 @@ test('world model demo keeps safari profile on the valid dynamics path @demo', a
     fullDynamics: Boolean((window as any).visionaryDemoDebug.runtime.fullGraphCapture?.enabled),
     decoder: Boolean((window as any).visionaryDemoDebug.runtime.decoderGraphCapture),
     initialCacheSource: (window as any).visionaryDemoDebug.runtime.initialCacheSource,
+    prefillSkipReason: (window as any).visionaryDemoDebug.runtime.prefillSkipReason,
     initialCacheLength: (window as any).visionaryDemoDebug.runtime.initialCache.length.data[0],
   }));
   expect(captureState).toEqual({
     dynamics: false,
     fullDynamics: true,
     decoder: true,
-    initialCacheSource: 'prefill',
-    initialCacheLength: 64,
+    initialCacheSource: 'artifact-prefill-skipped',
+    prefillSkipReason:
+      'prefillInitialCache skipped because the context artifact has padded prefix slots',
+    initialCacheLength: 4,
   });
 
   await expect(visibleFrame(page)).toBeVisible();
@@ -139,6 +202,83 @@ test('world model demo keeps safari profile on the valid dynamics path @demo', a
       sampledFrameHashes.get(66),
     ]).size,
   ).toBe(3);
+  expect(pageErrors).toEqual([]);
+});
+
+test('world model demo fills the WebGPU cache contiguously before full-cache mode @demo', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(demoPath);
+  await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
+  const backend = await page.locator('#backend').textContent();
+  test.skip(!backend?.includes('webgpu'), 'requires WebGPU');
+
+  const initialStats = await cacheSlotStats(page);
+  expect(initialStats.cacheLength).toBeLessThan(initialStats.contextLength);
+  expectContiguousFilledCache(initialStats, initialStats.cacheLength);
+
+  const framesToFull = initialStats.contextLength - initialStats.cacheLength;
+  const checkpoints = new Set([
+    1,
+    2,
+    4,
+    Math.max(1, Math.floor(framesToFull / 2)),
+    framesToFull,
+    framesToFull + 1,
+  ]);
+  for (let frameNumber = 1; frameNumber <= framesToFull + 1; frameNumber += 1) {
+    await generateFrameInPage(page);
+    if (!checkpoints.has(frameNumber)) continue;
+    const stats = await cacheSlotStats(page);
+    const expectedLength = Math.min(
+      initialStats.cacheLength + frameNumber,
+      initialStats.contextLength,
+    );
+    expectContiguousFilledCache(stats, expectedLength);
+  }
+  expect(pageErrors).toEqual([]);
+});
+
+test('world model demo skips padded prefill cache for WebGPU startup @demo', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(
+    '/demo/index.html?backend=webgpu&assetBase=/dream_arcade_assets/breakout&prefillInitialCache=1&skipShortCacheStepWhenFull=1',
+  );
+  await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
+  const backend = await page.locator('#backend').textContent();
+  test.skip(!backend?.includes('webgpu'), 'requires WebGPU');
+
+  const state = await page.evaluate(() => {
+    const runtime = (window as any).visionaryDemoDebug.runtime;
+    return {
+      initialCacheSource: runtime.initialCacheSource,
+      prefillSkipReason: runtime.prefillSkipReason,
+      initialLength: runtime.initialCache.length.data[0],
+      runtimeLength: runtime.cache.length.data[0],
+      contextLength: runtime.contextLength,
+      hasShortStepSession: Boolean(runtime.sessions.step),
+      hasFullStepSession: Boolean(runtime.sessions.fullStep),
+      previewVisible: Boolean(document.querySelector('.frame-preview:not([hidden])')),
+    };
+  });
+  expect(state).toEqual({
+    initialCacheSource: 'artifact-prefill-skipped',
+    prefillSkipReason:
+      'prefillInitialCache skipped because the context artifact has padded prefix slots',
+    initialLength: 4,
+    runtimeLength: 4,
+    contextLength: state.contextLength,
+    hasShortStepSession: true,
+    hasFullStepSession: true,
+    previewVisible: true,
+  });
+
+  await generateFrameInPage(page);
+  expect(await page.evaluate(() => (window as any).visionaryDemoDebug.runtime.cache.length.data[0]))
+    .toBe(5);
   expect(pageErrors).toEqual([]);
 });
 

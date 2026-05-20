@@ -153,8 +153,9 @@ On the same machine, the validated Safari path is still far behind Chrome: Safar
 transformer kernels are much slower without that feature. Treat Safari graph-capture FPS as invalid
 unless `streaming_frame.output_validation.status` is `passed`.
 
-The pure WASM path can be selected with `provider=wasm`,
-`ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`, and `wasmNumThreads=4`.
+The pure WASM path can be selected with `provider=wasm`; the benchmark then defaults to
+`ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`, `wasmNumThreads=4`, and the
+decoder worker pipeline with `decoderWorkerNumThreads=3`.
 The external `.wasm` loader is faster than the bundled WASM wrapper in the current local benchmark,
 but it is still far below Chrome's WebGPU path on this model. On WASM, prefer
 `breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2`; it returns full updated cache

@@ -81,19 +81,23 @@ const DEFAULT_FULL_DYNAMICS_GRAPH_CAPTURE = browserProfile === 'safari';
 const DEFAULT_DECODER_GRAPH_CAPTURE = browserProfile === 'safari';
 const DEFAULT_PREFILL_INITIAL_CACHE = browserProfile === 'safari';
 const DEFAULT_GPU_PATCH_RENDERER = true;
-const DEFAULT_GRAPH_OPTIMIZATION_LEVEL = 'basic';
+const DEFAULT_GRAPH_OPTIMIZATION_LEVEL = requestedBackend === 'wasm' ? 'all' : 'basic';
 const DEFAULT_WASM_NUM_THREADS = 4;
 const DEFAULT_ORT_MODULE =
   requestedBackend === 'wasm'
     ? `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`
     : `/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs`;
 const DEFAULT_ORT_WASM_BASE = `/node_modules/onnxruntime-web/dist/`;
+const DEFAULT_DECODER_WORKER_PIPELINE = requestedBackend === 'wasm';
+const DEFAULT_DECODER_WORKER_NUM_THREADS = 3;
 const wasmNumThreadsParam = Number(configValue('wasmNumThreads', DEFAULT_WASM_NUM_THREADS));
 const WASM_NUM_THREADS =
   Number.isInteger(wasmNumThreadsParam) && wasmNumThreadsParam > 0 ? wasmNumThreadsParam : null;
-const ort = await import(resolveUrl(configValue('ortModule', DEFAULT_ORT_MODULE)));
+const ORT_MODULE_URL = resolveUrl(configValue('ortModule', DEFAULT_ORT_MODULE));
+const ORT_WASM_BASE_URL = resolveUrl(configValue('ortWasmBase', DEFAULT_ORT_WASM_BASE));
+const ort = await import(ORT_MODULE_URL);
 configureOrt(ort, {
-  wasmPaths: resolveUrl(configValue('ortWasmBase', DEFAULT_ORT_WASM_BASE)),
+  wasmPaths: ORT_WASM_BASE_URL,
   wasmNumThreads: WASM_NUM_THREADS,
 });
 const createGpuTensorFromCpu = (device, tensor) =>
@@ -333,6 +337,10 @@ const prefillInitialCacheRequested = parseBooleanConfig(
   configValue('prefillInitialCache', prefillInitialCacheDefault),
   prefillInitialCacheDefault,
 );
+const allowPaddedPrefillInitialCache = parseBooleanConfig(
+  configValue('allowPaddedPrefillInitialCache', false),
+  false,
+);
 const dynamicsGraphCaptureEnabled = dynamicsGraphCaptureRequested && !fullDynamicsGraphCaptureRequested;
 const decoderGraphCaptureRequested = parseBooleanConfig(
   configValue('decoderGraphCapture', graphCaptureRequested ?? DEFAULT_DECODER_GRAPH_CAPTURE),
@@ -369,6 +377,17 @@ const preallocateDecoderOutputsEnabled = parseBooleanConfig(
   configValue('preallocateDecoderOutputs', browserProfile !== 'safari'),
   browserProfile !== 'safari',
 );
+const decoderWorkerPipelineEnabled = parseBooleanConfig(
+  configValue('decoderWorkerPipeline', DEFAULT_DECODER_WORKER_PIPELINE),
+  DEFAULT_DECODER_WORKER_PIPELINE,
+);
+const decoderWorkerNumThreadsParam = Number(
+  configValue('decoderWorkerNumThreads', DEFAULT_DECODER_WORKER_NUM_THREADS),
+);
+const decoderWorkerNumThreads =
+  Number.isInteger(decoderWorkerNumThreadsParam) && decoderWorkerNumThreadsParam > 0
+    ? decoderWorkerNumThreadsParam
+    : null;
 const graphOptimizationLevel = String(
   configValue('graphOptimizationLevel', DEFAULT_GRAPH_OPTIMIZATION_LEVEL),
 );
@@ -743,6 +762,30 @@ function prefillFeedsFromContext(prefillSpec, loaded) {
       return [name, tensor];
     }),
   );
+}
+
+function contextLengthFromManifest(contextManifest) {
+  return (
+    contextManifest.context_length ??
+    contextManifest.arrays?.z?.shape?.[1] ??
+    contextManifest.arrays?.actions?.shape?.[1] ??
+    null
+  );
+}
+
+function paddedInitialPrefillSkipReason(contextManifest) {
+  if (allowPaddedPrefillInitialCache) return null;
+  const contextLength = contextLengthFromManifest(contextManifest);
+  const prefixFrames = contextManifest.prefix_frames ?? contextLength;
+  const zeroPadFrames = contextManifest.zero_pad_frames ?? 0;
+  const prefixSlotStart = contextManifest.prefix_slot_start ?? 0;
+  const hasPaddedPrefix =
+    zeroPadFrames > 0 ||
+    prefixSlotStart > 0 ||
+    (contextLength != null && prefixFrames != null && prefixFrames < contextLength);
+  return hasPaddedPrefix
+    ? 'prefillInitialCache skipped because the context artifact has padded prefix slots'
+    : null;
 }
 
 async function createSession(spec, label, modelBytes, backend, options = {}) {
@@ -1291,6 +1334,180 @@ function cacheMatchesAnyGraphCaptureFixedCache(runtime, cache) {
 function disposeRuntimeCache(runtime, cache) {
   if (cacheMatchesAnyGraphCaptureFixedCache(runtime, cache)) return;
   disposeCache(cache);
+}
+
+async function downloadGpuTensorData(device, tensor) {
+  if (tensor?.location !== 'gpu-buffer') {
+    const ArrayType = dtypeArray(tensor.type);
+    return new ArrayType(tensor.data);
+  }
+  const byteLength = tensorByteLength(tensor.type, tensor.dims);
+  const readback = device.createBuffer({
+    label: 'visionary-debug-tensor-readback',
+    size: Math.max(16, byteLength),
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const encoder = device.createCommandEncoder({ label: 'visionary-debug-tensor-download' });
+  encoder.copyBufferToBuffer(tensor.gpuBuffer, 0, readback, 0, byteLength);
+  device.queue.submit([encoder.finish()]);
+  await readback.mapAsync(GPUMapMode.READ);
+  const bytes = new Uint8Array(readback.getMappedRange(0, byteLength)).slice();
+  readback.unmap();
+  readback.destroy();
+  return new (dtypeArray(tensor.type))(bytes.buffer);
+}
+
+async function cloneTensorToCpuForDebug(device, tensor) {
+  const data = await downloadGpuTensorData(device, tensor);
+  return new ort.Tensor(tensor.type, data, [...tensor.dims]);
+}
+
+async function cloneCacheToCpuForDebug(currentRuntime, cache) {
+  const [k, v] = await Promise.all([
+    cloneTensorToCpuForDebug(currentRuntime.device, cache.k),
+    cloneTensorToCpuForDebug(currentRuntime.device, cache.v),
+  ]);
+  return {
+    k,
+    v,
+    length: cloneCpuTensor(cache.length),
+  };
+}
+
+function compareFloatTensorsForDebug(actual, expected, tolerance) {
+  const actualData = actual.data;
+  const expectedData = expected.data;
+  let maxAbs = 0;
+  let sumAbs = 0;
+  let mismatches = 0;
+  for (let index = 0; index < actualData.length; index += 1) {
+    const delta = Math.abs(actualData[index] - expectedData[index]);
+    if (delta > maxAbs) maxAbs = delta;
+    sumAbs += delta;
+    if (delta > tolerance) mismatches += 1;
+  }
+  return {
+    maxAbs,
+    meanAbs: actualData.length ? sumAbs / actualData.length : 0,
+    mismatches,
+  };
+}
+
+async function compareEntryCacheUpdateForDebug({
+  currentRuntime,
+  stepSpec,
+  beforeCache,
+  afterCache,
+  kEntry,
+  vEntry,
+}) {
+  const expectedCache = {
+    k: cloneCpuTensor(beforeCache.k),
+    v: cloneCpuTensor(beforeCache.v),
+    length: cloneCpuTensor(beforeCache.length),
+  };
+  const cpuUpdater = createCpuEntryCacheUpdater(stepSpec, currentRuntime.manifest);
+  cpuUpdater.update(expectedCache, kEntry, vEntry, expectedCache.length);
+  advanceCacheLength(expectedCache.length, currentRuntime.contextLength);
+  const expectedLength = expectedCache.length.data[0];
+  const actualLength = afterCache.length.data[0];
+  const tolerance = 2e-5;
+  const k = compareFloatTensorsForDebug(afterCache.k, expectedCache.k, tolerance);
+  const v = compareFloatTensorsForDebug(afterCache.v, expectedCache.v, tolerance);
+  return {
+    cacheLengthBefore: beforeCache.length.data[0],
+    cacheLengthAfter: actualLength,
+    expectedLength,
+    lengthMatches: actualLength === expectedLength,
+    tolerance,
+    k,
+    v,
+    passed:
+      actualLength === expectedLength &&
+      k.maxAbs <= tolerance &&
+      v.maxAbs <= tolerance &&
+      k.mismatches === 0 &&
+      v.mismatches === 0,
+  };
+}
+
+async function cacheSlotStatsForDebug() {
+  const currentRuntime = runtime;
+  if (!currentRuntime?.cache) throw new Error('Runtime cache is not ready.');
+  const {
+    cacheLayout,
+    contextLength,
+    batch,
+    headDim,
+    heads,
+    layers,
+    tokens,
+  } = cacheContractFromSpec(currentRuntime.specs.step, currentRuntime.manifest);
+  const [kData, vData] = await Promise.all([
+    downloadGpuTensorData(currentRuntime.device, currentRuntime.cache.k),
+    downloadGpuTensorData(currentRuntime.device, currentRuntime.cache.v),
+  ]);
+  const slotStats = Array.from({ length: contextLength }, () => ({
+    kMaxAbs: 0,
+    vMaxAbs: 0,
+    kNonZero: 0,
+    vNonZero: 0,
+    finite: true,
+  }));
+  const cacheIndex =
+    cacheLayout === 'layer_batch_token_head_time_dim'
+      ? (layer, batchIndex, token, time, head, dim) =>
+          (((((layer * batch + batchIndex) * tokens + token) * heads + head) * contextLength +
+            time) *
+            headDim +
+            dim)
+      : (layer, batchIndex, token, time, head, dim) =>
+          (((((layer * batch + batchIndex) * tokens + token) * contextLength + time) * heads +
+            head) *
+            headDim +
+            dim);
+  for (let layer = 0; layer < layers; layer += 1) {
+    for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+      for (let token = 0; token < tokens; token += 1) {
+        for (let time = 0; time < contextLength; time += 1) {
+          const stats = slotStats[time];
+          for (let head = 0; head < heads; head += 1) {
+            for (let dim = 0; dim < headDim; dim += 1) {
+              const index = cacheIndex(layer, batchIndex, token, time, head, dim);
+              const kValue = kData[index];
+              const vValue = vData[index];
+              const kAbs = Math.abs(kValue);
+              const vAbs = Math.abs(vValue);
+              if (!Number.isFinite(kValue) || !Number.isFinite(vValue)) stats.finite = false;
+              if (kAbs > 0) stats.kNonZero += 1;
+              if (vAbs > 0) stats.vNonZero += 1;
+              if (kAbs > stats.kMaxAbs) stats.kMaxAbs = kAbs;
+              if (vAbs > stats.vMaxAbs) stats.vMaxAbs = vAbs;
+            }
+          }
+        }
+      }
+    }
+  }
+  const cacheLength = currentRuntime.cache.length.data[0];
+  const activeSlots = slotStats.slice(0, cacheLength);
+  const futureSlots = slotStats.slice(cacheLength);
+  return {
+    cacheLength,
+    contextLength,
+    activeSlots,
+    futureSlots,
+    activeFinite: activeSlots.every((slot) => slot.finite),
+    futureFinite: futureSlots.every((slot) => slot.finite),
+    activeMinMaxAbs: activeSlots.length
+      ? Math.min(...activeSlots.map((slot) => Math.max(slot.kMaxAbs, slot.vMaxAbs)))
+      : 0,
+    futureMaxAbs: futureSlots.length
+      ? Math.max(...futureSlots.map((slot) => Math.max(slot.kMaxAbs, slot.vMaxAbs)))
+      : 0,
+    activeNonZeroSlots: activeSlots.filter((slot) => slot.kNonZero > 0 && slot.vNonZero > 0)
+      .length,
+  };
 }
 
 function resetGraphCaptureFixedCacheState(runtime) {
@@ -1899,6 +2116,135 @@ function createCpuEntryCacheUpdater(spec, manifest) {
       const vCache = cache.v.data;
       const kEntryData = kEntry.data;
       const vEntryData = vEntry.data;
+      if (cacheLayout === 'layer_batch_token_time_head_dim') {
+        const timeStride = heads * headDim;
+        const tokenStride = contextLength * timeStride;
+        const entryTokenStride = heads * headDim;
+        for (let layer = 0; layer < layers; layer += 1) {
+          for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+            for (let token = 0; token < tokens; token += 1) {
+              const cacheTokenBase =
+                ((layer * batch + batchIndex) * tokens + token) * tokenStride;
+              const entryTokenBase =
+                ((layer * batch + batchIndex) * tokens + token) * entryTokenStride;
+              if (logicalLength < contextLength) {
+                const dstTime = Math.min(Math.max(logicalLength, 0), contextLength - 1);
+                const dstBase = cacheTokenBase + dstTime * timeStride;
+                kCache.set(
+                  kEntryData.subarray(entryTokenBase, entryTokenBase + entryTokenStride),
+                  dstBase,
+                );
+                vCache.set(
+                  vEntryData.subarray(entryTokenBase, entryTokenBase + entryTokenStride),
+                  dstBase,
+                );
+                continue;
+              }
+              for (let head = 0; head < heads; head += 1) {
+                const cacheHeadBase = cacheTokenBase + head * headDim;
+                const entryHeadBase = entryTokenBase + head * headDim;
+                for (let halfDim = 0; halfDim < halfHeadDim; halfDim += 1) {
+                  const cosTheta = cosValues[halfDim];
+                  const sinTheta = sinValues[halfDim];
+                  let dstLeft = cacheHeadBase + halfDim;
+                  let dstRight = cacheHeadBase + halfHeadDim + halfDim;
+                  let srcLeft = dstLeft + timeStride;
+                  let srcRight = dstRight + timeStride;
+                  for (let time = 0; time < contextLength - 1; time += 1) {
+                    const left = kCache[srcLeft];
+                    const right = kCache[srcRight];
+                    kCache[dstLeft] = left * cosTheta + right * sinTheta;
+                    kCache[dstRight] = right * cosTheta - left * sinTheta;
+                    dstLeft += timeStride;
+                    dstRight += timeStride;
+                    srcLeft += timeStride;
+                    srcRight += timeStride;
+                  }
+                  kCache[cacheHeadBase + (contextLength - 1) * timeStride + halfDim] =
+                    kEntryData[entryHeadBase + halfDim];
+                  kCache[
+                    cacheHeadBase + (contextLength - 1) * timeStride + halfHeadDim + halfDim
+                  ] = kEntryData[entryHeadBase + halfHeadDim + halfDim];
+                }
+              }
+              vCache.copyWithin(
+                cacheTokenBase,
+                cacheTokenBase + timeStride,
+                cacheTokenBase + tokenStride,
+              );
+              vCache.set(
+                vEntryData.subarray(entryTokenBase, entryTokenBase + entryTokenStride),
+                cacheTokenBase + tokenStride - timeStride,
+              );
+            }
+          }
+        }
+        return cache;
+      }
+      if (cacheLayout === 'layer_batch_token_head_time_dim') {
+        const headStride = contextLength * headDim;
+        const tokenStride = heads * headStride;
+        const entryTokenStride = heads * headDim;
+        for (let layer = 0; layer < layers; layer += 1) {
+          for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+            for (let token = 0; token < tokens; token += 1) {
+              const cacheTokenBase =
+                ((layer * batch + batchIndex) * tokens + token) * tokenStride;
+              const entryTokenBase =
+                ((layer * batch + batchIndex) * tokens + token) * entryTokenStride;
+              for (let head = 0; head < heads; head += 1) {
+                const cacheHeadBase = cacheTokenBase + head * headStride;
+                const entryHeadBase = entryTokenBase + head * headDim;
+                if (logicalLength < contextLength) {
+                  const dstTime = Math.min(Math.max(logicalLength, 0), contextLength - 1);
+                  const dstBase = cacheHeadBase + dstTime * headDim;
+                  kCache.set(
+                    kEntryData.subarray(entryHeadBase, entryHeadBase + headDim),
+                    dstBase,
+                  );
+                  vCache.set(
+                    vEntryData.subarray(entryHeadBase, entryHeadBase + headDim),
+                    dstBase,
+                  );
+                  continue;
+                }
+                for (let halfDim = 0; halfDim < halfHeadDim; halfDim += 1) {
+                  const cosTheta = cosValues[halfDim];
+                  const sinTheta = sinValues[halfDim];
+                  let dstLeft = cacheHeadBase + halfDim;
+                  let dstRight = cacheHeadBase + halfHeadDim + halfDim;
+                  let srcLeft = dstLeft + headDim;
+                  let srcRight = dstRight + headDim;
+                  for (let time = 0; time < contextLength - 1; time += 1) {
+                    const left = kCache[srcLeft];
+                    const right = kCache[srcRight];
+                    kCache[dstLeft] = left * cosTheta + right * sinTheta;
+                    kCache[dstRight] = right * cosTheta - left * sinTheta;
+                    dstLeft += headDim;
+                    dstRight += headDim;
+                    srcLeft += headDim;
+                    srcRight += headDim;
+                  }
+                  kCache[cacheHeadBase + (contextLength - 1) * headDim + halfDim] =
+                    kEntryData[entryHeadBase + halfDim];
+                  kCache[cacheHeadBase + (contextLength - 1) * headDim + halfHeadDim + halfDim] =
+                    kEntryData[entryHeadBase + halfHeadDim + halfDim];
+                }
+                vCache.copyWithin(
+                  cacheHeadBase,
+                  cacheHeadBase + headDim,
+                  cacheHeadBase + headStride,
+                );
+                vCache.set(
+                  vEntryData.subarray(entryHeadBase, entryHeadBase + headDim),
+                  cacheHeadBase + headStride - headDim,
+                );
+              }
+            }
+          }
+        }
+        return cache;
+      }
 
       if (logicalLength < contextLength) {
         const dstTime = Math.min(Math.max(logicalLength, 0), contextLength - 1);
@@ -1992,6 +2338,357 @@ function createCpuEntryCacheUpdater(spec, manifest) {
   };
 }
 
+function createWorkerEntryCacheUpdater(spec, manifest) {
+  const {
+    cacheLayout,
+    contextLength,
+    batch,
+    halfHeadDim,
+    headDim,
+    heads,
+    layers,
+    tokens,
+  } = cacheContractFromSpec(spec, manifest);
+  const ropeBase = Number(manifest.dynamics?.rope_base ?? manifest.dynamics?.base ?? 10000);
+  const cosValues = Array.from({ length: halfHeadDim }, (_, dim) => {
+    const theta = 1 / (ropeBase ** (dim / halfHeadDim));
+    return Math.cos(theta);
+  });
+  const sinValues = Array.from({ length: halfHeadDim }, (_, dim) => {
+    const theta = 1 / (ropeBase ** (dim / halfHeadDim));
+    return Math.sin(theta);
+  });
+  const workerSource = `
+const LAYERS = ${layers};
+const BATCH = ${batch};
+const TOKENS = ${tokens};
+const CONTEXT = ${contextLength};
+const HEADS = ${heads};
+const HEAD_DIM = ${headDim};
+const HALF_HEAD_DIM = ${halfHeadDim};
+const CACHE_LAYOUT = ${JSON.stringify(cacheLayout)};
+const cosValues = new Float32Array(${JSON.stringify(cosValues)});
+const sinValues = new Float32Array(${JSON.stringify(sinValues)});
+
+function updateTimeHead(kCache, vCache, kEntryData, vEntryData, logicalLength) {
+  const timeStride = HEADS * HEAD_DIM;
+  const tokenStride = CONTEXT * timeStride;
+  const entryTokenStride = HEADS * HEAD_DIM;
+  const fillOnly = logicalLength < CONTEXT;
+  const dstTime = Math.min(Math.max(logicalLength, 0), CONTEXT - 1);
+  for (let layer = 0; layer < LAYERS; layer += 1) {
+    for (let batchIndex = 0; batchIndex < BATCH; batchIndex += 1) {
+      for (let token = 0; token < TOKENS; token += 1) {
+        const cacheTokenBase = ((layer * BATCH + batchIndex) * TOKENS + token) * tokenStride;
+        const entryTokenBase = ((layer * BATCH + batchIndex) * TOKENS + token) * entryTokenStride;
+        if (fillOnly) {
+          const dstBase = cacheTokenBase + dstTime * timeStride;
+          kCache.set(kEntryData.subarray(entryTokenBase, entryTokenBase + entryTokenStride), dstBase);
+          vCache.set(vEntryData.subarray(entryTokenBase, entryTokenBase + entryTokenStride), dstBase);
+          continue;
+        }
+        for (let head = 0; head < HEADS; head += 1) {
+          const cacheHeadBase = cacheTokenBase + head * HEAD_DIM;
+          const entryHeadBase = entryTokenBase + head * HEAD_DIM;
+          for (let dim = 0; dim < HALF_HEAD_DIM; dim += 1) {
+            const cosTheta = cosValues[dim];
+            const sinTheta = sinValues[dim];
+            let dstLeft = cacheHeadBase + dim;
+            let dstRight = cacheHeadBase + HALF_HEAD_DIM + dim;
+            let srcLeft = dstLeft + timeStride;
+            let srcRight = dstRight + timeStride;
+            for (let time = 0; time < CONTEXT - 1; time += 1) {
+              const left = kCache[srcLeft];
+              const right = kCache[srcRight];
+              kCache[dstLeft] = left * cosTheta + right * sinTheta;
+              kCache[dstRight] = right * cosTheta - left * sinTheta;
+              dstLeft += timeStride;
+              dstRight += timeStride;
+              srcLeft += timeStride;
+              srcRight += timeStride;
+            }
+            kCache[cacheHeadBase + (CONTEXT - 1) * timeStride + dim] =
+              kEntryData[entryHeadBase + dim];
+            kCache[cacheHeadBase + (CONTEXT - 1) * timeStride + HALF_HEAD_DIM + dim] =
+              kEntryData[entryHeadBase + HALF_HEAD_DIM + dim];
+          }
+        }
+        vCache.copyWithin(cacheTokenBase, cacheTokenBase + timeStride, cacheTokenBase + tokenStride);
+        vCache.set(
+          vEntryData.subarray(entryTokenBase, entryTokenBase + entryTokenStride),
+          cacheTokenBase + tokenStride - timeStride,
+        );
+      }
+    }
+  }
+}
+
+function updateHeadTime(kCache, vCache, kEntryData, vEntryData, logicalLength) {
+  const headStride = CONTEXT * HEAD_DIM;
+  const tokenStride = HEADS * headStride;
+  const entryTokenStride = HEADS * HEAD_DIM;
+  const fillOnly = logicalLength < CONTEXT;
+  const dstTime = Math.min(Math.max(logicalLength, 0), CONTEXT - 1);
+  for (let layer = 0; layer < LAYERS; layer += 1) {
+    for (let batchIndex = 0; batchIndex < BATCH; batchIndex += 1) {
+      for (let token = 0; token < TOKENS; token += 1) {
+        const cacheTokenBase = ((layer * BATCH + batchIndex) * TOKENS + token) * tokenStride;
+        const entryTokenBase = ((layer * BATCH + batchIndex) * TOKENS + token) * entryTokenStride;
+        for (let head = 0; head < HEADS; head += 1) {
+          const cacheHeadBase = cacheTokenBase + head * headStride;
+          const entryHeadBase = entryTokenBase + head * HEAD_DIM;
+          if (fillOnly) {
+            const dstBase = cacheHeadBase + dstTime * HEAD_DIM;
+            kCache.set(kEntryData.subarray(entryHeadBase, entryHeadBase + HEAD_DIM), dstBase);
+            vCache.set(vEntryData.subarray(entryHeadBase, entryHeadBase + HEAD_DIM), dstBase);
+            continue;
+          }
+          for (let dim = 0; dim < HALF_HEAD_DIM; dim += 1) {
+            const cosTheta = cosValues[dim];
+            const sinTheta = sinValues[dim];
+            let dstLeft = cacheHeadBase + dim;
+            let dstRight = cacheHeadBase + HALF_HEAD_DIM + dim;
+            let srcLeft = dstLeft + HEAD_DIM;
+            let srcRight = dstRight + HEAD_DIM;
+            for (let time = 0; time < CONTEXT - 1; time += 1) {
+              const left = kCache[srcLeft];
+              const right = kCache[srcRight];
+              kCache[dstLeft] = left * cosTheta + right * sinTheta;
+              kCache[dstRight] = right * cosTheta - left * sinTheta;
+              dstLeft += HEAD_DIM;
+              dstRight += HEAD_DIM;
+              srcLeft += HEAD_DIM;
+              srcRight += HEAD_DIM;
+            }
+            kCache[cacheHeadBase + (CONTEXT - 1) * HEAD_DIM + dim] =
+              kEntryData[entryHeadBase + dim];
+            kCache[cacheHeadBase + (CONTEXT - 1) * HEAD_DIM + HALF_HEAD_DIM + dim] =
+              kEntryData[entryHeadBase + HALF_HEAD_DIM + dim];
+          }
+          vCache.copyWithin(cacheHeadBase, cacheHeadBase + HEAD_DIM, cacheHeadBase + headStride);
+          vCache.set(
+            vEntryData.subarray(entryHeadBase, entryHeadBase + HEAD_DIM),
+            cacheHeadBase + headStride - HEAD_DIM,
+          );
+        }
+      }
+    }
+  }
+}
+
+self.onmessage = (event) => {
+  const { id, kCacheBuffer, vCacheBuffer, kEntryBuffer, vEntryBuffer, logicalLength } = event.data;
+  const kCache = new Float32Array(kCacheBuffer);
+  const vCache = new Float32Array(vCacheBuffer);
+  const kEntryData = new Float32Array(kEntryBuffer);
+  const vEntryData = new Float32Array(vEntryBuffer);
+  if (CACHE_LAYOUT === 'layer_batch_token_head_time_dim') {
+    updateHeadTime(kCache, vCache, kEntryData, vEntryData, logicalLength);
+  } else {
+    updateTimeHead(kCache, vCache, kEntryData, vEntryData, logicalLength);
+  }
+  self.postMessage({ id, kCacheBuffer, vCacheBuffer }, [kCacheBuffer, vCacheBuffer]);
+};
+`;
+  const workerUrl = URL.createObjectURL(
+    new Blob([workerSource], { type: 'text/javascript; charset=utf-8' }),
+  );
+  const worker = new Worker(workerUrl);
+  let nextId = 0;
+  const pending = new Map();
+  worker.onmessage = (event) => {
+    const { id, kCacheBuffer, vCacheBuffer } = event.data;
+    const callbacks = pending.get(id);
+    if (!callbacks) return;
+    pending.delete(id);
+    callbacks.resolve({ kCacheBuffer, vCacheBuffer });
+  };
+  worker.onerror = (event) => {
+    for (const callbacks of pending.values()) {
+      callbacks.reject(new Error(event.message || 'worker cache update failed'));
+    }
+    pending.clear();
+  };
+  const fullBufferView = (tensor, label) => {
+    const view = tensor.data;
+    if (!(view?.buffer instanceof ArrayBuffer)) {
+      throw new Error(`Worker cache update requires transferable ArrayBuffer for ${label}.`);
+    }
+    if (view.byteOffset !== 0 || view.byteLength !== view.buffer.byteLength) {
+      throw new Error(`Worker cache update requires a full-buffer view for ${label}.`);
+    }
+    return view.buffer;
+  };
+  const copiedBufferView = (tensor, label) => {
+    const view = tensor.data;
+    if (!(view?.buffer instanceof ArrayBuffer)) {
+      throw new Error(`Worker cache update requires ArrayBuffer data for ${label}.`);
+    }
+    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+  };
+  return {
+    async: true,
+    release() {
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+    },
+    async update(cache, kEntry, vEntry, cacheLength) {
+      const id = nextId;
+      nextId += 1;
+      const kCacheBuffer = fullBufferView(cache.k, 'k_cache');
+      const vCacheBuffer = fullBufferView(cache.v, 'v_cache');
+      const kEntryBuffer = copiedBufferView(kEntry, 'candidate_k_entry');
+      const vEntryBuffer = copiedBufferView(vEntry, 'candidate_v_entry');
+      const logicalLength = cacheLength?.data?.[0] ?? contextLength;
+      const result: any = await new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        worker.postMessage(
+          { id, kCacheBuffer, vCacheBuffer, kEntryBuffer, vEntryBuffer, logicalLength },
+          [kCacheBuffer, vCacheBuffer, kEntryBuffer, vEntryBuffer],
+        );
+      });
+      return {
+        k: new ort.Tensor('float32', new Float32Array(result.kCacheBuffer), cache.k.dims),
+        v: new ort.Tensor('float32', new Float32Array(result.vCacheBuffer), cache.v.dims),
+        length: cache.length,
+      };
+    },
+  };
+}
+
+async function createWorkerDecoderRunner(spec, modelBytes) {
+  const inputName = decoderInputName(spec);
+  const patchesName = outputName(spec, 'patches');
+  const inputSpec = spec.inputs?.[inputName];
+  const outputSpec = spec.outputs?.[patchesName];
+  if (!inputSpec || !outputSpec) {
+    throw new Error('Decoder worker requires static decoder input and output specs.');
+  }
+  if (inputSpec.dtype !== 'float32' || outputSpec.dtype !== 'float32') {
+    throw new Error(
+      `Decoder worker currently supports float32 tensors only, got ${inputSpec.dtype}/${outputSpec.dtype}.`,
+    );
+  }
+  const workerSource = `
+let ort = null;
+let session = null;
+let inputName = null;
+let outputName = null;
+let inputDims = null;
+let outputDims = null;
+
+self.onmessage = async (event) => {
+  const message = event.data;
+  try {
+    if (message.type === 'setup') {
+      ort = await import(message.ortModule);
+      ort.env.wasm ??= {};
+      ort.env.wasm.wasmPaths = message.wasmPaths;
+      if (message.wasmNumThreads != null) {
+        ort.env.wasm.numThreads = message.wasmNumThreads;
+      }
+      inputName = message.inputName;
+      outputName = message.outputName;
+      inputDims = message.inputDims;
+      outputDims = message.outputDims;
+      session = await ort.InferenceSession.create(new Uint8Array(message.modelBytes), {
+        executionProviders: ['wasm'],
+        graphOptimizationLevel: message.graphOptimizationLevel,
+      });
+      self.postMessage({ id: message.id, ok: true });
+      return;
+    }
+    if (!session) throw new Error('decoder worker has not been set up');
+    const input = new ort.Tensor('float32', new Float32Array(message.inputBuffer), inputDims);
+    const outputs = await session.run({ [inputName]: input }, [outputName]);
+    const output = outputs[outputName];
+    const outputBuffer = output.data.buffer.slice(
+      output.data.byteOffset,
+      output.data.byteOffset + output.data.byteLength,
+    );
+    self.postMessage(
+      {
+        id: message.id,
+        ok: true,
+        outputBuffer,
+        outputDims,
+      },
+      [outputBuffer],
+    );
+  } catch (error) {
+    self.postMessage({
+      id: message.id,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+`;
+  const workerUrl = URL.createObjectURL(
+    new Blob([workerSource], { type: 'text/javascript; charset=utf-8' }),
+  );
+  const worker = new Worker(workerUrl, { type: 'module' });
+  let nextId = 0;
+  const pending = new Map();
+  worker.onmessage = (event) => {
+    const { id, ok, error, ...result } = event.data;
+    const callbacks = pending.get(id);
+    if (!callbacks) return;
+    pending.delete(id);
+    if (ok) callbacks.resolve(result);
+    else callbacks.reject(new Error(error || 'decoder worker failed'));
+  };
+  worker.onerror = (event) => {
+    for (const callbacks of pending.values()) {
+      callbacks.reject(new Error(event.message || 'decoder worker failed'));
+    }
+    pending.clear();
+  };
+  const request = (message, transfer = []) =>
+    new Promise((resolve, reject) => {
+      const id = nextId;
+      nextId += 1;
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ id, ...message }, transfer);
+    });
+  const modelBuffer = modelBytes.buffer.slice(
+    modelBytes.byteOffset,
+    modelBytes.byteOffset + modelBytes.byteLength,
+  );
+  await request(
+    {
+      type: 'setup',
+      ortModule: ORT_MODULE_URL,
+      wasmPaths: ORT_WASM_BASE_URL,
+      wasmNumThreads: decoderWorkerNumThreads,
+      modelBytes: modelBuffer,
+      graphOptimizationLevel,
+      inputName,
+      outputName: patchesName,
+      inputDims: inputSpec.shape,
+      outputDims: outputSpec.shape,
+    },
+    [modelBuffer],
+  );
+  return {
+    release() {
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+    },
+    async run(inputTensor) {
+      const view = inputTensor.data;
+      if (!(view?.buffer instanceof ArrayBuffer)) {
+        throw new Error('Decoder worker requires CPU ArrayBuffer input data.');
+      }
+      const inputBuffer = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+      const result: any = await request({ type: 'run', inputBuffer }, [inputBuffer]);
+      return {
+        [patchesName]: new ort.Tensor('float32', new Float32Array(result.outputBuffer), result.outputDims),
+      };
+    },
+  };
+}
+
 function cloneCpuTensor(tensor) {
   const ArrayType = dtypeArray(tensor.type);
   return new ort.Tensor(tensor.type, new ArrayType(tensor.data), [...tensor.dims]);
@@ -2071,6 +2768,31 @@ async function runDecoder(runtime, zTensor) {
       [runtime.names.patches],
     );
   }
+}
+
+function decoderInputTensorFromZ(runtime, zTensor) {
+  if (runtime.specs.decoder.inputs?.z) return zTensor;
+  return latentTensorFromZ(zTensor);
+}
+
+async function runWorkerDecoder(runtime, zTensor) {
+  if (!runtime.decoderWorker) return null;
+  return runtime.decoderWorker.run(decoderInputTensorFromZ(runtime, zTensor));
+}
+
+function renderDecoderOutputs(runtime, decoderOutputs) {
+  const patches = decoderOutputs[runtime.names.patches];
+  renderPatches(runtime, patches);
+  disposeGpuTensorUnlessPinnedAfterSubmittedWork(runtime.device, patches, runtime.pinnedOutputTensors);
+}
+
+async function renderPendingDecoderFrame(runtime) {
+  if (!runtime.pendingDecoderFrame) return false;
+  const pending = runtime.pendingDecoderFrame;
+  runtime.pendingDecoderFrame = null;
+  renderDecoderOutputs(runtime, await pending.decoderOutputs);
+  disposeStepGpuTensor(pending.zOutput, pending.preserveStepOutputs);
+  return true;
 }
 
 async function ensureDecoderGraphCaptureSession(runtime) {
@@ -2271,12 +2993,14 @@ async function createRuntimeForBackend(backend, loaded) {
   let fullStepGraphCaptureSession = null;
   let decoderSession = null;
   let decoderGraphCaptureSession = null;
+  let cacheUpdater = null;
+  let decoderWorker = null;
   try {
     const stepNames = stepNamesForSpec(loaded.stepSpec);
     const contextLength =
       loaded.manifest.cache_contract?.context_length ??
       loaded.initialCacheManifest.arrays.k_cache.shape[3];
-    const initialCacheLength = loaded.initialLength.data[0];
+    const initialCacheLength = loaded.prefillSpec ? contextLength : loaded.initialLength.data[0];
     const fullStepNames = loaded.fullStepSpec ? stepNamesForSpec(loaded.fullStepSpec) : null;
     const skipStepRuntime =
       skipShortCacheStepWhenFull &&
@@ -2410,15 +3134,22 @@ async function createRuntimeForBackend(backend, loaded) {
     reuseFinalZOutputAsDecoderInput(graphCapture, loaded.stepSpec, stepNames, decoderInput);
     reuseFinalZOutputAsDecoderInput(fullGraphCapture, loaded.fullStepSpec, fullStepNames, decoderInput);
 
-    const cacheUpdater =
+    cacheUpdater =
       stepNames.cacheUpdate === 'entry'
         ? backend === 'webgpu'
           ? createEntryCacheUpdater(device, loaded.stepSpec, loaded.manifest)
-          : createCpuEntryCacheUpdater(loaded.stepSpec, loaded.manifest)
+          : typeof Worker === 'function'
+            ? createWorkerEntryCacheUpdater(loaded.stepSpec, loaded.manifest)
+            : createCpuEntryCacheUpdater(loaded.stepSpec, loaded.manifest)
+        : null;
+    decoderWorker =
+      backend === 'wasm' && decoderWorkerPipelineEnabled && typeof Worker === 'function'
+        ? await createWorkerDecoderRunner(loaded.decoderSpec, loaded.decoderModelBytes)
         : null;
 
     const loadedRuntime = {
       backend,
+      manifest: loaded.manifest,
       contextManifest: loaded.contextManifest,
       initialCacheManifest: loaded.initialCacheManifest,
       preprocessor: loaded.contextManifest.preprocessor,
@@ -2446,7 +3177,12 @@ async function createRuntimeForBackend(backend, loaded) {
         sampleNoise: loaded.stepSpec.inputs.sample_noise.dtype,
       },
       initialCache,
-      initialCacheSource: prefilledInitialCache ? 'prefill' : 'artifact',
+      initialCacheSource: prefilledInitialCache
+        ? 'prefill'
+        : loaded.prefillSkipReason
+          ? 'artifact-prefill-skipped'
+          : 'artifact',
+      prefillSkipReason: loaded.prefillSkipReason,
       contextLength,
       contextZ: loaded.contextZ,
       displayZ: loaded.displayZ,
@@ -2461,6 +3197,8 @@ async function createRuntimeForBackend(backend, loaded) {
       decoderInput,
       decoderGraphInput,
       decoderOutputFetches,
+      decoderWorker,
+      pendingDecoderFrame: null,
       stepOutputFetches,
       fullStepOutputFetches,
       decoderModelBytes: loaded.decoderModelBytes,
@@ -2488,6 +3226,8 @@ async function createRuntimeForBackend(backend, loaded) {
     elements.backend.textContent = `${backend}${graphCaptureLabel}`;
     return loadedRuntime;
   } catch (error) {
+    cacheUpdater?.release?.();
+    decoderWorker?.release?.();
     await Promise.all([
       releaseSession(stepSession),
       releaseSession(stepGraphCaptureSession),
@@ -2526,7 +3266,13 @@ async function loadRuntime() {
         ...(requestedBackend === 'wasm' ? [] : FULL_CACHE_STEP_EXPORT_FALLBACKS),
       ])
     : null;
-  const prefillSpec = prefillInitialCacheRequested
+  const prefillSkipReason = prefillInitialCacheRequested
+    ? paddedInitialPrefillSkipReason(contextManifest)
+    : null;
+  if (prefillSkipReason) {
+    recordLoadEvent(prefillSkipReason, 0);
+  }
+  const prefillSpec = prefillInitialCacheRequested && !prefillSkipReason
     ? findFirstExport(manifest, [
         manifest.demo_generation?.preferred_prefill_export,
         ...PREFILL_EXPORT_FALLBACKS,
@@ -2607,6 +3353,7 @@ async function loadRuntime() {
     fullStepModelBytes,
     prefillSpec,
     prefillModelBytes,
+    prefillSkipReason,
     decoderModelBytes,
   };
   let lastError = null;
@@ -2628,6 +3375,7 @@ async function loadRuntime() {
 async function resetDemo() {
   running = false;
   elements.start.textContent = 'Start';
+  runtime.pendingDecoderFrame = null;
   resetCacheFromInitialArtifacts(runtime);
   frameCount = 0;
   lastStatsUpdateTime = 0;
@@ -2636,19 +3384,18 @@ async function resetDemo() {
   elements.frameCount.textContent = '0';
   elements.latency.textContent = '-- ms';
   const prefixFrames = runtime.contextManifest.prefix_frames ?? 1;
-  const usePrefillPreview = runtime.initialCacheSource === 'prefill' && runtime.contextZ;
   const avoidGpuPreviewBeforeGraphCapture =
     browserProfile === 'safari' &&
     Boolean(runtime.patchRenderer) &&
     Boolean(runtime.graphCapture?.enabled || runtime.fullGraphCapture?.enabled);
-  const previewSource = usePrefillPreview ? runtime.contextZ : runtime.displayZ;
-  const previewFrameIndex = usePrefillPreview ? runtime.contextLength - 1 : prefixFrames - 1;
+  const previewSource = runtime.displayZ;
+  const previewFrameIndex = prefixFrames - 1;
   const previewTensor = contextFrameTensor(
     previewSource,
     previewFrameIndex,
     decoderInputDtype(runtime.specs.decoder),
   );
-  if (runtime.displayPixels && (!usePrefillPreview || avoidGpuPreviewBeforeGraphCapture)) {
+  if (runtime.displayPixels) {
     if (runtime.patchRenderer && !avoidGpuPreviewBeforeGraphCapture) {
       await renderLatent(previewTensor);
       renderImageDataPreviewOverlay(pixelTensorToImageData(runtime.displayPixels, prefixFrames - 1));
@@ -2675,7 +3422,26 @@ async function resetDemo() {
   );
 }
 
-async function generateFrame() {
+function recordGeneratedFrame(started) {
+  frameCount += 1;
+  statsFramesSinceUpdate += 1;
+  const elapsed = performance.now() - started;
+  const now = performance.now();
+  const statsWindowStart = lastStatsUpdateTime || lastFrameTime;
+  const shouldUpdateStats =
+    frameCount === 1 || now - statsWindowStart >= STATS_UPDATE_INTERVAL_MS;
+  lastFrameTime = now;
+  if (shouldUpdateStats) {
+    const fps = (statsFramesSinceUpdate * 1000) / Math.max(now - statsWindowStart, 1);
+    lastStatsUpdateTime = now;
+    statsFramesSinceUpdate = 0;
+    elements.frameCount.textContent = String(frameCount);
+    elements.latency.textContent = `${elapsed.toFixed(1)} ms`;
+    elements.fps.textContent = `${fps.toFixed(1)} fps`;
+  }
+}
+
+async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpdate?: boolean } = {}) {
   const started = performance.now();
   const cacheLengthBefore = runtime.cache.length.data[0];
   const useFullCacheStep =
@@ -2693,6 +3459,11 @@ async function generateFrame() {
     graphCapture: useFullCacheStep ? runtime.fullGraphCapture : runtime.graphCapture,
     outputFetches: useFullCacheStep ? runtime.fullStepOutputFetches : runtime.stepOutputFetches,
   };
+  const debugCacheBefore =
+    options.debugCacheUpdate && activeStep.names.cacheUpdate === 'entry'
+      ? await cloneCacheToCpuForDebug(runtime, runtime.cache)
+      : null;
+  let debugCacheUpdate = null;
   if (!activeStep.session) {
     throw new Error('Short-cache dynamics session was skipped, but the cache is not full.');
   }
@@ -2786,29 +3557,60 @@ async function generateFrame() {
     (usedGraphCaptureStep && activeStep.graphCapture?.outputFetches) || activeStep.outputFetches,
   );
   const zOutput = outputs[activeStep.names.finalZ];
+  const debugEntryOutputs =
+    debugCacheBefore && activeStep.names.cacheUpdate === 'entry'
+      ? {
+          k: await cloneTensorToCpuForDebug(runtime.device, outputs[activeStep.names.k]),
+          v: await cloneTensorToCpuForDebug(runtime.device, outputs[activeStep.names.v]),
+        }
+      : null;
+  const entryCacheUpdate =
+    activeStep.names.cacheUpdate === 'entry' && runtime.cacheUpdater?.async
+      ? runtime.cacheUpdater.update(
+          runtime.cache,
+          outputs[activeStep.names.k],
+          outputs[activeStep.names.v],
+          runtime.cache.length,
+        )
+      : null;
 
-  const decoderOutputs = await runDecoder(runtime, zOutput);
-  disposeStepGpuTensor(zOutput, preserveStepOutputs);
-
-  const patches = decoderOutputs[runtime.names.patches];
-  renderPatches(runtime, patches);
-  disposeGpuTensorUnlessPinnedAfterSubmittedWork(runtime.device, patches, runtime.pinnedOutputTensors);
+  const pipelineDecoder = Boolean(options.pipelineDecoder && runtime.decoderWorker);
+  const pipelinedDecoderOutputs = pipelineDecoder ? runWorkerDecoder(runtime, zOutput) : null;
+  if (!pipelineDecoder) {
+    const decoderOutputs = await runDecoder(runtime, zOutput);
+    disposeStepGpuTensor(zOutput, preserveStepOutputs);
+    renderDecoderOutputs(runtime, decoderOutputs);
+  }
 
   if (activeStep.names.cacheUpdate === 'entry') {
     if (!runtime.cacheUpdater) {
       throw new Error('Entry-cache dynamics output requires a cache updater.');
     }
-    runtime.cacheUpdater.update(
-      runtime.cache,
-      outputs[activeStep.names.k],
-      outputs[activeStep.names.v],
-      runtime.cache.length,
-    );
+    if (entryCacheUpdate) {
+      runtime.cache = await entryCacheUpdate;
+    } else {
+      runtime.cacheUpdater.update(
+        runtime.cache,
+        outputs[activeStep.names.k],
+        outputs[activeStep.names.v],
+        runtime.cache.length,
+      );
+    }
     if (cacheUpdateFenceEnabled && runtime.device) await runtime.device.queue.onSubmittedWorkDone();
     if (activeStep.names.length) {
       runtime.cache.length = outputs[activeStep.names.length];
     } else {
       advanceCacheLength(runtime.cache.length, runtime.contextLength);
+    }
+    if (debugCacheBefore && debugEntryOutputs) {
+      debugCacheUpdate = await compareEntryCacheUpdateForDebug({
+        currentRuntime: runtime,
+        stepSpec: activeStep.spec,
+        beforeCache: debugCacheBefore,
+        afterCache: await cloneCacheToCpuForDebug(runtime, runtime.cache),
+        kEntry: debugEntryOutputs.k,
+        vEntry: debugEntryOutputs.v,
+      });
     }
     if (!preserveStepOutputs) {
       disposeGpuTensorAfterSubmittedWork(runtime.device, outputs[activeStep.names.k]);
@@ -2826,32 +3628,29 @@ async function generateFrame() {
       advanceCacheLength(runtime.cache.length, runtime.contextLength);
     }
     disposeGpuTensorAfterSubmittedWork(runtime.device, previousCache.k);
-    disposeGpuTensorAfterSubmittedWork(runtime.device, previousCache.v);
+      disposeGpuTensorAfterSubmittedWork(runtime.device, previousCache.v);
   }
 
-  frameCount += 1;
-  statsFramesSinceUpdate += 1;
-  const elapsed = performance.now() - started;
-  const now = performance.now();
-  const statsWindowStart = lastStatsUpdateTime || lastFrameTime;
-  const shouldUpdateStats =
-    frameCount === 1 || now - statsWindowStart >= STATS_UPDATE_INTERVAL_MS;
-  lastFrameTime = now;
-  if (shouldUpdateStats) {
-    const fps = (statsFramesSinceUpdate * 1000) / Math.max(now - statsWindowStart, 1);
-    lastStatsUpdateTime = now;
-    statsFramesSinceUpdate = 0;
-    elements.frameCount.textContent = String(frameCount);
-    elements.latency.textContent = `${elapsed.toFixed(1)} ms`;
-    elements.fps.textContent = `${fps.toFixed(1)} fps`;
+  if (pipelineDecoder) {
+    const rendered = await renderPendingDecoderFrame(runtime);
+    runtime.pendingDecoderFrame = {
+      decoderOutputs: pipelinedDecoderOutputs,
+      zOutput,
+      preserveStepOutputs,
+    };
+    if (rendered) recordGeneratedFrame(started);
+    return debugCacheUpdate;
   }
+
+  recordGeneratedFrame(started);
+  return debugCacheUpdate;
 }
 
 async function streamLoop() {
   if (!running) return;
   const frameStarted = performance.now();
   try {
-    await generateFrame();
+    await generateFrame({ pipelineDecoder: Boolean(runtime.decoderWorker) });
   } catch (error) {
     running = false;
     elements.start.textContent = 'Start';
@@ -2939,7 +3738,10 @@ window.visionaryDemoDebug = {
   get loadEvents() {
     return loadEvents;
   },
-  async generateFrame() {
-    await generateFrame();
+  async generateFrame(options = {}) {
+    return generateFrame(options);
+  },
+  async cacheSlotStats() {
+    return cacheSlotStatsForDebug();
   },
 };

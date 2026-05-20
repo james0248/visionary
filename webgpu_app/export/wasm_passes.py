@@ -188,6 +188,7 @@ def run_wasm_passes(
     }
     wasm_mha_artifacts = {
         names["dynamics_cached_sample_append_context_slide_full_cache"],
+        names["dynamics_cached_sample_append_context_slide_entry"],
     }
     wasm_mha_decoder_artifacts = {
         names["tokenizer_decoder_step"],
@@ -210,6 +211,48 @@ def run_wasm_passes(
         else rewrites["fuse_mha_attention"](path, enabled=False)
         for name, path in exported_paths.items()
     }
+    attention_einsum_matmul_artifacts = {
+        names["tokenizer_decoder_step"],
+        names["tokenizer_decode_z_step"],
+        names["dynamics_cached_sample_append_context_slide_entry"],
+    }
+    attention_einsum_matmul_rewrite = {
+        name: rewrites["attention_einsum_matmul"](
+            path, enabled=name in attention_einsum_matmul_artifacts
+        )
+        for name, path in exported_paths.items()
+    }
+    static_head_merge_artifacts = {
+        names["tokenizer_decoder_step"],
+        names["tokenizer_decode_z_step"],
+        names["dynamics_cached_sample_append_context_slide_entry"],
+    }
+    static_head_merge_wasm_rewrite = {
+        name: rewrites["static_head_merge_wasm"](
+            path, enabled=name in static_head_merge_artifacts
+        )
+        for name, path in exported_paths.items()
+    }
+    singleton_key_attention_artifacts = {
+        names["tokenizer_decoder_step"],
+        names["tokenizer_decode_z_step"],
+    }
+    singleton_key_attention_wasm_rewrite = {
+        name: rewrites["singleton_key_attention_wasm"](
+            path, enabled=name in singleton_key_attention_artifacts
+        )
+        for name, path in exported_paths.items()
+    }
+    decoder_rmsnorm_primitive_artifacts = {
+        names["tokenizer_decoder_step"],
+        names["tokenizer_decode_z_step"],
+    }
+    decoder_rmsnorm_primitive_wasm_rewrite = {
+        name: rewrites["decoder_rmsnorm_primitive_wasm"](
+            path, enabled=name in decoder_rmsnorm_primitive_artifacts
+        )
+        for name, path in exported_paths.items()
+    }
 
     return {
         "simplification": simplification,
@@ -228,6 +271,10 @@ def run_wasm_passes(
         "rotary_embedding_rewrite": rotary_embedding_rewrite,
         "fused_gqa_attention_rewrite": fused_gqa_attention_rewrite,
         "fused_mha_attention_rewrite": fused_mha_attention_rewrite,
+        "attention_einsum_matmul_rewrite": attention_einsum_matmul_rewrite,
+        "static_head_merge_wasm_rewrite": static_head_merge_wasm_rewrite,
+        "singleton_key_attention_wasm_rewrite": singleton_key_attention_wasm_rewrite,
+        "decoder_rmsnorm_primitive_wasm_rewrite": decoder_rmsnorm_primitive_wasm_rewrite,
         "squeeze_concat_rewrite": squeeze_concat_rewrite,
         "unsqueeze_transpose_squeeze_rewrite": unsqueeze_transpose_squeeze_rewrite,
         "attention_scale_folding": attention_scale_folding,

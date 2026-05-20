@@ -18,8 +18,13 @@ export {};
 let ASSET_DIR = '/dream_arcade_assets/breakout';
 let MANIFEST_URL = `${ASSET_DIR}/breakout_onnx_manifest.json`;
 const moduleParams = new URLSearchParams(window.location.search);
+const requestedProvider = moduleParams.get('provider') ?? 'webgpu';
+const DEFAULT_WASM_NUM_THREADS = 4;
 const ORT_MODULE_URL =
-  moduleParams.get('ortModule') ?? '/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs';
+  moduleParams.get('ortModule') ??
+  (requestedProvider === 'wasm'
+    ? '/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs'
+    : '/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs');
 const CAPTURE_CONSOLE = ['1', 'true', 'yes', 'on'].includes(
   (moduleParams.get('captureConsole') ?? '').toLowerCase(),
 );
@@ -49,7 +54,11 @@ const ort = await import(ORT_MODULE_URL);
 const wasmNumThreadsParam = moduleParams.get('wasmNumThreads');
 const parsedWasmNumThreads = Number(wasmNumThreadsParam);
 const WASM_NUM_THREADS =
-  wasmNumThreadsParam == null || !Number.isInteger(parsedWasmNumThreads) || parsedWasmNumThreads <= 0
+  wasmNumThreadsParam == null
+    ? requestedProvider === 'wasm'
+      ? DEFAULT_WASM_NUM_THREADS
+      : null
+    : !Number.isInteger(parsedWasmNumThreads) || parsedWasmNumThreads <= 0
     ? null
     : parsedWasmNumThreads;
 configureOrt(ort, {
@@ -117,6 +126,9 @@ const DEFAULT_CONFIG = {
   primeGraphCapture: false,
   preallocateStepOutputs: true,
   preallocateDecoderOutputs: true,
+  workerCacheUpdate: false,
+  decoderWorkerPipeline: false,
+  decoderWorkerNumThreads: 3,
   ortModule: ORT_MODULE_URL,
   wasmNumThreads: WASM_NUM_THREADS,
   validateOutput: true,
@@ -149,13 +161,14 @@ function parseConfig() {
   const browserProfile =
     requestedBrowserProfile === 'auto' ? detectedBrowserProfile : requestedBrowserProfile;
   const browserDefaults = browserProfileDefaults(browserProfile);
+  const provider = params.get('provider') ?? DEFAULT_CONFIG.provider;
   const graphCapture = booleanParam(
     'graphCapture',
     browserDefaults.graphCapture ?? DEFAULT_CONFIG.graphCapture,
   );
   return {
     mode: params.get('mode') ?? DEFAULT_CONFIG.mode,
-    provider: params.get('provider') ?? DEFAULT_CONFIG.provider,
+    provider,
     warmupRuns: Number(
       params.get('warmupRuns') ?? browserDefaults.warmupRuns ?? DEFAULT_CONFIG.warmupRuns,
     ),
@@ -176,10 +189,12 @@ function parseConfig() {
     graphOptimizationLevel:
       params.get('graphOptimizationLevel') ??
       browserDefaults.graphOptimizationLevel ??
-      DEFAULT_CONFIG.graphOptimizationLevel,
+      (provider === 'wasm' ? 'all' : DEFAULT_CONFIG.graphOptimizationLevel),
     prefillArtifact: params.get('prefillArtifact') ?? DEFAULT_CONFIG.prefillArtifact,
     stepArtifact:
-      params.get('stepArtifact') ?? browserDefaults.stepArtifact ?? DEFAULT_CONFIG.stepArtifact,
+      params.get('stepArtifact') ??
+      browserDefaults.stepArtifact ??
+      (provider === 'wasm' ? null : DEFAULT_CONFIG.stepArtifact),
     decoderArtifact: params.get('decoderArtifact') ?? DEFAULT_CONFIG.decoderArtifact,
     assetBase: params.get('assetBase') ?? DEFAULT_CONFIG.assetBase,
     browserProfile,
@@ -211,6 +226,17 @@ function parseConfig() {
     preallocateDecoderOutputs: booleanParam(
       'preallocateDecoderOutputs',
       DEFAULT_CONFIG.preallocateDecoderOutputs,
+    ),
+    workerCacheUpdate: booleanParam(
+      'workerCacheUpdate',
+      provider === 'wasm' ? true : DEFAULT_CONFIG.workerCacheUpdate,
+    ),
+    decoderWorkerPipeline: booleanParam(
+      'decoderWorkerPipeline',
+      provider === 'wasm' ? true : DEFAULT_CONFIG.decoderWorkerPipeline,
+    ),
+    decoderWorkerNumThreads: Number(
+      params.get('decoderWorkerNumThreads') ?? DEFAULT_CONFIG.decoderWorkerNumThreads,
     ),
     ortModule: ORT_MODULE_URL,
     wasmNumThreads: WASM_NUM_THREADS,
@@ -757,7 +783,12 @@ function resolveDemoSpecs(manifest, config = DEFAULT_CONFIG) {
   const prefillNames = config.prefillArtifact
     ? [config.prefillArtifact, ...REQUIRED_ARTIFACTS.prefill]
     : REQUIRED_ARTIFACTS.prefill;
-  const manifestStepNames = [manifest.demo_generation?.preferred_step_export].filter(Boolean);
+  const manifestStepNames = [
+    config.provider === 'wasm'
+      ? manifest.demo_generation?.preferred_full_cache_step_export_wasm
+      : null,
+    manifest.demo_generation?.preferred_step_export,
+  ].filter(Boolean);
   const manifestDecoderNames = [manifest.demo_generation?.preferred_decoder_export].filter(Boolean);
   const stepNames = config.stepArtifact
     ? [config.stepArtifact, ...REQUIRED_ARTIFACTS.step]
@@ -1464,6 +1495,109 @@ function createCpuEntryCacheUpdater(spec, manifest) {
       const vCache = cache.v.data;
       const kEntryData = kEntry.data;
       const vEntryData = vEntry.data;
+      if (cacheLayout === 'layer_batch_token_time_head_dim') {
+        const timeStride = heads * headDim;
+        const tokenStride = contextLength * timeStride;
+        const entryTokenStride = heads * headDim;
+        for (let layer = 0; layer < layers; layer += 1) {
+          for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+            for (let token = 0; token < tokens; token += 1) {
+              const cacheTokenBase =
+                ((layer * batch + batchIndex) * tokens + token) * tokenStride;
+              const entryTokenBase =
+                ((layer * batch + batchIndex) * tokens + token) * entryTokenStride;
+              for (let head = 0; head < heads; head += 1) {
+                const cacheHeadBase = cacheTokenBase + head * headDim;
+                const entryHeadBase = entryTokenBase + head * headDim;
+                for (let dim = 0; dim < halfHeadDim; dim += 1) {
+                  const cosTheta = cosValues[dim];
+                  const sinTheta = sinValues[dim];
+                  let dstLeft = cacheHeadBase + dim;
+                  let dstRight = cacheHeadBase + halfHeadDim + dim;
+                  let srcLeft = dstLeft + timeStride;
+                  let srcRight = dstRight + timeStride;
+                  for (let time = 0; time < contextLength - 1; time += 1) {
+                    const left = kCache[srcLeft];
+                    const right = kCache[srcRight];
+                    kCache[dstLeft] = left * cosTheta + right * sinTheta;
+                    kCache[dstRight] = right * cosTheta - left * sinTheta;
+                    dstLeft += timeStride;
+                    dstRight += timeStride;
+                    srcLeft += timeStride;
+                    srcRight += timeStride;
+                  }
+                  kCache[cacheHeadBase + (contextLength - 1) * timeStride + dim] =
+                    kEntryData[entryHeadBase + dim];
+                  kCache[
+                    cacheHeadBase + (contextLength - 1) * timeStride + halfHeadDim + dim
+                  ] = kEntryData[entryHeadBase + halfHeadDim + dim];
+                }
+              }
+              vCache.copyWithin(
+                cacheTokenBase,
+                cacheTokenBase + timeStride,
+                cacheTokenBase + tokenStride,
+              );
+              vCache.set(
+                vEntryData.subarray(entryTokenBase, entryTokenBase + entryTokenStride),
+                cacheTokenBase + tokenStride - timeStride,
+              );
+            }
+          }
+        }
+        return cache;
+      }
+      if (cacheLayout === 'layer_batch_token_head_time_dim') {
+        const headStride = contextLength * headDim;
+        const tokenStride = heads * headStride;
+        const entryTokenStride = heads * headDim;
+        for (let layer = 0; layer < layers; layer += 1) {
+          for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+            for (let token = 0; token < tokens; token += 1) {
+              const cacheTokenBase =
+                ((layer * batch + batchIndex) * tokens + token) * tokenStride;
+              const entryTokenBase =
+                ((layer * batch + batchIndex) * tokens + token) * entryTokenStride;
+              for (let head = 0; head < heads; head += 1) {
+                const cacheHeadBase = cacheTokenBase + head * headStride;
+                const entryHeadBase = entryTokenBase + head * headDim;
+                for (let dim = 0; dim < halfHeadDim; dim += 1) {
+                  const cosTheta = cosValues[dim];
+                  const sinTheta = sinValues[dim];
+                  let dstLeft = cacheHeadBase + dim;
+                  let dstRight = cacheHeadBase + halfHeadDim + dim;
+                  let srcLeft = dstLeft + headDim;
+                  let srcRight = dstRight + headDim;
+                  for (let time = 0; time < contextLength - 1; time += 1) {
+                    const left = kCache[srcLeft];
+                    const right = kCache[srcRight];
+                    kCache[dstLeft] = left * cosTheta + right * sinTheta;
+                    kCache[dstRight] = right * cosTheta - left * sinTheta;
+                    dstLeft += headDim;
+                    dstRight += headDim;
+                    srcLeft += headDim;
+                    srcRight += headDim;
+                  }
+                  kCache[cacheHeadBase + (contextLength - 1) * headDim + dim] =
+                    kEntryData[entryHeadBase + dim];
+                  kCache[cacheHeadBase + (contextLength - 1) * headDim + halfHeadDim + dim] =
+                    kEntryData[entryHeadBase + halfHeadDim + dim];
+                }
+                vCache.copyWithin(
+                  cacheHeadBase,
+                  cacheHeadBase + headDim,
+                  cacheHeadBase + headStride,
+                );
+                vCache.set(
+                  vEntryData.subarray(entryHeadBase, entryHeadBase + headDim),
+                  cacheHeadBase + headStride - headDim,
+                );
+              }
+            }
+          }
+        }
+        return cache;
+      }
       for (let layer = 0; layer < layers; layer += 1) {
         for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
           for (let token = 0; token < tokens; token += 1) {
@@ -1513,6 +1647,372 @@ function createCpuEntryCacheUpdater(spec, manifest) {
   };
 }
 
+function createWorkerEntryCacheUpdater(ortModule, spec, manifest) {
+  const cacheSpec = spec.inputs?.k_cache;
+  const entrySpec = spec.outputs?.candidate_k_entry;
+  if (!cacheSpec || !entrySpec) {
+    throw new Error('Entry-cache update requires k_cache input and candidate_k_entry output specs.');
+  }
+  if (cacheSpec.dtype !== 'float32' || entrySpec.dtype !== 'float32') {
+    throw new Error(
+      `Worker entry-cache update currently supports float32 caches only, got ${cacheSpec.dtype}/${entrySpec.dtype}.`,
+    );
+  }
+  const cacheLayout =
+    manifest.cache_contract?.tensors?.k_cache?.layout ?? 'layer_batch_token_time_head_dim';
+  let layers;
+  let batch;
+  let tokens;
+  let contextLength;
+  let heads;
+  let headDim;
+  if (cacheLayout === 'layer_batch_token_head_time_dim') {
+    [layers, batch, tokens, heads, contextLength, headDim] = cacheSpec.shape;
+  } else {
+    [layers, batch, tokens, contextLength, heads, headDim] = cacheSpec.shape;
+  }
+  const halfHeadDim = headDim / 2;
+  if (!Number.isInteger(halfHeadDim)) {
+    throw new Error(`Entry-cache update requires an even head_dim, got ${headDim}.`);
+  }
+  const ropeBase = Number(manifest.dynamics?.rope_base ?? manifest.dynamics?.base ?? 10000);
+  const cosValues = Array.from({ length: halfHeadDim }, (_, dim) => {
+    const theta = 1 / (ropeBase ** (dim / halfHeadDim));
+    return Math.cos(theta);
+  });
+  const sinValues = Array.from({ length: halfHeadDim }, (_, dim) => {
+    const theta = 1 / (ropeBase ** (dim / halfHeadDim));
+    return Math.sin(theta);
+  });
+  const workerSource = `
+const LAYERS = ${layers};
+const BATCH = ${batch};
+const TOKENS = ${tokens};
+const CONTEXT = ${contextLength};
+const HEADS = ${heads};
+const HEAD_DIM = ${headDim};
+const HALF_HEAD_DIM = ${halfHeadDim};
+const CACHE_LAYOUT = ${JSON.stringify(cacheLayout)};
+const cosValues = new Float32Array(${JSON.stringify(cosValues)});
+const sinValues = new Float32Array(${JSON.stringify(sinValues)});
+
+function updateTimeHead(kCache, vCache, kEntryData, vEntryData) {
+  const timeStride = HEADS * HEAD_DIM;
+  const tokenStride = CONTEXT * timeStride;
+  const entryTokenStride = HEADS * HEAD_DIM;
+  for (let layer = 0; layer < LAYERS; layer += 1) {
+    for (let batchIndex = 0; batchIndex < BATCH; batchIndex += 1) {
+      for (let token = 0; token < TOKENS; token += 1) {
+        const cacheTokenBase = ((layer * BATCH + batchIndex) * TOKENS + token) * tokenStride;
+        const entryTokenBase = ((layer * BATCH + batchIndex) * TOKENS + token) * entryTokenStride;
+        for (let head = 0; head < HEADS; head += 1) {
+          const cacheHeadBase = cacheTokenBase + head * HEAD_DIM;
+          const entryHeadBase = entryTokenBase + head * HEAD_DIM;
+          for (let dim = 0; dim < HALF_HEAD_DIM; dim += 1) {
+            const cosTheta = cosValues[dim];
+            const sinTheta = sinValues[dim];
+            let dstLeft = cacheHeadBase + dim;
+            let dstRight = cacheHeadBase + HALF_HEAD_DIM + dim;
+            let srcLeft = dstLeft + timeStride;
+            let srcRight = dstRight + timeStride;
+            for (let time = 0; time < CONTEXT - 1; time += 1) {
+              const left = kCache[srcLeft];
+              const right = kCache[srcRight];
+              kCache[dstLeft] = left * cosTheta + right * sinTheta;
+              kCache[dstRight] = right * cosTheta - left * sinTheta;
+              dstLeft += timeStride;
+              dstRight += timeStride;
+              srcLeft += timeStride;
+              srcRight += timeStride;
+            }
+            kCache[cacheHeadBase + (CONTEXT - 1) * timeStride + dim] =
+              kEntryData[entryHeadBase + dim];
+            kCache[cacheHeadBase + (CONTEXT - 1) * timeStride + HALF_HEAD_DIM + dim] =
+              kEntryData[entryHeadBase + HALF_HEAD_DIM + dim];
+          }
+        }
+        vCache.copyWithin(cacheTokenBase, cacheTokenBase + timeStride, cacheTokenBase + tokenStride);
+        vCache.set(
+          vEntryData.subarray(entryTokenBase, entryTokenBase + entryTokenStride),
+          cacheTokenBase + tokenStride - timeStride,
+        );
+      }
+    }
+  }
+}
+
+function updateHeadTime(kCache, vCache, kEntryData, vEntryData) {
+  const headStride = CONTEXT * HEAD_DIM;
+  const tokenStride = HEADS * headStride;
+  const entryTokenStride = HEADS * HEAD_DIM;
+  for (let layer = 0; layer < LAYERS; layer += 1) {
+    for (let batchIndex = 0; batchIndex < BATCH; batchIndex += 1) {
+      for (let token = 0; token < TOKENS; token += 1) {
+        const cacheTokenBase = ((layer * BATCH + batchIndex) * TOKENS + token) * tokenStride;
+        const entryTokenBase = ((layer * BATCH + batchIndex) * TOKENS + token) * entryTokenStride;
+        for (let head = 0; head < HEADS; head += 1) {
+          const cacheHeadBase = cacheTokenBase + head * headStride;
+          const entryHeadBase = entryTokenBase + head * HEAD_DIM;
+          for (let dim = 0; dim < HALF_HEAD_DIM; dim += 1) {
+            const cosTheta = cosValues[dim];
+            const sinTheta = sinValues[dim];
+            let dstLeft = cacheHeadBase + dim;
+            let dstRight = cacheHeadBase + HALF_HEAD_DIM + dim;
+            let srcLeft = dstLeft + HEAD_DIM;
+            let srcRight = dstRight + HEAD_DIM;
+            for (let time = 0; time < CONTEXT - 1; time += 1) {
+              const left = kCache[srcLeft];
+              const right = kCache[srcRight];
+              kCache[dstLeft] = left * cosTheta + right * sinTheta;
+              kCache[dstRight] = right * cosTheta - left * sinTheta;
+              dstLeft += HEAD_DIM;
+              dstRight += HEAD_DIM;
+              srcLeft += HEAD_DIM;
+              srcRight += HEAD_DIM;
+            }
+            kCache[cacheHeadBase + (CONTEXT - 1) * HEAD_DIM + dim] =
+              kEntryData[entryHeadBase + dim];
+            kCache[cacheHeadBase + (CONTEXT - 1) * HEAD_DIM + HALF_HEAD_DIM + dim] =
+              kEntryData[entryHeadBase + HALF_HEAD_DIM + dim];
+          }
+          vCache.copyWithin(cacheHeadBase, cacheHeadBase + HEAD_DIM, cacheHeadBase + headStride);
+          vCache.set(
+            vEntryData.subarray(entryHeadBase, entryHeadBase + HEAD_DIM),
+            cacheHeadBase + headStride - HEAD_DIM,
+          );
+        }
+      }
+    }
+  }
+}
+
+self.onmessage = (event) => {
+  const { id, kCacheBuffer, vCacheBuffer, kEntryBuffer, vEntryBuffer } = event.data;
+  const kCache = new Float32Array(kCacheBuffer);
+  const vCache = new Float32Array(vCacheBuffer);
+  const kEntryData = new Float32Array(kEntryBuffer);
+  const vEntryData = new Float32Array(vEntryBuffer);
+  if (CACHE_LAYOUT === 'layer_batch_token_head_time_dim') {
+    updateHeadTime(kCache, vCache, kEntryData, vEntryData);
+  } else {
+    updateTimeHead(kCache, vCache, kEntryData, vEntryData);
+  }
+  self.postMessage({ id, kCacheBuffer, vCacheBuffer }, [kCacheBuffer, vCacheBuffer]);
+};
+`;
+  const workerUrl = URL.createObjectURL(
+    new Blob([workerSource], { type: 'text/javascript; charset=utf-8' }),
+  );
+  const worker = new Worker(workerUrl);
+  let nextId = 0;
+  const pending = new Map();
+  worker.onmessage = (event) => {
+    const { id, kCacheBuffer, vCacheBuffer } = event.data;
+    const callbacks = pending.get(id);
+    if (!callbacks) return;
+    pending.delete(id);
+    callbacks.resolve({ kCacheBuffer, vCacheBuffer });
+  };
+  worker.onerror = (event) => {
+    for (const callbacks of pending.values()) {
+      callbacks.reject(new Error(event.message || 'worker cache update failed'));
+    }
+    pending.clear();
+  };
+  const fullBufferView = (tensor, label) => {
+    const view = tensor.data;
+    if (!(view?.buffer instanceof ArrayBuffer)) {
+      throw new Error(`Worker cache update requires transferable ArrayBuffer for ${label}.`);
+    }
+    if (view.byteOffset !== 0 || view.byteLength !== view.buffer.byteLength) {
+      throw new Error(`Worker cache update requires a full-buffer view for ${label}.`);
+    }
+    return view.buffer;
+  };
+  const copiedBufferView = (tensor, label) => {
+    const view = tensor.data;
+    if (!(view?.buffer instanceof ArrayBuffer)) {
+      throw new Error(`Worker cache update requires ArrayBuffer data for ${label}.`);
+    }
+    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+  };
+  return {
+    kind: 'worker_inplace_slide_rebase_entry',
+    async: true,
+    rope_base: ropeBase,
+    cache_layout: cacheLayout,
+    cache_shape: cacheSpec.shape,
+    entry_shape: entrySpec.shape,
+    async update(cache, kEntry, vEntry) {
+      const id = nextId;
+      nextId += 1;
+      const kCacheBuffer = fullBufferView(cache.k, 'k_cache');
+      const vCacheBuffer = fullBufferView(cache.v, 'v_cache');
+      const kEntryBuffer = copiedBufferView(kEntry, 'candidate_k_entry');
+      const vEntryBuffer = copiedBufferView(vEntry, 'candidate_v_entry');
+      const result = await new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        worker.postMessage(
+          { id, kCacheBuffer, vCacheBuffer, kEntryBuffer, vEntryBuffer },
+          [kCacheBuffer, vCacheBuffer, kEntryBuffer, vEntryBuffer],
+        );
+      });
+      return {
+        k: new ortModule.Tensor('float32', new Float32Array(result.kCacheBuffer), cache.k.dims),
+        v: new ortModule.Tensor('float32', new Float32Array(result.vCacheBuffer), cache.v.dims),
+        length: cache.length,
+      };
+    },
+  };
+}
+
+async function createWorkerDecoderRunner(spec, config) {
+  const inputName = decoderInputName(spec);
+  const outputName = decoderOutputName(spec);
+  const inputSpec = spec.inputs?.[inputName];
+  const outputSpec = spec.outputs?.[outputName];
+  if (!inputSpec || !outputSpec) {
+    throw new Error('Decoder worker requires static decoder input and output specs.');
+  }
+  if (inputSpec.dtype !== 'float32' || outputSpec.dtype !== 'float32') {
+    throw new Error(
+      `Decoder worker currently supports float32 tensors only, got ${inputSpec.dtype}/${outputSpec.dtype}.`,
+    );
+  }
+  const workerSource = `
+let ort = null;
+let session = null;
+let inputName = null;
+let outputName = null;
+let inputDims = null;
+let outputDims = null;
+
+self.onmessage = async (event) => {
+  const message = event.data;
+  try {
+    if (message.type === 'setup') {
+      ort = await import(message.ortModule);
+      ort.env.wasm ??= {};
+      ort.env.wasm.wasmPaths = message.wasmPaths;
+      if (message.wasmNumThreads != null) {
+        ort.env.wasm.numThreads = message.wasmNumThreads;
+      }
+      inputName = message.inputName;
+      outputName = message.outputName;
+      inputDims = message.inputDims;
+      outputDims = message.outputDims;
+      session = await ort.InferenceSession.create(message.modelUrl, {
+        executionProviders: ['wasm'],
+        externalData: message.externalData,
+        graphOptimizationLevel: message.graphOptimizationLevel,
+      });
+      self.postMessage({ id: message.id, ok: true });
+      return;
+    }
+    if (!session) throw new Error('decoder worker has not been set up');
+    const started = performance.now();
+    const input = new ort.Tensor('float32', new Float32Array(message.inputBuffer), inputDims);
+    const outputs = await session.run({ [inputName]: input }, [outputName]);
+    const output = outputs[outputName];
+    const elapsedMs = performance.now() - started;
+    const outputBuffer = output.data.buffer.slice(
+      output.data.byteOffset,
+      output.data.byteOffset + output.data.byteLength,
+    );
+    self.postMessage(
+      {
+        id: message.id,
+        ok: true,
+        elapsedMs,
+        outputBuffer,
+        outputDims,
+      },
+      [outputBuffer],
+    );
+  } catch (error) {
+    self.postMessage({
+      id: message.id,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+`;
+  const workerUrl = URL.createObjectURL(
+    new Blob([workerSource], { type: 'text/javascript; charset=utf-8' }),
+  );
+  const worker = new Worker(workerUrl, { type: 'module' });
+  let nextId = 0;
+  const pending = new Map();
+  worker.onmessage = (event) => {
+    const { id, ok, error, ...result } = event.data;
+    const callbacks = pending.get(id);
+    if (!callbacks) return;
+    pending.delete(id);
+    if (ok) callbacks.resolve(result);
+    else callbacks.reject(new Error(error || 'decoder worker failed'));
+  };
+  worker.onerror = (event) => {
+    for (const callbacks of pending.values()) {
+      callbacks.reject(new Error(event.message || 'decoder worker failed'));
+    }
+    pending.clear();
+  };
+  const request = (message, transfer = []) =>
+    new Promise((resolve, reject) => {
+      const id = nextId;
+      nextId += 1;
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ id, ...message }, transfer);
+    });
+  const decoderWorkerNumThreads =
+    Number.isInteger(config.decoderWorkerNumThreads) && config.decoderWorkerNumThreads > 0
+      ? config.decoderWorkerNumThreads
+      : null;
+  await request({
+    type: 'setup',
+    ortModule: new URL(ORT_MODULE_URL, window.location.href).href,
+    wasmPaths: new URL('/node_modules/onnxruntime-web/dist/', window.location.href).href,
+    wasmNumThreads: decoderWorkerNumThreads,
+    modelUrl: new URL(`${ASSET_DIR}/${spec.path}`, window.location.href).href,
+    externalData: externalDataForSpec(spec).map((entry) => ({
+      ...entry,
+      data: new URL(entry.data, window.location.href).href,
+    })),
+    graphOptimizationLevel: config.graphOptimizationLevel,
+    inputName,
+    outputName,
+    inputDims: inputSpec.shape,
+    outputDims: outputSpec.shape,
+  });
+  return {
+    worker: true,
+    num_threads: decoderWorkerNumThreads,
+    release() {
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+    },
+    async run(latent) {
+      const view = latent.data;
+      if (!(view?.buffer instanceof ArrayBuffer)) {
+        throw new Error('Decoder worker requires CPU ArrayBuffer input data.');
+      }
+      const inputBuffer = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
+      const result = await request({ type: 'run', inputBuffer }, [inputBuffer]);
+      return {
+        elapsedMs: result.elapsedMs,
+        value: {
+          [outputName]: new ort.Tensor(
+            'float32',
+            new Float32Array(result.outputBuffer),
+            result.outputDims,
+          ),
+        },
+      };
+    },
+  };
+}
+
 function updateCacheFromEntries(updater, cache, outputs, names, pinned = [], device = null) {
   const kEntry = outputs[names.entryK];
   const vEntry = outputs[names.entryV];
@@ -1525,6 +2025,23 @@ function updateCacheFromEntries(updater, cache, outputs, names, pinned = [], dev
     );
   }
   const updatedCache = updater.update(cache, kEntry, vEntry);
+  disposeTensorUnlessPinnedAfterSubmittedWork(device, kEntry, pinned);
+  disposeTensorUnlessPinnedAfterSubmittedWork(device, vEntry, pinned);
+  return updatedCache;
+}
+
+async function updateCacheFromEntriesAsync(updater, cache, outputs, names, pinned = [], device = null) {
+  const kEntry = outputs[names.entryK];
+  const vEntry = outputs[names.entryV];
+  if (!kEntry || !vEntry) {
+    throw new Error('Entry-cache step did not return candidate_k_entry/candidate_v_entry.');
+  }
+  if (updater.kind?.startsWith('webgpu') && (kEntry.location !== 'gpu-buffer' || vEntry.location !== 'gpu-buffer')) {
+    throw new Error(
+      `Entry-cache update requires GPU entry tensors, got ${kEntry.location}/${vEntry.location}.`,
+    );
+  }
+  const updatedCache = await updater.update(cache, kEntry, vEntry);
   disposeTensorUnlessPinnedAfterSubmittedWork(device, kEntry, pinned);
   disposeTensorUnlessPinnedAfterSubmittedWork(device, vEntry, pinned);
   return updatedCache;
@@ -1737,6 +2254,10 @@ async function runDemoBenchmark({ config, specs, manifest }) {
   const validationDecoder = config.validateOutput
     ? await createBenchSession('single_frame_decoder_validation', specs.decoder, config)
     : null;
+  const decoderWorker =
+    config.provider === 'wasm' && config.decoderWorkerPipeline
+      ? await createWorkerDecoderRunner(specs.decoder, config)
+      : null;
   const prefillFeeds = makeFeedsFromSpec(specs.prefill, 1000);
   const stepBaseFeeds = makeFeedsFromSpec(specs.step, 2000);
   const decoderBaseFeeds = makeFeedsFromSpec(specs.decoder, 3000);
@@ -1792,6 +2313,8 @@ async function runDemoBenchmark({ config, specs, manifest }) {
     usesEntryCacheStep
       ? gpuDevice
         ? createEntryCacheUpdater(gpuDevice, specs.step, manifest)
+        : config.workerCacheUpdate
+          ? createWorkerEntryCacheUpdater(ort, specs.step, manifest)
         : createCpuEntryCacheUpdater(specs.step, manifest)
       : null;
   if (usesEntryCacheStep && !entryCacheUpdater) {
@@ -1927,9 +2450,22 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       }
       currentZ = usesFusedSampleStep ? outputs[finalZName] : nextSampleZ(currentZ, predZ, sample);
     }
-    const oldCache = persistentCache;
-    persistentCache = candidateCache;
-    if (oldCache !== persistentCache) disposeCache(oldCache, graphCapturePinnedTensors);
+    const cacheUpdateTimed =
+      pendingEntryCacheOutputs && entryCacheUpdater?.async
+        ? timeAsync(() =>
+            updateCacheFromEntriesAsync(
+              entryCacheUpdater,
+              persistentCache,
+              pendingEntryCacheOutputs,
+              stepCacheNames,
+              graphCapturePinnedTensors,
+              gpuDevice,
+            ),
+          )
+        : null;
+    if (cacheUpdateTimed) {
+      pendingEntryCacheOutputs = null;
+    }
     const decoderInput = graphCaptureDecoderInput
       ? timeSync(() => {
           copyTensorToGpu(gpuDevice, currentZ, graphCaptureDecoderInput.tensor);
@@ -1938,12 +2474,13 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       : specs.decoder.inputs?.z
         ? currentZ
         : latentFromPredZ(currentZ);
-    const decoderOutputs = await decoder.session.run(
-      replaceDecoderLatent(decoderBaseFeeds, decoderInput),
-      decoderFetchArg,
-    );
-    if (pendingEntryCacheOutputs) {
-      candidateCache = updateCacheFromEntries(
+    const decoderOutputs = decoderWorker
+      ? (await decoderWorker.run(decoderInput)).value
+      : await decoder.session.run(replaceDecoderLatent(decoderBaseFeeds, decoderInput), decoderFetchArg);
+    if (cacheUpdateTimed) {
+      candidateCache = (await cacheUpdateTimed).value;
+    } else if (pendingEntryCacheOutputs) {
+      candidateCache = await updateCacheFromEntriesAsync(
         entryCacheUpdater,
         persistentCache,
         pendingEntryCacheOutputs,
@@ -1952,6 +2489,9 @@ async function runDemoBenchmark({ config, specs, manifest }) {
         gpuDevice,
       );
     }
+    const oldCache = persistentCache;
+    persistentCache = candidateCache;
+    if (oldCache !== persistentCache) disposeCache(oldCache, graphCapturePinnedTensors);
     disposeTensorUnlessPinnedAfterSubmittedWork(
       gpuDevice,
       decoderOutputs[decoderName],
@@ -1979,6 +2519,50 @@ async function runDemoBenchmark({ config, specs, manifest }) {
   const validationLatentHashes = [];
   let latestPredStats = null;
   let latestFrameStats = null;
+  let pendingDecoderFrame = null;
+  let lastDecoderDisplayTime = null;
+
+  const processPipelinedDecoderFrame = async (record) => {
+    const decoderTimed = await record.promise;
+    const displayTime = performance.now();
+    decoderFrameSamples.push(decoderTimed.elapsedMs);
+    streamingFrameSamples.push(
+      lastDecoderDisplayTime == null
+        ? displayTime - record.frameStart
+        : displayTime - lastDecoderDisplayTime,
+    );
+    lastDecoderDisplayTime = displayTime;
+
+    latestPredStats = record.predZ ? tensorSummary(record.predZ) : tensorSummary(record.finalZ);
+    const frameOutput = decoderTimed.value[decoderName];
+    if (!frameOutput) {
+      throw new Error(`Single-frame decoder did not return output ${decoderName}`);
+    }
+    latestFrameStats = tensorSummary(frameOutput);
+    if (
+      validationDecoder &&
+      validationFrameHashes.length < Math.max(1, Math.floor(config.validationFrames))
+    ) {
+      validationLatentHashes.push(await tensorContentHash(record.latent, gpuDevice));
+      validationFrameHashes.push(await tensorContentHash(frameOutput));
+    }
+    if (record.predZ) {
+      assertDims('cached_step.pred_z', record.predZ.dims, specs.step.outputs[predName].shape);
+    }
+    assertDims('cached_step.final_z', record.finalZ.dims, specs.step.outputs[finalZName].shape);
+    assertDims('single_frame_decoder.output', frameOutput.dims, specs.decoder.outputs[decoderName].shape);
+    disposeTensorUnlessPinnedAfterSubmittedWork(gpuDevice, frameOutput, graphCapturePinnedTensors);
+    if (usesFusedSampleStep) {
+      if (streamingInputZ && record.finalZ !== streamingInputZ) {
+        copyGpuTensor(gpuDevice, record.finalZ, streamingInputZ);
+        disposeTensorUnlessPinnedAfterSubmittedWork(gpuDevice, record.finalZ, graphCapturePinnedTensors);
+      }
+      if (streamingZ !== record.finalZ) {
+        disposeTensorUnlessPinnedAfterSubmittedWork(gpuDevice, streamingZ, graphCapturePinnedTensors);
+      }
+      streamingZ = streamingInputZ ?? record.finalZ;
+    }
+  };
 
   setStatus('demo benchmark: timed prefill');
   const timedPrefill = await timeAsync(() => prefill.session.run(prefillFeeds, prefillFetches));
@@ -2052,7 +2636,9 @@ async function runDemoBenchmark({ config, specs, manifest }) {
     if (decoder.graph_capture) {
       assertGraphCaptureGpuTensors('prime decoder graph capture', decoderFeeds, decoderFetchArg);
     }
-    const decoderOutputs = await decoder.session.run(decoderFeeds, decoderFetchArg);
+    const decoderOutputs = decoderWorker
+      ? (await decoderWorker.run(decoderInput)).value
+      : await decoder.session.run(decoderFeeds, decoderFetchArg);
     disposeTensorUnlessPinnedAfterSubmittedWork(
       gpuDevice,
       decoderOutputs[decoderName],
@@ -2164,6 +2750,22 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       targetForwardSamples.push(timed.elapsedMs);
     }
 
+    const cacheUpdateTimed =
+      pendingEntryCacheOutputs && entryCacheUpdater?.async
+        ? timeAsync(() =>
+            updateCacheFromEntriesAsync(
+              entryCacheUpdater,
+              persistentCache,
+              pendingEntryCacheOutputs,
+              stepCacheNames,
+              graphCapturePinnedTensors,
+              gpuDevice,
+            ),
+          )
+        : null;
+    if (cacheUpdateTimed) {
+      pendingEntryCacheOutputs = null;
+    }
     const packTimed = timeSync(() => {
       if (graphCaptureDecoderInput) {
         copyTensorToGpu(gpuDevice, currentZ, graphCaptureDecoderInput.tensor);
@@ -2171,6 +2773,43 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       }
       return specs.decoder.inputs?.z ? currentZ : latentFromPredZ(currentZ);
     });
+    if (decoderWorker) {
+      const decoderPromise = decoderWorker.run(packTimed.value);
+      const commitTimed = await timeAsync(async () => {
+        if (cacheUpdateTimed) {
+          candidateCache = (await cacheUpdateTimed).value;
+        }
+        if (pendingEntryCacheOutputs) {
+          candidateCache = await updateCacheFromEntriesAsync(
+            entryCacheUpdater,
+            persistentCache,
+            pendingEntryCacheOutputs,
+            stepCacheNames,
+            graphCapturePinnedTensors,
+            gpuDevice,
+          );
+        }
+        const oldCache = persistentCache;
+        persistentCache = candidateCache;
+        if (oldCache !== persistentCache) disposeCache(oldCache, graphCapturePinnedTensors);
+      });
+
+      const dynamicsFrameMs = frameForwardSamples.reduce((total, value) => total + value, 0);
+      dynamicsFrameSamples.push(dynamicsFrameMs);
+      cacheCommitSamples.push(commitTimed.elapsedMs);
+      packUnpackSamples.push(packTimed.elapsedMs);
+      if (pendingDecoderFrame) {
+        await processPipelinedDecoderFrame(pendingDecoderFrame);
+      }
+      pendingDecoderFrame = {
+        promise: decoderPromise,
+        latent: packTimed.value,
+        predZ,
+        finalZ: currentZ,
+        frameStart,
+      };
+      continue;
+    }
     const decoderTimed = await timeAsync(() =>
       {
         const decoderFeeds = replaceDecoderLatent(decoderBaseFeeds, packTimed.value);
@@ -2180,9 +2819,12 @@ async function runDemoBenchmark({ config, specs, manifest }) {
         return decoder.session.run(decoderFeeds, decoderFetchArg);
       },
     );
-    const commitTimed = timeSync(() => {
+    const commitTimed = await timeAsync(async () => {
+      if (cacheUpdateTimed) {
+        candidateCache = (await cacheUpdateTimed).value;
+      }
       if (pendingEntryCacheOutputs) {
-        candidateCache = updateCacheFromEntries(
+        candidateCache = await updateCacheFromEntriesAsync(
           entryCacheUpdater,
           persistentCache,
           pendingEntryCacheOutputs,
@@ -2238,6 +2880,11 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       streamingZ = streamingInputZ ?? currentZ;
     }
   }
+  if (pendingDecoderFrame) {
+    await processPipelinedDecoderFrame(pendingDecoderFrame);
+    pendingDecoderFrame = null;
+  }
+  decoderWorker?.release?.();
 
   const targetForwardAfterGraphCaptureWarmup = summarizeGraphCaptureSteady(
     targetForwardSamples,

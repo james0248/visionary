@@ -5881,3 +5881,1046 @@ Additional controls before stopping:
   the default decoder path in the same window: `17.92 fps`, decoder about `15.0 ms`.
 - A longer `64`-run headed default rerun completed after the stop request and stayed below target:
   `16.53 fps`, dynamics about `43.18 ms`, decoder about `17.23 ms`.
+
+### 2026-05-19 KST: Pure-WASM S2 Retest And Rejected Cleanup Trials
+
+Constraint:
+- `sample_steps` must not be changed. The maintained WASM comparison target remains
+  `sample_steps=2`.
+- A temporary `sample_steps=1` WASM export was started before this clarification and did pass its
+  own JAX/export and browser output-validation gates, but it is rejected as a non-candidate because
+  it changes sampler semantics. The generated `breakout_wasm_s1_default_mha` trial directory was
+  removed from the served assets.
+
+Validated s2 WASM export:
+- Regenerated `webgpu_app/dream_arcade_assets/breakout_wasm_default_mha` with:
+  `--export_target wasm --sample_steps 2 --export_cached --validate --overwrite`.
+- The manifest reports `export_target: wasm` and
+  `preferred_full_cache_step_export_wasm:
+  breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2`.
+- JAX/export validation passed for the preferred entry-cache slide step:
+  - `final_z` max abs error: `4.3511391e-6`.
+  - `candidate_k_entry` max abs error: `1.1205673e-5`.
+  - `candidate_v_entry` max abs error: `9.8943710e-6`.
+- The WASM MHA pass now rewrites `35` temporal/BQHD dynamics attention islands into
+  `com.microsoft::MultiHeadAttention` for both the full-cache slide step and the preferred
+  entry-cache slide step; spatial/BHQD attention remains unfused.
+
+Browser WASM benchmark:
+- Command shape:
+  `bun run benchmark:webgpu -- --grep @smoke --webgpu-benchmark-provider wasm
+  --webgpu-benchmark-asset-base /dream_arcade_assets/breakout_wasm_default_mha
+  --webgpu-benchmark-ort-module /node_modules/onnxruntime-web/dist/ort.wasm.min.mjs
+  --webgpu-benchmark-wasm-num-threads 4
+  --webgpu-benchmark-step-artifact breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2
+  --webgpu-benchmark-graph-optimization-level basic --webgpu-benchmark-timed-runs 16`.
+- Fresh local repeat with output validation passed:
+  - Dynamics mean/median/p95: `36.57 / 34.68 / 42.61 ms`.
+  - Decoder mean/median/p95: `12.80 / 12.52 / 14.08 ms`.
+  - Streaming mean/median/p95: `49.51 / 47.42 / 56.92 ms`, or `20.20 fps`.
+- This restored the local validated s2 full-cache WASM baseline after the non-candidate s1 run.
+- Post-cleanup rerun of the same command also passed output validation, but was slower:
+  dynamics `40.42 / 40.10 / 44.91 ms`, decoder `13.66 / 13.12 / 17.06 ms`, and streaming
+  `54.21 / 53.74 / 61.34 ms` (`18.45 fps`). A later same-window full-cache control after the
+  CPU entry-cache updater work was output-valid at streaming `46.50 / 45.82 / 49.65 ms`
+  (`21.51 fps`), with dynamics `34.13 / 33.44 / 36.89 ms` and decoder
+  `12.28 / 12.29 / 12.74 ms`. Treat full-cache s2 WASM as noisy but consistently below target.
+
+Rejected exact graph cleanup trial:
+- Applied the latest exact WebGPU full-cache cleanups to a copy of the s2 WASM export:
+  cache-layer `Slice/Squeeze -> Gather`, one-position RoPE transpose removal, final output-head
+  slice transpose cleanup, shared gather/add constant folding, and rank-2 SwiGLU islands on the
+  step and decoder artifacts.
+- CPU comparison against the JAX-validated s2 WASM export was exact for two dynamics seeds and one
+  decoder seed:
+  - `final_z`, `pred_z`, `candidate_k_cache`, `candidate_v_cache`, and `patches` all had
+    max/mean absolute error `0.0`.
+- Browser output validation passed, but performance regressed:
+  - Streaming mean/median/p95: `47.69 / 46.89 / 50.91 ms`, or `20.97 fps`.
+- Conclusion: reject for WASM. The graph is smaller, but ORT WASM does not benefit from these
+  layout-oriented WebGPU cleanups.
+
+Rejected output-contract trial:
+- Removed the redundant `pred_z` output from the full-cache slide graph by aliasing the sampled
+  `pred_z` producer as `final_z`.
+- CPU comparison against the s2 default graph stayed within tiny float noise on cache outputs
+  (`candidate_k_cache` max about `5.25e-6`, `candidate_v_cache` max about `3.58e-6`) and `final_z`
+  exactly matched the default graph's `pred_z`.
+- Browser output validation passed, but streaming regressed to `48.01 / 47.08 / 53.67 ms`
+  (`20.83 fps`).
+- Conclusion: reject. Removing the output does not help the WASM path.
+
+Rejected raw entry-cache MHA trial:
+- Fused the temporal/BQHD attention islands in the smaller entry-cache step graph:
+  `35` `MultiHeadAttention` rewrites, CPU-exact against the default entry graph.
+- Browser output validation passed and the dynamics segment improved to
+  `30.29 / 30.58 / 31.89 ms`, but the JavaScript CPU cache slide/rebase commit still cost
+  `20.29 ms` mean.
+- Full streaming regressed badly to `63.08 / 59.97 / 79.71 ms` (`15.85 fps`).
+- Conclusion: reject. Full-cache slide output remains better for pure WASM because it avoids the
+  CPU-side entry-cache update.
+
+Rejected decoder MHA trial:
+- Fused all eight decoder attention islands, including six masked BHQD sites with attention bias.
+- CPU comparison against the default decoder was exact for `patches`.
+- Browser output validation passed, but it did not materially improve the full s2 frame:
+  streaming `45.74 / 45.90 / 47.51 ms` (`21.87 fps`) in the short run.
+- Conclusion: neutral/noisy and still below target; do not replace the default decoder on this basis.
+
+Rejected runtime controls:
+- WASM `numThreads=3` on the validated s2 export:
+  streaming `53.24 / 52.97 / 57.11 ms` (`18.78 fps`).
+- WASM `numThreads=5`:
+  streaming `51.13 / 50.65 / 53.73 ms` (`19.56 fps`).
+- WASM `numThreads=6`:
+  streaming `50.96 / 50.80 / 52.34 ms` (`19.62 fps`).
+- Keep `wasmNumThreads=4` as the current local default. It is the best validated setting in this
+  run window, though still far short of `30 fps`.
+
+Additional 2026-05-19 controls:
+- Native ORT CPU profiling of the accepted s2 WASM artifacts, with ORT basic graph optimization
+  and four native CPU threads, still points at broad graph cost rather than one removable node:
+  dynamics time is spread across `Gemm`, `Transpose`, `SimplifiedLayerNormalization`, `Concat`,
+  `Gather`, `MultiHeadAttention`, `Unsqueeze`, and remaining `Einsum`; decoder time is dominated
+  by attention `Einsum` plus RMSNorm. This matches the browser result: the frame is compute-bound
+  across many dense/layout kernels, not JavaScript overhead.
+- Tried WASM CPU preallocated outputs in the benchmark. Decoder-only preallocation stayed output
+  valid but did not beat the no-preallocation same-window control. Step-output preallocation is
+  invalid for this path: browser output validation failed because sampled latent/frame hashes became
+  static. Rejected and removed the experimental benchmark code.
+- Layer-cache slide control used the existing JAX-validated
+  `breakout_dynamics_prefill_layer_cached_b1_t64` plus
+  `breakout_dynamics_sample_append_context_slide_layer_b1_t1_s2`.
+  Browser output validation passed, but streaming regressed to
+  `54.06 / 53.86 / 55.58 ms` (`18.50 fps`). A temporal MHA follow-up on a copied layer artifact
+  found `0` eligible rewrites, so this path was not pursued further.
+- Exported a validated s2 WASM no-QKV-pack trial with `--skip_pack_qkv_gemm`. It kept temporal MHA
+  fusion (`35` rewrites), increased the full-cache step from `291` to `433` `Gemm` nodes, and
+  passed browser output validation. Its short run was `47.15 / 46.54 / 50.58 ms` (`21.21 fps`),
+  essentially the same as a same-window default rerun at `47.39 / 47.06 / 50.86 ms`
+  (`21.10 fps`). Reject as noise-level and not a path to `30 fps`.
+- Temporary WASM runtime controls:
+  - ORT WASM worker proxy failed before timing with
+    `ArrayBuffer at index 3 is a duplicate of an earlier ArrayBuffer`, because the benchmark feeds
+    the same latent tensor as both sample and context noise. Rejected without modifying the demo
+    feed semantics.
+  - Explicit `env.wasm.simd="relaxed"` passed output validation and produced one short run at
+    `45.80 / 45.72 / 47.68 ms` (`21.83 fps`), while `env.wasm.simd="fixed"` was
+    `48.19 / 46.50 / 54.82 ms` (`20.75 fps`) and the same-window default was
+    `48.58 / 48.24 / 52.15 ms` (`20.59 fps`). The ORT loader still imports the same
+    `ort-wasm-simd-threaded` module; the setting only changes feature checking, so treat this as
+    noise-level and not a real optimization. The temporary benchmark wiring was removed.
+- Exported a validated s2 WASM head-projection `Einsum` trial with
+  `--head_projection_rewrite einsum`. It removed the layout head-projection pattern but also lost
+  the accepted temporal MHA fusion (`35 -> 0`) and moved the step to `428` `Einsum` nodes.
+  Browser output validation passed, but streaming regressed to
+  `58.63 / 58.56 / 62.84 ms` (`17.06 fps`). Reject.
+- Exported a validated s2 WASM no-squeeze-concat trial with `--skip_squeeze_concat_rewrite`.
+  It preserved temporal MHA fusion but left the full-cache step with more `Squeeze` nodes
+  (`376 -> 628`). Browser output validation passed. The short run was
+  `47.58 / 47.03 / 51.59 ms` (`21.02 fps`) versus a same-window default rerun at
+  `49.73 / 49.82 / 51.71 ms` (`20.11 fps`). This is within the existing default-run noise window
+  and still far below `30 fps`; reject as insufficient evidence to replace the default artifact.
+- Exported a validated s2 WASM no-spatial-QK-layout trial with
+  `--skip_spatial_qk_head_layout_rewrite`. The full-cache slide step stayed numerically valid
+  against JAX with `sample_steps=2`: `final_z` max abs error `4.3511391e-6`,
+  `candidate_k_cache` max abs error `1.2278557e-5`, and `candidate_v_cache` max abs error
+  `8.9444220e-6`. Skipping that layout rewrite let the WASM MHA pass rewrite `71` dynamics
+  attention islands instead of `35` and removed the remaining step `Einsum`/`Softmax` nodes, but
+  increased `Transpose` nodes to `499` and `Squeeze` nodes to `412`. Browser output validation
+  passed. Short-run streaming was `47.47 / 47.74 / 48.80 ms` (`21.06 fps`). A longer `64`-frame
+  run was `45.25 / 45.14 / 46.43 ms` (`22.10 fps`) versus a same-window default at
+  `46.21 / 45.45 / 49.74 ms` (`21.64 fps`), but a repeat after promoting the asset name was
+  `46.10 / 45.05 / 49.92 ms` (`21.69 fps`). Reject as noise-level: dynamics sometimes crosses
+  the 30 FPS boundary, but the full frame remains around `45-46 ms` and the improvement is not
+  large or stable enough to replace `breakout_wasm_default_mha`. The trial asset was removed.
+- Exported a combined no-spatial-QK plus decoder-MHA trial with
+  `--skip_spatial_qk_head_layout_rewrite --wasm_mha_decoder_fusion`. JAX/export validation passed
+  with the same full-cache slide errors as the no-spatial-QK-only trial. The dynamics step had
+  `71` MHA rewrites and the decoder had `8` MHA rewrites with attention bias at the six masked
+  sites. Browser output validation passed, but the `64`-frame WASM benchmark regressed to
+  streaming `49.44 / 47.39 / 61.71 ms` (`20.23 fps`), with decoder mean `14.16 ms`.
+  Same-window default after removing the trial was `50.12 / 48.56 / 55.10 ms` (`19.95 fps`).
+  Reject: the decoder MHA fusion does not combine constructively with the no-spatial-QK dynamics
+  variant and remains well below `30 fps`.
+- Exported a validated s2 WASM no-RotaryEmbedding trial with `--skip_rotary_embedding_rewrite`.
+  The full-cache slide step stayed valid against JAX: `final_z` max abs error
+  `5.3048134e-6`, `candidate_k_cache` max abs error `1.3470650e-5`, and
+  `candidate_v_cache` max abs error `1.0572374e-5`. Without the contrib RoPE op, the dynamics
+  step still fused `71` MHA islands and reduced `Transpose` nodes to `213`, but primitive RoPE
+  raised `Mul` to `695`, `Split` to `406`, and `Concat` to `505`. Browser output validation
+  passed. The `64`-frame run was streaming `48.16 / 47.56 / 51.51 ms` (`20.76 fps`) versus a
+  same-window default rerun at `45.41 / 45.10 / 47.09 ms` (`22.02 fps`). Reject: ORT WASM's
+  contrib `RotaryEmbedding` remains better than the decomposed primitive graph for the full frame.
+- Exported a validated s2 WASM no-SwiGLU-pack trial with `--skip_pack_swiglu_gemm` while keeping
+  QKV packing and temporal dynamics MHA. Validation matched the default numerical envelope:
+  `final_z` max abs error `4.3511391e-6`, `candidate_k_cache` max abs error `1.2278557e-5`, and
+  `candidate_v_cache` max abs error `8.9444220e-6`. The full-cache step kept `35` MHA rewrites
+  but increased `Gemm` from `291` to `362`. Browser output validation passed. The `64`-frame run
+  was streaming `45.82 / 44.97 / 48.71 ms` (`21.82 fps`); adjacent default windows were
+  `45.41 / 45.10 / 47.09 ms` and `47.56 / 46.65 / 52.56 ms`. Reject as noise-level and not a path
+  to `30 fps`; the accepted packed SwiGLU graph remains the default.
+- Runtime loader control on the accepted s2 WASM export:
+  `/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs` passed browser output validation,
+  but measured streaming `46.69 / 45.79 / 51.63 ms` (`21.42 fps`) versus the restored
+  `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs` latest at `46.24 / 45.15 / 52.69 ms`
+  (`21.63 fps`). Reject; the bundled loader does not change steady-state CPU execution enough to
+  matter.
+- Exported a validated s2 WASM no-attention-scale-folding trial with
+  `--skip_attention_scale_folding`. The full-cache slide step stayed valid against JAX:
+  `final_z` max abs error `2.8014183e-6`, `candidate_k_cache` max abs error `1.3828278e-5`, and
+  `candidate_v_cache` max abs error `9.4175339e-6`. The graph kept the accepted `35` temporal MHA
+  rewrites and only reintroduced the expected attention score `Mul`s (`Mul` `123 -> 159` after MHA
+  fusion). Browser output validation passed, but the `64`-frame run was streaming
+  `46.99 / 46.11 / 51.11 ms` (`21.28 fps`) and the restored default latest was
+  `49.19 / 48.83 / 53.97 ms` (`20.33 fps`). Reject as noise-level and not a path to `30 fps`;
+  keeping scale folded into the query norm remains the simpler default.
+- Exported a validated s2 WASM no-Unsqueeze-Transpose-Squeeze-collapse trial with
+  `--skip_unsqueeze_transpose_squeeze_rewrite`. The full-cache slide step matched the default
+  validation envelope: `final_z` max abs error `4.3511391e-6`, `candidate_k_cache` max abs error
+  `1.2278557e-5`, and `candidate_v_cache` max abs error `8.9444220e-6`. The graph kept the
+  accepted `35` temporal MHA rewrites but left more shape-view nodes (`Squeeze` `376 -> 445` after
+  MHA fusion). Browser output validation passed. The `64`-frame run was streaming
+  `46.50 / 45.80 / 50.12 ms` (`21.50 fps`) and the restored default latest was
+  `47.24 / 46.12 / 52.05 ms` (`21.17 fps`). Reject as noise-level; the collapse remains the
+  accepted default because it keeps the graph smaller without a stable WASM regression.
+- Exported a validated s2 WASM no-offline-ORT-optimization trial with `--skip_onnx_optimization`.
+  The full-cache slide step stayed numerically valid against JAX, though with slightly larger tiny
+  float noise: `final_z` max abs error `1.2338161e-5`, `candidate_k_cache` max abs error
+  `3.7074089e-5`, and `candidate_v_cache` max abs error `2.5033951e-5`. Skipping offline ORT
+  cleanup prevented the temporal MHA rewrite (`35 -> 0`), left `286` `Reshape` nodes after the MHA
+  pass point, and raised hot-step `Gemm` to `504` plus `Mul` to `1772`. Browser output validation
+  passed after Playwright retried an initial Chrome startup failure, but the short `16`-frame run
+  regressed to streaming `60.25 / 59.68 / 63.41 ms` (`16.60 fps`) versus restored default at
+  `48.53 / 48.16 / 53.40 ms` (`20.61 fps`). Reject; offline ORT cleanup is required for the
+  current WASM graph pipeline.
+- Temporarily added and tested a WASM export switch to skip the
+  `Add + SimplifiedLayerNormalization -> SkipSimplifiedLayerNormalization` fusion. The full-cache
+  slide step stayed numerically valid: `final_z` max abs error `2.6822090e-6`,
+  `candidate_k_cache` max abs error `7.1525574e-6`, and `candidate_v_cache` max abs error
+  `6.5565109e-6`. The accepted `35` temporal MHA rewrites stayed intact. Browser output validation
+  passed, but the `64`-frame run was streaming `47.47 / 46.59 / 53.08 ms` (`21.07 fps`) versus a
+  same-window default at `46.36 / 45.48 / 50.73 ms` (`21.57 fps`). Reject; the fused
+  `SkipSimplifiedLayerNormalization` path remains at least as good for WASM. The temporary exporter
+  switch was removed after the trial.
+- Exported a validated s2 WASM packed-QKV-head trial with `--pack_qkv_head_projection`. The
+  full-cache slide step stayed numerically valid against JAX with the same envelope as the accepted
+  default: `final_z` max abs error `4.3511391e-6`, `candidate_k_cache` max abs error
+  `1.2278557e-5`, and `candidate_v_cache` max abs error `8.9444220e-6`. The hot step still had the
+  accepted `35` temporal MHA rewrites after the MHA pass point, and browser output validation
+  passed. The `64`-frame run was streaming `46.26 / 45.22 / 49.99 ms` (`21.62 fps`) versus a
+  same-window default at `46.31 / 45.77 / 49.06 ms` (`21.59 fps`). Reject as identical/noise-level
+  for WASM and still far below `30 fps`; the trial asset was removed.
+- Runtime-version control: staged `onnxruntime-web@1.26.0` under ignored `node_modules` and
+  temporarily symlinked the served ORT WASM dist directory so the browser loaded matching 1.26.0 JS
+  and `.wasm` files, without changing `package.json`/`bun.lock` or the accepted ONNX artifacts.
+  The accepted s2 export was already JAX-valid; browser output validation passed for all runtime
+  variants below:
+  - Standard `ort.wasm.min.mjs`, `wasmNumThreads=4`, `graphOptimizationLevel=basic`:
+    dynamics `32.59 / 32.46 / 33.92 ms`, decoder `12.27 / 12.26 / 12.71 ms`, streaming
+    `44.94 / 44.81 / 46.73 ms` (`22.25 fps`).
+  - Same-window pinned 1.24.3 control:
+    dynamics `33.45 / 33.34 / 35.09 ms`, decoder `12.16 / 12.19 / 12.57 ms`, streaming
+    `45.69 / 45.46 / 47.50 ms` (`21.89 fps`).
+  - 1.26.0 default ORT thread setting was effectively identical to explicit four threads:
+    streaming `44.96 / 44.47 / 47.74 ms` (`22.24 fps`).
+  - 1.26.0 JSPI loader was valid but slower than the standard loader:
+    streaming `45.39 / 45.21 / 46.87 ms` (`22.03 fps`).
+  - 1.26.0 runtime graph optimization `extended` and `all` were both valid, but neutral/slower:
+    `44.92 / 44.69 / 46.96 ms` (`22.26 fps`) and `45.25 / 45.16 / 46.44 ms` (`22.10 fps`).
+  - 1.26.0 plus the explicit `breakout_tokenizer_decode_z_b1_t1` decoder artifact was also neutral:
+    streaming `45.06 / 44.90 / 46.30 ms` (`22.19 fps`).
+  Reject as insufficient for the target: 1.26.0 modestly improves dynamics, which now crosses
+  `30 fps` alone in favorable windows, but the full sequential frame is still around `45 ms`.
+  Keep the pinned 1.24.3 dependency until a larger runtime win justifies the package churn.
+- Accepted follow-up: optimized the JavaScript CPU entry-cache updater for both
+  `layer_batch_token_time_head_dim` and `layer_batch_token_head_time_dim` cache layouts. The fast
+  path removes per-element cache-index helper calls from K rotation, uses typed-array block moves
+  for V-cache sliding/appending, and keeps the fill path for partially populated caches in the demo.
+  After also enabling the WASM MHA pass on the entry-cache slide artifact, the preferred WASM step is
+  now `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2` while keeping
+  `sample_steps=2`.
+- The promoted `breakout_wasm_default_mha` artifact was re-exported with validation and copied with
+  the demo context/cache sidecars. Entry-step validation against JAX passed with `final_z` max abs
+  `4.351139e-6`, `candidate_k_entry` max abs `1.1205673e-5`, and `candidate_v_entry` max abs
+  `9.894371e-6`. The entry step has `35` temporal MHA rewrites after export.
+- Browser output validation passed for the fused entry step. The accepted trial measured dynamics
+  `26.92 / 26.58 / 28.59 ms`, decoder `11.97 / 12.02 / 12.45 ms`, cache commit
+  `1.54 / 1.49 / 1.58 ms`, and streaming `40.47 / 39.93 / 42.71 ms` (`24.71 fps`).
+- After promotion, the default WASM benchmark was run without explicitly passing
+  `--webgpu-benchmark-step-artifact`; the manifest selected the entry-cache slide step. Output
+  validation passed with `sample_steps=2`, dynamics `27.81 / 26.72 / 31.73 ms`, decoder
+  `12.04 / 12.01 / 12.53 ms`, cache commit `1.54 / 1.48 / 1.64 ms`, and streaming
+  `41.43 / 40.25 / 46.29 ms` (`24.13 fps`).
+- Demo validation passed after the sidecars were copied into the promoted WASM asset:
+  `world model demo starts and renders a frame @demo` and
+  `world model demo changes the display over generated frames @demo` both passed in headed Chrome
+  with `?backend=wasm&assetBase=/dream_arcade_assets/breakout_wasm_default_mha`.
+- Decoder MHA combined with the fused entry step was output-valid but neutral/slower:
+  dynamics `26.82 / 26.58 / 28.43 ms`, decoder `12.24 / 12.18 / 12.81 ms`, and streaming
+  `40.65 / 40.32 / 43.27 ms` (`24.60 fps`). Reject; the decoder MHA graph is not an improvement
+  over the promoted entry-only WASM path.
+- Runtime-version control on the promoted entry-MHA path with temporary `onnxruntime-web@1.26.0`
+  was also output-valid but neutral: dynamics `27.01 / 26.44 / 29.64 ms`, decoder
+  `11.91 / 11.86 / 12.44 ms`, cache commit `1.54 / 1.48 / 1.73 ms`, and streaming
+  `40.49 / 39.73 / 44.00 ms` (`24.70 fps`). Keep the pinned runtime unchanged.
+- Runtime-thread control on the promoted entry-MHA path stayed output-valid and selected the
+  manifest-preferred entry step with `sample_steps=2`, but did not beat four threads:
+  - `wasmNumThreads=1`: streaming `87.20 / 86.97 / 88.56 ms` (`11.47 fps`).
+  - `wasmNumThreads=2`: streaming `53.16 / 52.95 / 54.73 ms` (`18.81 fps`).
+  - `wasmNumThreads=3`: streaming `45.11 / 44.99 / 46.42 ms` (`22.17 fps`).
+  - `wasmNumThreads=5`: streaming `44.94 / 44.69 / 46.02 ms` (`22.25 fps`), with faster decoder
+    than four threads but much slower dynamics.
+  - `wasmNumThreads=6`: streaming `46.10 / 45.86 / 48.02 ms` (`21.69 fps`), with faster decoder
+    but much slower dynamics.
+  - `wasmNumThreads=7`: streaming `46.76 / 46.26 / 48.36 ms` (`21.39 fps`), again with faster
+    decoder but much slower dynamics.
+  - `wasmNumThreads=8`: streaming `47.12 / 46.91 / 48.97 ms` (`21.22 fps`).
+  - Same-window `wasmNumThreads=4` control: streaming `41.06 / 40.17 / 44.60 ms`
+    (`24.35 fps`).
+  Keep four threads as the default.
+- Runtime graph optimization control on the promoted entry-MHA path:
+  - Explicit `graphOptimizationLevel=extended` passed browser output validation and measured
+    dynamics `27.05 / 26.81 / 28.49 ms`, decoder `11.42 / 11.37 / 11.80 ms`, cache commit
+    `1.54 / 1.48 / 1.76 ms`, and streaming `40.05 / 39.70 / 42.24 ms` (`24.97 fps`).
+  - Explicit `graphOptimizationLevel=all` also passed, but was slightly slower:
+    streaming `40.40 / 39.93 / 42.90 ms` (`24.76 fps`).
+  - Promoted a WASM-only default of `graphOptimizationLevel=extended` in the benchmark and demo
+    while leaving WebGPU on `basic`. A default WASM rerun with no explicit graph-optimization flag
+    recorded `graphOptimizationLevel: "extended"`, selected
+    `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2`, passed output validation, and
+    measured dynamics `26.91 / 26.65 / 28.87 ms`, decoder `11.49 / 11.51 / 12.00 ms`, cache commit
+    `1.54 / 1.48 / 1.62 ms`, and streaming `39.98 / 39.55 / 41.98 ms` (`25.01 fps`).
+  - Demo smoke on the default WASM path passed both `starts and renders a frame @demo` and
+    `changes the display over generated frames @demo`.
+- Explicit `breakout_tokenizer_decode_z_b1_t1` decoder on the promoted entry-MHA path with the new
+  `extended` WASM runtime default passed output validation, but was slower/noisier than the default
+  decoder: dynamics `27.79 / 26.85 / 33.74 ms`, decoder `11.72 / 11.56 / 12.34 ms`, cache commit
+  `1.54 / 1.48 / 1.74 ms`, and streaming `41.09 / 39.86 / 47.78 ms` (`24.34 fps`). Keep
+  `breakout_tokenizer_decoder_b1_t1` as the preferred decoder.
+- Tried a benchmark-only scheduling change that starts the threaded WASM decoder promise before the
+  CPU entry-cache commit, then awaits the decoder output. Browser output validation passed, but the
+  frame did not improve: streaming `40.43 / 39.84 / 43.62 ms` (`24.73 fps`) versus the default
+  `extended` control at `39.98 / 39.55 / 41.98 ms` (`25.01 fps`). Rejected and removed; the ORT
+  WASM decoder run does not overlap usefully with the main-thread cache commit in this path.
+- Runtime-loader control on the promoted entry-MHA path with `extended`: the bundled WASM loader
+  `/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs` passed output validation and measured
+  streaming `39.80 / 39.64 / 41.30 ms` (`25.12 fps`), while the same-window standard loader control
+  was `40.03 / 39.67 / 41.97 ms` (`24.98 fps`). This is too small to justify changing the default;
+  keep `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`.
+- JSPI loader control on the promoted entry-MHA path with the pinned `onnxruntime-web@1.24.3`
+  runtime was output-valid but slower than the standard loader: dynamics
+  `27.07 / 26.84 / 28.65 ms`, decoder `11.98 / 12.04 / 12.39 ms`, cache commit
+  `1.59 / 1.50 / 1.74 ms`, and streaming `40.69 / 40.34 / 42.35 ms` (`24.58 fps`). Reject and
+  keep the standard `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs` loader.
+- Additional ORT WASM session-option controls on the promoted entry-MHA path all passed browser
+  output validation but did not improve the default:
+  - `executionMode=parallel`: streaming `41.95 / 41.57 / 44.11 ms` (`23.84 fps`).
+  - `enableCpuMemArena=true`: streaming `40.45 / 39.91 / 43.97 ms` (`24.72 fps`).
+  - `enableMemPattern=true`: streaming `40.19 / 39.98 / 42.05 ms` (`24.88 fps`).
+  Keep the default ORT session settings other than the accepted WASM-only `extended` graph
+  optimization level.
+- Retried ORT WASM proxy mode on the promoted entry-MHA path after avoiding the earlier duplicate
+  transferable buffer for sample/context noise. It still failed before timing because proxy mode
+  transfers and detaches the persistent K/V cache input buffers; the CPU entry-cache updater then
+  raises `Cannot perform %TypedArray%.prototype.copyWithin on a detached or out-of-bounds
+  ArrayBuffer`. Making proxy mode work would require cloning the full K/V cache every frame, which
+  would add large memory copies. Reject and keep proxy disabled.
+- Exported a validated WASM trial with `--skip_temporal_attention_bhsd_rewrite` while keeping
+  `sample_steps=2` and the entry-step MHA fusion. JAX/export validation matched the accepted
+  envelope: `final_z` max abs `4.351139e-6`, `candidate_k_entry` max abs `1.1205673e-5`, and
+  `candidate_v_entry` max abs `9.894371e-6`. Browser output validation passed and the manifest still
+  selected `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2`, but performance regressed:
+  dynamics `28.43 / 28.36 / 31.81 ms`, decoder `11.75 / 11.78 / 12.24 ms`, cache commit
+  `1.54 / 1.48 / 1.60 ms`, and streaming `41.76 / 41.74 / 45.84 ms` (`23.95 fps`). Reject; the
+  temporal BHSD rewrite remains part of the accepted WASM export pipeline.
+- Tried a benchmark-only split runtime graph-optimization control: dynamics step sessions at
+  `graphOptimizationLevel=all`, decoder sessions at `extended`. The first run passed validation and
+  measured streaming `40.06 / 39.85 / 41.87 ms` (`24.96 fps`), but the repeat regressed to
+  `41.29 / 40.70 / 43.95 ms` (`24.22 fps`). Reject as unstable/noise-level and keep the simpler
+  single WASM default of `extended` for all sessions.
+- Follow-up split session controls on the promoted entry-MHA path also passed browser output
+  validation but did not beat the accepted single `extended` default:
+  - Decoder `basic` with dynamics still at `extended`: streaming `39.90 / 39.60 / 42.08 ms`
+    (`25.06 fps`), decoder `11.46 / 11.45 / 11.87 ms`.
+  - Decoder `disabled`: streaming `39.81 / 39.54 / 41.96 ms` (`25.12 fps`), decoder
+    `11.51 / 11.48 / 12.04 ms`.
+  - Decoder `all`: streaming `40.18 / 39.65 / 42.99 ms` (`24.89 fps`), decoder
+    `11.51 / 11.48 / 12.10 ms`.
+  - Dynamics `basic` with decoder still at `extended`: streaming `40.51 / 39.96 / 42.79 ms`
+    (`24.69 fps`), dynamics `27.26 / 26.80 / 29.37 ms`.
+  - Dynamics `disabled`: streaming `41.55 / 41.07 / 45.43 ms` (`24.07 fps`), dynamics
+    `27.97 / 27.54 / 30.35 ms`.
+  Reject; the temporary benchmark wiring was removed and the accepted default was restored in
+  `bench/results/latest.json` with output validation passed at streaming
+  `40.09 / 39.83 / 41.56 ms` (`24.95 fps`).
+- Tried a benchmark-only decoder pipeline on the promoted entry-MHA WASM path: after each dynamics
+  step, the benchmark committed the entry-cache update and let the next dynamics step run while the
+  previous decoder promise was pending, then measured displayed-frame intervals. Browser output
+  validation passed and the manifest still selected the entry slide step at `sample_steps=2`, but
+  ORT WASM contention erased the intended overlap. Dynamics regressed to
+  `38.12 / 38.14 / 39.86 ms`, decoder was `12.18 / 12.18 / 12.62 ms`, and displayed-frame
+  intervals were `41.12 / 39.79 / 52.82 ms` (`24.32 fps`). Reject; separate decoder and dynamics
+  runs do not pipeline usefully on the shared ORT WASM runtime. The temporary benchmark wiring was
+  removed and the accepted default was restored in `bench/results/latest.json` at streaming
+  `40.04 / 39.80 / 42.01 ms` (`24.97 fps`).
+- Retried `onnxsim` on the promoted entry-MHA WASM path with
+  `--simplify_onnx --simplify_demo_only`, keeping `sample_steps=2`. The entry slide step stayed
+  JAX/export valid (`final_z` max abs `4.351139e-6`, `candidate_k_entry` max abs
+  `1.1205673e-5`, `candidate_v_entry` max abs `9.894371e-6`), and `onnxsim` reduced the raw entry
+  step from `8867` to `5897` nodes before downstream rewrites while preserving the accepted `35`
+  temporal MHA rewrites. Browser output validation passed, but performance regressed: dynamics
+  `27.38 / 26.61 / 29.71 ms`, decoder `12.02 / 12.01 / 12.58 ms`, cache commit
+  `1.58 / 1.47 / 1.74 ms`, and streaming `41.02 / 40.01 / 44.11 ms` (`24.38 fps`). Reject; the
+  generated trial asset was removed.
+- Restored the promoted default asset in `bench/results/latest.json` after the simplifier trial.
+  With the manifest-selected entry slide step, output validation passed at `sample_steps=2` and
+  measured dynamics `26.77 / 26.61 / 28.11 ms`, decoder `11.45 / 11.50 / 11.89 ms`, cache commit
+  `1.54 / 1.48 / 1.61 ms`, and streaming `39.80 / 39.62 / 41.64 ms` (`25.12 fps`).
+- Retested `--skip_spatial_qk_head_layout_rewrite` on the current entry-cache WASM path, not just
+  the older full-cache path. JAX/export validation passed with the accepted numerical envelope:
+  `final_z` max abs `4.351139e-6`, `candidate_k_entry` max abs `1.1205673e-5`, and
+  `candidate_v_entry` max abs `9.894371e-6`. The entry slide graph fused `71` MHA islands instead
+  of `35`, removing the remaining attention `Einsum`/`Softmax` nodes but raising `Transpose` to
+  `499` and `Squeeze` to `412`. Browser output validation passed at `sample_steps=2`, but the
+  full frame regressed: dynamics `26.85 / 25.99 / 32.05 ms`, decoder `12.27 / 12.24 / 13.08 ms`,
+  cache commit `1.54 / 1.48 / 1.62 ms`, and streaming `40.70 / 39.78 / 46.51 ms` (`24.57 fps`).
+  Reject; the extra MHA rewrites do not overcome the added layout cost on ORT WASM. The trial asset
+  was removed and the accepted default was restored in `bench/results/latest.json` with streaming
+  `40.42 / 39.64 / 44.25 ms` (`24.74 fps`).
+- Native ORT CPU profiling of the accepted entry-MHA artifacts with `ORT_ENABLE_EXTENDED` reinforced
+  that the decoder is real graph work, not just JavaScript/session overhead. Over the profiled run,
+  decoder node time was led by `Einsum`, `SimplifiedLayerNormalization`, and `Gemm`; the entry step
+  was spread across `Gemm`, `Unsqueeze`, `SimplifiedLayerNormalization`, `Einsum`, `Transpose`,
+  `Gather`, `MultiHeadAttention`, `Concat`, and `Split`.
+- Tested a WASM-only export trial that skipped the RMSNorm-to-`SimplifiedLayerNormalization` fusion.
+  JAX/export validation passed at `sample_steps=2`: entry-step `final_z` max abs `6.139278e-6`,
+  `candidate_k_entry` max abs `1.966953e-5`, `candidate_v_entry` max abs `1.385063e-5`; decoder
+  `patches` max abs `3.755093e-6`. The graph kept primitive `ReduceMean/Sqrt/Div/Mul/Add` norm
+  arithmetic and also changed the entry-step MHA match count to `71`, but browser output validation
+  showed it was slower: dynamics `28.22 / 28.16 / 30.27 ms`, decoder
+  `12.54 / 12.58 / 12.81 ms`, cache commit `1.55 / 1.49 / 1.70 ms`, and streaming
+  `42.36 / 42.37 / 44.51 ms` (`23.61 fps`). Reject; ORT WASM's fused normalization remains better
+  than the decomposed primitive graph. The temporary export flag and trial asset were removed, and
+  the accepted default was restored in `bench/results/latest.json` with streaming
+  `39.89 / 39.56 / 41.76 ms` (`25.07 fps`).
+- Retested projection packing controls on the current entry-cache WASM path, because the earlier
+  no-pack trials were measured against the older full-cache path:
+  - `--skip_pack_swiglu_gemm` was JAX-valid at the accepted envelope (`final_z` max abs
+    `4.351139e-6`, `candidate_k_entry` `1.120567e-5`, `candidate_v_entry` `9.894371e-6`) and
+    preserved the `35` temporal MHA rewrites. It traded step `Split` nodes down from `251` to
+    `180`, but raised `Gemm` from `291` to `362`; decoder `Gemm` rose from `34` to `42`.
+    Browser output validation passed, but streaming regressed to
+    `40.79 / 39.99 / 43.81 ms` (`24.52 fps`). Reject; the extra Gemm work costs more than the
+    removed splits on ORT WASM.
+  - `--skip_pack_qkv_gemm` was also JAX-valid with the accepted error envelope and preserved the
+    `35` temporal MHA rewrites. It raised the entry step to `433` `Gemm` and `322` `Split` nodes,
+    and decoder `Gemm` rose to `50`. Browser output validation passed, but streaming was
+    `40.43 / 40.21 / 42.46 ms` (`24.73 fps`). Reject and keep both QKV and SwiGLU packing enabled.
+  Both trial assets were removed, and the accepted default was restored in `bench/results/latest.json`
+  with streaming `40.18 / 40.01 / 41.75 ms` (`24.89 fps`).
+- Retested `--pack_qkv_head_projection` on the current entry-cache WASM path while keeping
+  `sample_steps=2`. Export/JAX validation passed with the accepted entry-step envelope, but the
+  pass found no sibling head-projection patterns to rewrite: `rewrites: {}` for both the preferred
+  entry slide step and the t1 decoder. The resulting ONNX files were byte-identical to the accepted
+  default asset (`sha256` entry step `25bd583654093fe44c47f4bd4756c2999c38a6cba6cd68b8a8027ae7be7bda60`,
+  decoder `eae50cd813d08181b174a3a19f6a1dbbd6eeffb73fe218d5640b09d3491fc718`), so no browser
+  benchmark was run for this no-op trial. The trial asset was removed.
+- Accepted WASM attention `Einsum -> MatMul` rewrite:
+  - Added a WASM attention pass that rewrites the supported attention equations
+    `bhqd,bhkd->bhqk`, `bqhd,bkhd->bhqk`, and `bhqk,bkhd->bqhd` into equivalent batched `MatMul`
+    with explicit `Transpose` layout nodes. The pass runs after optional MHA fusion, so temporal
+    dynamics MHA rewrites stay fused and only the remaining explicit attention `Einsum`s are
+    converted.
+  - A copied ONNX-only prototype was bit-exact against the accepted JAX-validated decoder on CPU
+    (`patches` max/mean abs `0.0`) and improved native ORT CPU decoder timing from about
+    `7.54 ms` to `6.69 ms` in a 60-run local profile.
+  - Re-exported a validated s2 WASM trial with the pass enabled by default. JAX/export validation
+    passed for the t1 decoder with the accepted envelope (`patches` max abs `4.976988e-6`) and for
+    the preferred entry step (`final_z` max abs `4.351139e-6`, `candidate_k_entry`
+    `1.1205673e-5`, `candidate_v_entry` `9.894371e-6`).
+  - The t1 decoder rewrite count was `16` total: `6` `bhqd,bhkd->bhqk`, `2`
+    `bqhd,bkhd->bhqk`, and `8` `bhqk,bkhd->bqhd`. Decoder ops changed from
+    `Einsum=16, MatMul=0, Transpose=12` to `Einsum=0, MatMul=16, Transpose=38`.
+  - Browser output validation passed for the validated trial at `sample_steps=2`, measuring
+    dynamics `27.05 / 26.74 / 28.81 ms`, decoder `10.34 / 10.29 / 10.84 ms`, cache commit
+    `1.54 / 1.48 / 1.74 ms`, and streaming `38.97 / 38.64 / 41.30 ms` (`25.66 fps`). A
+    same-window default control before promotion was slower at decoder `11.63 / 11.69 / 12.07 ms`
+    and streaming `41.42 / 41.62 / 44.07 ms` (`24.15 fps`).
+  - Promoted the validated MatMul decoder into `breakout_wasm_default_mha`. The promoted default
+    benchmark passed browser output validation and selected the manifest-preferred entry slide step:
+    dynamics `26.81 / 26.57 / 28.07 ms`, decoder `10.33 / 10.34 / 10.76 ms`, cache commit
+    `1.56 / 1.50 / 1.84 ms`, and streaming `38.74 / 38.50 / 40.54 ms` (`25.82 fps`).
+  - Demo smoke on the promoted default WASM asset passed both `starts and renders a frame @demo`
+    and `changes the display over generated frames @demo`.
+  - Extended the same MatMul rewrite to the preferred entry slide dynamics artifact after temporal
+    MHA fusion. A copied-asset prototype was bit-exact against the promoted JAX-validated entry graph
+    on CPU for `final_z`, `candidate_k_entry`, and `candidate_v_entry`, and browser output validation
+    passed with dynamics `25.71 / 25.36 / 27.81 ms`, decoder `10.23 / 10.25 / 10.72 ms`, cache
+    commit `1.60 / 1.49 / 1.78 ms`, and streaming `37.57 / 37.20 / 39.89 ms` (`26.61 fps`).
+  - Re-exported a validated combined MatMul artifact with `sample_steps=2`. JAX/export validation
+    passed for the preferred entry step (`final_z` max abs `4.351139e-6`, `candidate_k_entry`
+    `1.1205673e-5`, `candidate_v_entry` `9.894371e-6`) and the t1 decoder (`patches` max abs
+    `4.976988e-6`). Entry-step rewrites were `36` `bhqd,bhkd->bhqk` and `36`
+    `bhqk,bkhd->bqhd`, while the accepted `35` temporal MHA rewrites remained in place.
+  - Promoted the combined validated artifact into `breakout_wasm_default_mha`. The latest default
+    browser benchmark passed output validation and selected
+    `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2`: dynamics
+    `25.65 / 25.38 / 27.29 ms`, decoder `10.19 / 10.20 / 10.72 ms`, cache commit
+    `1.56 / 1.50 / 1.85 ms`, and streaming `37.44 / 37.28 / 39.49 ms` (`26.71 fps`).
+    Demo smoke passed again after promotion.
+- Runtime controls retested on the combined MatMul graph all passed browser output validation but did
+  not beat the accepted four-thread `extended` default:
+  - `wasmNumThreads=5`: decoder improved to `9.71 / 9.71 / 9.94 ms`, but dynamics regressed to
+    `31.63 / 31.37 / 32.61 ms` and full streaming regressed to `42.94 / 42.59 / 44.44 ms`
+    (`23.29 fps`).
+  - `wasmNumThreads=3`: dynamics `28.32 / 28.18 / 29.66 ms`, decoder
+    `13.24 / 13.25 / 13.58 ms`, and streaming `43.15 / 43.03 / 44.44 ms` (`23.17 fps`).
+  - `graphOptimizationLevel=all` with four threads: dynamics `25.67 / 25.47 / 27.19 ms`, decoder
+    `10.39 / 10.39 / 10.76 ms`, and streaming `37.63 / 37.45 / 39.79 ms` (`26.58 fps`).
+    Keep the WASM default at four threads and `extended`.
+- Rejected a decoder singleton-key attention bypass on top of the combined MatMul graph. Two decoder
+  attention islands had scalar score shape `[256, 8, 1, 1]`; replacing their output with the value
+  tensor was bit-exact against the accepted decoder on CPU and improved native ORT decoder timing
+  from about `6.66 ms` to `5.38 ms`, but browser WASM output-validation timing regressed:
+  dynamics `26.72 / 26.42 / 28.82 ms`, decoder `10.17 / 10.20 / 10.59 ms`, cache commit
+  `1.54 / 1.48 / 1.62 ms`, and streaming `38.47 / 38.14 / 40.75 ms` (`26.00 fps`). Reject; the
+  ORT WASM browser path does not benefit from this exact decoder cleanup. The trial asset was
+  removed and `bench/results/latest.json` was restored to the accepted default at streaming
+  `37.70 / 37.43 / 39.30 ms` (`26.52 fps`).
+- Rejected a JavaScript CPU cache-commit loop-order change. The trial changed the K-cache rotation
+  loops to process each time slot contiguously and used typed-array appends for K, keeping the same
+  arithmetic and passing browser output validation, but cache commit regressed from the accepted
+  roughly `1.55 ms` window to `1.68 / 1.66 / 1.73 ms`; full streaming also regressed to
+  `38.34 / 37.58 / 42.73 ms` (`26.08 fps`). The loop-order change was reverted. After restoring the
+  accepted updater, browser output validation passed again with a noisy window of dynamics
+  `27.01 / 25.90 / 29.48 ms`, decoder `10.63 / 10.36 / 10.87 ms`, cache commit
+  `1.55 / 1.49 / 1.68 ms`, and streaming `39.23 / 37.81 / 42.59 ms` (`25.49 fps`).
+- Rejected cache-layer `Slice/Squeeze -> Gather` on the current entry MatMul path. The existing exact
+  rewrite removed `24` K/V cache layer slice pairs from the preferred entry step and was CPU-exact
+  against the accepted graph for `final_z`, `candidate_k_entry`, and `candidate_v_entry`. Browser
+  output validation passed, but it was indistinguishable from the same-window default: trial
+  streaming `37.68 / 37.31 / 40.16 ms` (`26.54 fps`) versus default
+  `37.66 / 37.36 / 40.07 ms` (`26.55 fps`). Reject as noise-level; replacing slice kernels with
+  more gathers does not move the WASM path.
+- Retested disabling temporal dynamics MHA now that explicit attention uses MatMul. The validated
+  export used `--skip_wasm_mha_dynamics_fusion`, kept `sample_steps=2`, and rewrote all preferred
+  entry-step attention islands to MatMul: `36` `bhqd,bhkd->bhqk`, `35` `bqhd,bkhd->bhqk`, and
+  `71` `bhqk,bkhd->bqhd`. JAX/export validation passed with the accepted entry envelope, and
+  browser output validation passed, but performance regressed: dynamics `26.66 / 26.67 / 27.76 ms`,
+  decoder `10.28 / 10.31 / 10.68 ms`, cache commit `1.53 / 1.48 / 1.63 ms`, and streaming
+  `38.51 / 38.45 / 40.04 ms` (`25.97 fps`). Keep the accepted hybrid of temporal MHA plus MatMul
+  for the remaining explicit attention.
+- Retested the bundled ORT WASM loader on the combined MatMul graph. It passed output validation and
+  measured dynamics `25.70 / 25.44 / 27.32 ms`, decoder `10.25 / 10.26 / 10.75 ms`, cache commit
+  `1.54 / 1.48 / 1.65 ms`, and streaming `37.53 / 37.16 / 39.45 ms` (`26.65 fps`), only about
+  `0.1 ms` ahead of the adjacent standard-loader control (`37.63 / 37.35 / 40.28 ms`,
+  `26.57 fps`). Keep the standard `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs` loader.
+  `bench/results/latest.json` was restored to the standard loader; the final restored window was
+  noisy at streaming `38.72 / 38.21 / 43.41 ms` (`25.82 fps`) but remained output-valid.
+
+Current WASM conclusion:
+- The best behavior-preserving pure-WASM path is now the s2 entry-cache slide graph with temporal
+  dynamics MHA, the MatMul attention rewrite on the decoder and remaining entry-step attention
+  islands, the optimized JavaScript cache updater,
+  `wasmNumThreads=4`, and the WASM-only ORT runtime graph optimization level `extended`.
+- The full frame improved from roughly `45-50 ms` on the full-cache path to roughly `37.4-37.8 ms`
+  in favorable local windows, or about `26.5-26.7 fps`; noisy repeats can still land around
+  `39 ms`. Dynamics alone is now usually about `25.7 ms`, cache commit is about `1.5-1.6 ms`, and
+  decoder is about `10.2 ms`, but the sequential full generated frame remains below the `30 fps`
+  target.
+- Further progress likely needs a genuinely faster CPU execution path for the decoder/dense blocks
+  or a model/runtime-level change; the exact layout cleanups that help WebGPU are not translating
+  into WASM speedups.
+
+### 2026-05-19 KST: WASM Static Head-Merge Cleanup
+
+Goal:
+- Keep `sample_steps=2` and continue looking for behavior-preserving CPU/WASM wins after the
+  combined attention MatMul path.
+- Validate graph changes against the JAX/export gate before accepting them, and keep browser output
+  validation plus demo smoke as runtime gates.
+
+Accepted:
+- Added a WASM-only static head-merge pass that replaces attention output
+  `Split -> Concat -> Squeeze` islands with one equivalent static `Reshape`. This is deliberately
+  narrower than restoring general `Reshape` lowering: it runs only after the accepted attention/MHA
+  passes and only on the hot WASM decoder, decode-z, and preferred entry-slide artifacts.
+- A prototype copy was CPU-exact against the accepted JAX-validated graphs:
+  - Decoder `patches` max/mean abs error `0.0 / 0.0`.
+  - Entry-step `final_z`, `candidate_k_entry`, and `candidate_v_entry` max/mean abs error all
+    `0.0 / 0.0`.
+- Re-exported `breakout_wasm_default_mha` with
+  `--export_target wasm --sample_steps 2 --export_cached --validate --overwrite`. JAX/export
+  validation passed with the same envelope:
+  - Entry step: `final_z` max abs `4.351139e-6`, `candidate_k_entry` `1.1205673e-5`,
+    `candidate_v_entry` `9.894371e-6`.
+  - Decoder: `patches` max abs `4.976988e-6`.
+- Manifest hot-path rewrites after the validated export:
+  - Entry slide: `36` head-merge rewrites, node count `3561 -> 3489`.
+  - Decoder: `8` head-merge rewrites, node count `403 -> 387`.
+  - Decode-z: `8` head-merge rewrites, node count `469 -> 453`.
+- Promoted-asset browser validation passed using the manifest-selected
+  `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2` step:
+  - dynamics `25.34 / 25.29 ms` mean/median
+  - decoder `10.26 / 10.25 ms`
+  - cache commit `1.54 / 1.48 ms`
+  - streaming `37.17 / 36.98 ms`, `26.90 fps`
+  - output validation passed with `6` unique frame hashes and `6` unique latent hashes.
+- Demo smoke on the same promoted WASM asset passed both `starts and renders a frame @demo` and
+  `changes the display over generated frames @demo` in Chrome.
+- The adjacent pre-promotion merge-only trial measured `37.22 / 37.05 ms` (`26.87 fps`), while the
+  adjacent default control measured `37.41 / 37.24 ms` (`26.73 fps`). Treat the improvement as small
+  but valid; it does not change the overall latency class.
+
+Rejected / kept out:
+- A broader static-layout prototype also replaced Q-head split/unsqueeze/concat islands. It was
+  CPU-exact and reduced graph size more aggressively, but it added transposes and did not improve the
+  browser full frame: streaming `38.29 / 37.63 ms` (`26.12 fps`) with decoder `10.47 ms`. Reject and
+  keep only the direct head-merge `Reshape` cleanup.
+- Retried the existing Q-head split-gather rewrite as a late pass after the accepted WASM
+  attention/static-head passes, because that later graph still exposed `axis01_concat1` islands.
+  The copied-asset trial was CPU-exact against the accepted graphs (`final_z`, K/V entries, decoder,
+  and decode-z all max/mean abs `0.0 / 0.0`) and reduced the preferred entry step from `3489` to
+  `3237` nodes, but browser output validation regressed: dynamics `28.01 / 26.73 ms`, decoder
+  `10.82 / 10.82 ms`, cache commit `1.54 / 1.49 ms`, streaming `40.41 / 39.13 ms`
+  (`24.75 fps`). Reject; the extra WASM `Gather`/`Transpose` work costs more than the removed
+  `Split`/`Unsqueeze`/`Concat` dispatches.
+- Retested the existing rank-2 SwiGLU island rewrite in isolation on the current entry-cache
+  MatMul/static path. The copied-asset trial was CPU-exact against the accepted entry, decoder, and
+  decode-z graphs, rewrote `71` entry SwiGLU islands, and reduced entry node count
+  `3489 -> 3274`, but browser output validation was slower: dynamics `27.52 / 27.09 ms`, decoder
+  `10.44 / 10.48 ms`, cache commit `1.53 / 1.48 ms`, streaming `39.53 / 38.89 ms`
+  (`25.30 fps`). Reject; keeping these activation islands rank-2 removes layout nodes but hurts ORT
+  WASM's steady-state execution on the current graph.
+- Retested no-bias `Gemm -> MatMul` on the current entry-cache WASM path. The copied-asset trial
+  rewrote `286` entry Gemms plus `32` decoder Gemms, and was CPU-exact against the accepted entry,
+  decoder, and decode-z graphs. Browser output validation passed at streaming
+  `37.28 / 37.07 ms` (`26.82 fps`), but the adjacent accepted default control was slightly faster:
+  `37.21 / 36.96 ms` (`26.88 fps`). Reject as neutral/noise-level; ORT WASM's Gemm kernels remain
+  at least as good as plain MatMul for the current dense projections.
+- Retested the latest available `onnxruntime-web@1.26.0` runtime by temporarily serving its WASM
+  `dist` files, without changing `package.json`, `bun.lock`, or the promoted artifacts. Both runs
+  passed browser output validation, measuring `36.91 / 36.73 ms` (`27.10 fps`) and
+  `37.46 / 37.25 ms` (`26.69 fps`), while adjacent pinned `1.24.3` controls measured
+  `37.56 / 36.99 ms` (`26.62 fps`) and `37.01 / 36.82 ms` (`27.02 fps`). Reject as noise-level;
+  the latest published runtime still does not move the current graph to `30 fps`.
+- Retested `wasmNumThreads=2` on the current static-head path. Browser output validation passed, but
+  dynamics and decoder both slowed sharply: streaming `50.50 / 50.14 ms` (`19.80 fps`). Keep the
+  accepted four-thread default.
+- Applied the accepted explicit-attention MatMul rewrite plus static head-merge cleanup to a copied
+  full-cache slide artifact. The full-cache graph was CPU-exact against the accepted full-cache
+  graph and improved that older path, but it was still slower than entry-cache: dynamics
+  `31.51 / 31.30 ms`, decoder `10.31 / 10.33 ms`, near-zero cache commit, and streaming
+  `41.91 / 41.66 ms` (`23.86 fps`). Reject; eliminating the JavaScript entry-cache commit is not
+  enough to offset writing the full K/V cache from the dynamics graph.
+- Applied the accepted explicit-attention MatMul rewrite plus static head-merge cleanup to a copied
+  `cache_length_entry` artifact. It was CPU-exact against the accepted cache-length graph and
+  output-valid in the browser, but stayed slower than the accepted slide-entry path: dynamics
+  `27.75 / 27.60 ms`, decoder `10.41 / 10.42 ms`, cache commit `1.53 / 1.48 ms`, streaming
+  `39.74 / 39.52 ms` (`25.16 fps`). Reject.
+- Retried the `cache_length_entry` artifact with bias-capable MHA fusion. This fused `71` attention
+  islands and was CPU-exact against the accepted cache-length graph, but browser output validation
+  still measured only dynamics `26.90 / 26.78 ms`, decoder `10.33 / 10.31 ms`, cache commit
+  `1.53 / 1.48 ms`, and streaming `38.79 / 38.68 ms` (`25.78 fps`). Reject; the accepted
+  slide-entry graph remains faster than the dynamic-mask cache-length contract.
+- Retested explicit `breakout_tokenizer_decode_z_b1_t1` after the static-head cleanup. Browser
+  output validation passed and decoder timing was neutral/slightly faster in isolation
+  (`10.17 / 10.20 ms`), but full-frame streaming stayed in the same band at
+  `37.12 / 36.86 ms` (`26.94 fps`) versus the accepted manifest-default restore below. Keep
+  `breakout_tokenizer_decoder_b1_t1` as the preferred decoder.
+- Retested the exact one-position RoPE transpose cleanup on the current entry-cache WASM path. It
+  removed `71` entry islands (`3489 -> 3347` nodes, `Transpose 391 -> 249`) plus `4` decoder
+  islands, and was CPU-exact against the accepted entry, decoder, and decode-z graphs. Browser
+  output validation passed, but streaming was neutral/slower at `37.60 / 37.49 ms`
+  (`26.59 fps`). Reject for WASM; the transpose removal that helps the WebGPU full-cache path does
+  not improve this CPU path.
+- Retested the exact final output-head `Transpose -> Slice` cleanup on the current entry-cache path.
+  It removes only two transposes and was CPU-exact for `final_z`, `candidate_k_entry`, and
+  `candidate_v_entry`. Browser output validation passed twice, measuring `37.18 / 37.00 ms`
+  (`26.90 fps`) and `37.87 / 37.11 ms` (`26.41 fps`), while the adjacent default control was
+  `37.89 / 37.45 ms` (`26.39 fps`). Reject as neutral/noise-level; the graph change is too small to
+  justify another accepted WASM export pass.
+- Retested current-path runtime controls after the final static-head path:
+  - `wasmNumThreads=6` passed output validation and improved decoder timing to `9.03 / 9.01 ms`,
+    but dynamics regressed to `32.89 / 32.79 ms`; full streaming fell to `43.49 / 43.34 ms`
+    (`22.99 fps`). Keep four threads.
+  - The bundled WASM loader `/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs` passed
+    output validation but stayed slower/noisier than the standard loader: streaming
+    `37.86 / 37.13 ms` (`26.41 fps`). Keep `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`.
+  - The JSPI loader `/node_modules/onnxruntime-web/dist/ort.jspi.min.mjs` passed output validation
+    on the current static-head artifact and measured `37.29 / 37.01 ms` (`26.82 fps`), essentially
+    identical to the adjacent standard-loader restore. Keep the standard loader.
+- Retested `graphOptimizationLevel=all` after introducing the static merge `Reshape`s. Browser
+  output validation passed, but it remained slightly slower than `extended`: streaming
+  `37.40 / 37.13 ms` (`26.74 fps`). Keep the WASM default at `extended`.
+- Retested `graphOptimizationLevel=basic` after the static-head cleanup. Browser output validation
+  passed, but it was still slower than the accepted `extended` default: streaming
+  `38.61 / 38.08 ms` (`25.90 fps`). Keep `extended`.
+- Retested the ORT default thread count by leaving `wasmNumThreads` unset on the current
+  static-head artifact. Browser output validation passed, but timing stayed in the same band as the
+  explicit four-thread default rather than improving: dynamics `25.55 / 25.27 ms`, decoder
+  `10.23 / 10.24 ms`, cache commit `1.53 / 1.47 ms`, and streaming `37.34 / 37.19 ms`
+  (`26.78 fps`). Keep the explicit four-thread default for reproducibility.
+- Retested runtime `graphOptimizationLevel=disabled` on the current static-head artifact. Browser
+  output validation passed, but disabling ORT's runtime graph optimizations was slower than
+  `extended`: dynamics `26.98 / 26.56 ms`, decoder `10.53 / 10.53 ms`, cache commit
+  `1.54 / 1.48 ms`, and streaming `39.08 / 38.71 ms` (`25.59 fps`). Keep `extended`.
+- Retested a copied direct GQA-repeat fold on the current WASM path. The copied entry graph replaced
+  `36` compact-head `Concat -> Gather(axis=2)` repeats with repeated-input `Concat`s
+  (`3489 -> 3453` nodes, `Gather 178 -> 142`), and the copied decoder/decode-z graphs each removed
+  `8` gathers. CPU comparison against the accepted artifacts was exact for `final_z`,
+  `candidate_k_entry`, `candidate_v_entry`, and `patches`. Browser output validation passed twice,
+  measuring streaming `37.40 / 37.08 ms` (`26.74 fps`) and `37.60 / 37.29 ms` (`26.59 fps`).
+  Adjacent accepted-default controls moved from a noisy `38.60 / 38.67 ms` window back to
+  `37.17 / 36.95 ms`; reject as neutral/noise-level.
+- Retested replacing attention score `Transpose(K) -> MatMul` pairs with
+  `com.microsoft::FusedMatMul(transB=1)` on copied artifacts. This was CPU-exact and removed `36`
+  entry K-transposes plus `6` decoder/decode-z K-transposes, but browser output validation measured
+  only streaming `37.77 / 37.09 ms` (`26.48 fps`). Reject; the contrib op is browser-compatible but
+  does not improve the current ORT WASM path.
+- Combined the copied direct GQA-repeat fold with the copied `FusedMatMul(transB=1)` rewrite. The
+  combined entry graph was CPU-exact and shrank to `3417` nodes (`Gather 142`, `Transpose 355`,
+  `MatMul 36`, `FusedMatMul 36`), with decoder/decode-z also exact. Browser output validation
+  passed at streaming `37.26 / 37.04 ms` (`26.84 fps`), but the adjacent accepted default was
+  slightly faster at `37.17 / 36.95 ms` (`26.90 fps`). Reject the combination.
+- Tested a copied pure z-reshape decoder to avoid the benchmark/demo JavaScript copy from
+  `final_z [1,1,32,32]` to decoder latent `[1,1,64,16]`. The trial replaced the existing
+  `breakout_tokenizer_decode_z_b1_t1` file in a copied asset with a one-node `Reshape` into the
+  accepted `breakout_tokenizer_decoder_b1_t1` graph. CPU comparison against the accepted decoder
+  plus the same JS reshape was exact for `patches` (`0.0 / 0.0` max/mean abs). Browser output
+  validation passed with the explicit decode-z decoder, but timing was neutral/slower:
+  dynamics `26.34 / 25.50 ms`, decoder `10.27 / 10.28 ms`, pack/unpack near zero, cache commit
+  `1.53 / 1.48 ms`, and streaming `38.18 / 37.27 ms` (`26.19 fps`). Reject; the JS reshape is not
+  a material bottleneck.
+- Temporarily exposed ORT `env.wasm.simd="relaxed"` as a benchmark query control. Browser output
+  validation passed, but relaxed SIMD did not improve the current path: dynamics
+  `26.09 / 25.29 ms`, decoder `10.27 / 10.26 ms`, cache commit `1.53 / 1.48 ms`, and streaming
+  `37.93 / 37.03 ms` (`26.36 fps`). The temporary benchmark knob was removed; keep the standard
+  WASM SIMD behavior.
+- Tested a copied offline ORT `ENABLE_ALL` serialization of the current static-head entry,
+  decoder, and decode-z artifacts. Serialization was CPU-exact and persisted ORT's
+  MatMul-transpose fusions (`FusedMatMul 0 -> 36`, `Transpose 391 -> 355` on entry; decoder and
+  decode-z each `FusedMatMul 0 -> 6`, `Transpose 38 -> 28`). Browser output validation passed, but
+  runtime `extended` measured only streaming `37.52 / 37.18 ms` (`26.65 fps`), and runtime `basic`
+  on the pre-fused graph regressed to `38.95 / 37.35 ms` (`25.67 fps`). Reject; persisting ORT's
+  internal MatMul-transpose fusion does not beat the accepted runtime-optimized graph.
+- Tested a copied head-time cache ABI trial on the current WASM asset. The prefill graph could
+  expose `k_cache`/`v_cache` as `[layer,batch,token,head,time,dim]` exactly: after transposing the
+  trial outputs back to the accepted `[layer,batch,token,time,head,dim]` layout, `pred_z`,
+  `k_cache`, `v_cache`, and `cache_length` all matched with `0.0 / 0.0` max/mean abs error. The
+  entry graph was rejected before browser timing: simply swapping cache slice bounds left the
+  current WASM graph's time/head concat path inconsistent, and ORT refused to load it at
+  `node_Concat_250` (`inferred=2`, `declared=64` on dimension `2`). A useful head-time cache ABI
+  would need a broader temporal attention layout rewrite, not just the cache input shape swap.
+  The copied trial asset was removed.
+- Microbenchmarked a time-major JavaScript CPU cache-update loop and an unrolled variant against the
+  accepted updater. The time-major order was slower in local V8 (`~1.15 ms` vs `~1.09 ms` after
+  warmup), while full unrolling was only about `0.13 ms` faster in the synthetic loop and would not
+  materially change the `37 ms` frame. Keep the clearer accepted cache updater.
+- Accepted a WASM-only decoder singleton-key attention bypass. The pass targets decoder attention
+  score tensors with shape `[256,8,1,1]`; `Softmax` over the 1-wide key axis is exactly one, so the
+  following attention-value `MatMul` can be replaced by its value input. It rewrote `2` chains in
+  both `breakout_tokenizer_decoder_b1_t1` and `breakout_tokenizer_decode_z_b1_t1`, reducing the
+  t1 decoder from `387 -> 349` nodes (`MatMul 16 -> 12`, `Softmax 8 -> 6`, `Transpose 38 -> 26`,
+  `Gather 18 -> 14`). CPU comparison against the accepted decoder was exact for both decoder
+  artifacts (`patches` max/mean abs `0.0 / 0.0`).
+- Re-exported the promoted `breakout_wasm_default_mha` artifact with `--export_target wasm`,
+  `--sample_steps 2`, `--export_cached`, and `--validate`. JAX/export validation passed: entry
+  `final_z` max abs `4.351139e-6`, `candidate_k_entry` `1.1205673e-5`,
+  `candidate_v_entry` `9.894371e-6`; t1 decoder `patches` max abs `4.976988e-6`.
+- Browser WASM output validation on the copied singleton-bypass trial passed twice:
+  - trial: dynamics `25.50 / 25.32 ms`, decoder `9.52 / 9.49 ms`, cache commit
+    `1.53 / 1.47 ms`, streaming `36.59 / 36.30 ms` (`27.33 fps`);
+  - repeat: dynamics `25.58 / 25.28 ms`, decoder `9.51 / 9.50 ms`, cache commit
+    `1.53 / 1.48 ms`, streaming `36.66 / 36.31 ms` (`27.28 fps`).
+  The adjacent accepted-default control before promotion measured `37.52 / 36.95 ms`
+  (`26.65 fps`) with decoder `10.29 / 10.28 ms`.
+- Promoted default after re-export passed browser output validation with `6` unique frame hashes
+  and `6` unique latent hashes. Latest timing: dynamics `25.40 / 25.18 ms`, decoder
+  `9.42 / 9.39 ms`, cache commit `1.53 / 1.48 ms`, and streaming `36.39 / 36.09 ms`
+  (`27.48 fps`). WASM demo smoke also passed `starts and renders a frame @demo` and
+  `changes the display over generated frames @demo` with
+  `?backend=wasm&assetBase=/dream_arcade_assets/breakout_wasm_default_mha`.
+- Retested extending the singleton-key bypass to the preferred dynamics slide-entry graph. The
+  copied-asset pass found no eligible singleton-key `MatMul -> Softmax -> MatMul` chains in the
+  dynamics graph (`node_count 3489 -> 3489`), so there was no ONNX change to benchmark. The copied
+  trial asset was removed.
+- Temporarily exposed ORT WASM session allocation/scheduling controls in the benchmark only, then
+  removed the temporary wiring after the runs:
+  - `executionMode=parallel` passed output validation but regressed to dynamics
+    `26.97 / 26.74 ms`, decoder `9.92 / 9.94 ms`, and streaming `38.46 / 38.12 ms`
+    (`26.00 fps`). Reject.
+  - `enableCpuMemArena=true` passed output validation but measured streaming
+    `36.71 / 36.33 ms` (`27.24 fps`), behind the promoted control. Reject.
+  - `enableMemPattern=true` passed output validation but measured streaming
+    `37.13 / 36.39 ms` (`26.94 fps`). Reject.
+  - Enabling both CPU arena and memory pattern passed output validation at
+    `36.44 / 36.10 ms` (`27.45 fps`), essentially tied with the adjacent default
+    `36.47 / 36.16 ms` (`27.42 fps`). Reject as noise-level.
+- Tested reusing CPU preallocated output tensors for the WASM step and decoder, mirroring the
+  WebGPU preallocated-output path. ORT accepted the fetch objects but returned static zero outputs:
+  browser output validation failed with `1` unique frame hash and `1` unique latent hash, and the
+  latest frame summary was all zeros. Reject as invalid for ORT WASM; the temporary patch was
+  removed.
+- Retested explicit `breakout_tokenizer_decode_z_b1_t1` after the decoder singleton-key bypass.
+  Browser output validation passed, but timing was neutral/slower than the manifest-default
+  decoder: dynamics `26.05 / 25.36 ms`, decoder `9.52 / 9.54 ms`, cache commit
+  `1.54 / 1.48 ms`, and streaming `37.14 / 36.31 ms` (`26.93 fps`). Keep
+  `breakout_tokenizer_decoder_b1_t1` as the preferred decoder.
+- Retested the shared `Gather + Add(constant)` fold on the current WASM entry-cache path. The copied
+  graph removed only three dynamics `Add` nodes (`3489 -> 3486`) and was CPU-exact against the
+  accepted entry graph for `final_z`, `candidate_k_entry`, and `candidate_v_entry` (`0.0 / 0.0`
+  max/mean abs). Browser output validation passed, first at streaming `36.37 / 36.08 ms`
+  (`27.50 fps`), but a repeat regressed to `36.86 / 36.48 ms` (`27.13 fps`) and matched the
+  adjacent default noise window. Reject; the cleanup is too small to justify another accepted pass.
+  The copied trial asset was removed.
+- Retested untried WASM thread-count controls after the decoder bypass. Both passed output
+  validation but were much slower than the accepted four-thread default:
+  - `wasmNumThreads=3`: dynamics `28.07 / 27.52 ms`, decoder `12.26 / 12.23 ms`, streaming
+    `41.91 / 41.29 ms` (`23.86 fps`).
+  - `wasmNumThreads=5`: dynamics `31.30 / 31.00 ms`, decoder `8.71 / 8.69 ms`, streaming
+    `41.59 / 41.20 ms` (`24.04 fps`).
+  Keep `wasmNumThreads=4`.
+- Retested runtime `graphOptimizationLevel=all` after the decoder singleton-key bypass. Browser
+  output validation passed, but it was still slower than the accepted `extended` control:
+  dynamics `25.95 / 25.59 ms`, decoder `9.47 / 9.48 ms`, cache commit `1.53 / 1.48 ms`, and
+  streaming `36.99 / 36.57 ms` (`27.03 fps`). Keep `extended`.
+- Used native ORT CPU profiling as a direction finder on the accepted graphs. The entry profile was
+  still spread across `Gemm`, `SimplifiedLayerNormalization`, shape ops, `Transpose`, `Gather`, MHA,
+  and `Concat`, while the t1 decoder showed `SimplifiedLayerNormalization` as the largest native
+  slice. This suggested trying a WASM-specific decoder RMSNorm lowering, but the native profile was
+  not treated as browser evidence.
+- Tested a copied decoder primitive RMSNorm rewrite. The trial replaced each decoder
+  `SimplifiedLayerNormalization` with equivalent RMSNorm arithmetic (`Mul`, `ReduceMean`, `Add`,
+  `Sqrt`, `Div`, `Mul`) in `breakout_tokenizer_decoder_b1_t1`, increasing that graph from
+  `349 -> 429` nodes and removing all `16` decoder `SimplifiedLayerNormalization` nodes. CPU
+  comparison against the accepted decoder passed with `patches` max/mean abs
+  `3.2186508e-6 / 4.4784e-8`. Browser output validation passed on the copied asset:
+  - first run: dynamics `26.41 / 25.48 ms`, decoder `9.22 / 9.17 ms`, cache commit
+    `1.54 / 1.48 ms`, streaming `37.21 / 36.21 ms` (`26.88 fps`);
+  - adjacent accepted default: dynamics `25.43 / 25.31 ms`, decoder `9.39 / 9.35 ms`, cache commit
+    `1.53 / 1.48 ms`, streaming `36.39 / 36.17 ms` (`27.48 fps`);
+  - repeat trial: dynamics `25.52 / 25.31 ms`, decoder `9.16 / 9.16 ms`, cache commit
+    `1.53 / 1.48 ms`, streaming `36.25 / 36.01 ms` (`27.59 fps`).
+  Accept the decoder-only rewrite because it consistently reduced decoder median time by roughly
+  `0.18-0.25 ms` without changing output validity.
+- Promoted the decoder primitive RMSNorm rewrite into the WASM export pipeline for
+  `breakout_tokenizer_decoder_b1_t1` and `breakout_tokenizer_decode_z_b1_t1` only; the preferred
+  dynamics entry graph is explicitly marked disabled for this pass. Re-exported
+  `breakout_wasm_default_mha` with `--export_target wasm`, `--sample_steps 2`, `--export_cached`,
+  and `--validate`. Manifest checks kept `demo_generation.sample_steps = 2`. JAX/export validation
+  passed: entry `final_z` max abs `4.351139e-6`, `candidate_k_entry` `1.1205673e-5`,
+  `candidate_v_entry` `9.894371e-6`; t1 decoder `patches` max abs `3.904104e-6`; decode-z
+  `patches` max abs `3.337860e-6`. The promoted pass rewrote `16` RMSNorms in both decoder
+  artifacts (`349 -> 429` and `415 -> 495` nodes) and left the entry graph at `3489` nodes.
+- Promoted browser WASM output validation passed twice with the standard WASM loader,
+  `wasmNumThreads=4`, and `graphOptimizationLevel=extended`:
+  - first run: dynamics `25.65 / 25.30 ms`, decoder `9.18 / 9.18 ms`, cache commit
+    `1.53 / 1.48 ms`, streaming `36.39 / 36.00 ms` (`27.48 fps`);
+  - repeat: dynamics `25.53 / 25.26 ms`, decoder `9.19 / 9.19 ms`, cache commit
+    `1.52 / 1.48 ms`, streaming `36.28 / 35.87 ms` (`27.56 fps`).
+  Output validation reported `6` unique frame hashes and `6` unique latent hashes. WASM demo smoke
+  passed both `starts and renders a frame @demo` and `changes the display over generated frames
+  @demo` with `?backend=wasm&assetBase=/dream_arcade_assets/breakout_wasm_default_mha`.
+- Tested applying the decoder primitive RMSNorm rewrite to the preferred dynamics entry graph in a
+  copied asset. It removed all `215` entry `SimplifiedLayerNormalization` nodes but expanded the
+  entry graph from `3489 -> 4564` nodes. CPU comparison against the accepted entry graph passed:
+  `final_z` max abs `3.5762787e-6`, `candidate_k_entry` `1.0848045e-5`, and
+  `candidate_v_entry` `5.826354e-6`. Browser output validation passed, but dynamics and full-frame
+  timing regressed to dynamics `25.83 / 25.74 ms`, decoder `9.22 / 9.21 ms`, cache commit
+  `1.53 / 1.48 ms`, and streaming `36.62 / 36.49 ms` (`27.31 fps`). The adjacent accepted default
+  was faster at streaming `36.34 / 36.08 ms` (`27.52 fps`). Reject; the primitive norm lowering is
+  useful only for the small decoder graphs.
+- Accepted an extension to the WASM static head-merge pass for the dynamics MHA query path. The
+  copied trial replaced `35` ranked `Split(axis=2) -> Concat(axis=3) -> Squeeze(axis=2)` islands
+  shaped `[36,1,8,32] -> [36,1,256]` with one static `Reshape` each, reducing the promoted entry
+  graph from `3489 -> 3419` nodes. CPU comparison against the accepted entry graph was exact for
+  `final_z`, `candidate_k_entry`, and `candidate_v_entry` (`0.0 / 0.0` max/mean abs).
+  Browser output validation passed twice:
+  - trial: dynamics `25.38 / 25.09 ms`, decoder `9.19 / 9.18 ms`, cache commit
+    `1.54 / 1.49 ms`, streaming `36.15 / 35.85 ms` (`27.67 fps`);
+  - repeat: dynamics `25.22 / 24.97 ms`, decoder `9.22 / 9.21 ms`, cache commit
+    `1.54 / 1.49 ms`, streaming `36.02 / 35.73 ms` (`27.77 fps`).
+  Adjacent accepted defaults stayed slower at `36.34 / 36.08 ms` (`27.52 fps`) and
+  `36.37 / 36.06 ms` (`27.49 fps`), so this is a small but repeatable entry-graph win.
+- Re-exported the promoted `breakout_wasm_default_mha` artifact with `--export_target wasm`,
+  `--sample_steps 2`, `--export_cached`, and `--validate`. Manifest checks kept
+  `demo_generation.sample_steps = 2`. JAX/export validation passed with the accepted envelope:
+  entry `final_z` max abs `4.351139e-6`, `candidate_k_entry` `1.1205673e-5`,
+  `candidate_v_entry` `9.894371e-6`; t1 decoder `patches` max abs `3.904104e-6`; decode-z
+  `patches` max abs `3.337860e-6`. The static head-merge pass now rewrites both the original
+  `36` 2D head merges and the `35` ranked MHA query merges, reducing the entry graph
+  `3561 -> 3419` during the export pass (`Split 180`, `Concat 255`, `Squeeze 305`, `Reshape 71`
+  after the pass).
+- Promoted browser WASM output validation passed twice after the ranked head-merge export:
+  - first run: dynamics `25.58 / 25.20 ms`, decoder `9.24 / 9.22 ms`, cache commit
+    `1.53 / 1.48 ms`, streaming `36.38 / 36.01 ms` (`27.49 fps`);
+  - repeat: dynamics `25.12 / 25.03 ms`, decoder `9.22 / 9.21 ms`, cache commit
+    `1.62 / 1.56 ms`, streaming `36.00 / 35.83 ms` (`27.78 fps`).
+  Output validation again reported `6` unique frame hashes and `6` unique latent hashes. WASM demo
+  smoke passed both `starts and renders a frame @demo` and `changes the display over generated
+  frames @demo` with `?backend=wasm&assetBase=/dream_arcade_assets/breakout_wasm_default_mha`.
+  After the rejected follow-up trials, the accepted `extended` restore run measured dynamics
+  `25.25 / 25.08 ms`, decoder `9.25 / 9.24 ms`, cache commit `1.53 / 1.48 ms`, and streaming
+  `36.06 / 35.84 ms` (`27.73 fps`).
+- Retested runtime `graphOptimizationLevel=basic` on the newly smaller entry graph. Browser output
+  validation passed but it regressed to dynamics `26.61 / 25.97 ms`, decoder `9.24 / 9.23 ms`,
+  cache commit `1.53 / 1.48 ms`, and streaming `37.42 / 36.75 ms` (`26.72 fps`). Keep
+  rejecting `basic`.
+- Tested a copied decoder inverse-transpose-pair cleanup after the singleton-key bypass and decoder
+  primitive RMSNorm promotion. The copied decoder/decode-z graphs each removed two exact inverse
+  `Transpose -> Transpose` pairs (`429 -> 425` and `495 -> 491` nodes), and CPU comparison was
+  exact for `patches` on both artifacts. Browser output validation passed, but timing was
+  neutral/slower: dynamics `26.16 / 25.33 ms`, decoder `9.44 / 9.27 ms`, cache commit
+  `1.53 / 1.48 ms`, and streaming `37.18 / 36.10 ms` (`26.90 fps`). Reject; ORT's optimizer
+  already appears to handle or hide most of this small cleanup.
+- Retested runtime `graphOptimizationLevel=all` after both the decoder primitive RMSNorm promotion
+  and the ranked MHA query head-merge export. This is a session/runtime change only; the ONNX graphs
+  and JAX/export validation envelope are unchanged. Explicit `all` browser output validation passed
+  twice with `wasmNumThreads=4`:
+  - first run: dynamics `25.17 / 24.89 ms`, decoder `9.21 / 9.21 ms`, cache commit
+    `1.53 / 1.48 ms`, streaming `35.95 / 35.57 ms` (`27.81 fps`);
+  - repeat: dynamics `25.00 / 24.88 ms`, decoder `9.22 / 9.22 ms`, cache commit
+    `1.54 / 1.48 ms`, streaming `35.80 / 35.57 ms` (`27.93 fps`).
+  The adjacent `extended` run passed but was slower at dynamics `25.72 / 25.05 ms`, decoder
+  `9.23 / 9.22 ms`, cache commit `1.54 / 1.48 ms`, and streaming `36.53 / 35.88 ms`
+  (`27.38 fps`). Promoted the WASM default in the benchmark and demo from `extended` to `all`.
+  A no-override default validation confirmed the benchmark selected `graphOptimizationLevel: "all"`
+  and passed browser output validation at `sample_steps=2`: dynamics `25.23 / 24.99 ms`, decoder
+  `9.22 / 9.21 ms`, cache commit `1.52 / 1.48 ms`, streaming `36.01 / 35.66 ms`
+  (`27.77 fps`), with `6` unique frame hashes and `6` unique latent hashes. The default WASM demo
+  smoke passed both `starts and renders a frame @demo` and `changes the display over generated
+  frames @demo` with `?backend=wasm&assetBase=/dream_arcade_assets/breakout_wasm_default_mha`.
+- Tested ORT WASM `executionMode=parallel` as a runtime-only scheduling control on the current
+  artifact. Browser output validation passed, but it regressed both sessions: dynamics
+  `26.69 / 26.53 ms`, decoder `9.71 / 9.69 ms`, cache commit `1.53 / 1.48 ms`, and streaming
+  `37.97 / 37.78 ms` (`26.34 fps`). The adjacent default sequential run returned to dynamics
+  `25.18 / 24.78 ms`, decoder `9.25 / 9.23 ms`, cache commit `1.55 / 1.48 ms`, and streaming
+  `36.01 / 35.53 ms` (`27.77 fps`). Reject; ORT's per-session parallel graph scheduler adds
+  overhead for these already-threaded WASM kernels.
+- Retested the current npm `onnxruntime-web@1.26.0` runtime after the later decoder RMSNorm,
+  ranked head-merge, and `graphOptimizationLevel=all` changes. The 1.26.0 package was staged under
+  an ignored node_modules trial path so the JS loader and `.wasm` files matched; no dependency files
+  or ONNX artifacts were changed. Browser output validation passed, but timing was neutral/slower:
+  dynamics `25.50 / 25.04 ms`, decoder `9.22 / 9.19 ms`, cache commit `1.53 / 1.47 ms`, and
+  streaming `36.29 / 35.82 ms` (`27.55 fps`). The adjacent pinned `1.24.3` control was faster at
+  dynamics `25.05 / 24.88 ms`, decoder `9.24 / 9.22 ms`, cache commit `1.53 / 1.47 ms`, and
+  streaming `35.86 / 35.62 ms` (`27.89 fps`). Reject; keep the pinned runtime for now.
+- Retested the pinned `1.24.3` bundled WASM loader,
+  `/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs`, on the current accepted graph.
+  Browser output validation passed, but the result stayed in the standard-loader noise band:
+  dynamics `25.20 / 24.95 ms`, decoder `9.22 / 9.21 ms`, cache commit `1.53 / 1.47 ms`, and
+  streaming `35.99 / 35.71 ms` (`27.78 fps`). The adjacent standard-loader control remained
+  slightly faster at `35.86 / 35.62 ms` (`27.89 fps`). Reject; keep the smaller standard WASM
+  loader.
+- Retested the pinned `1.24.3` JSPI loader,
+  `/node_modules/onnxruntime-web/dist/ort.jspi.min.mjs`, on the same graph. Browser output
+  validation passed, but timing was slower than the accepted standard loader: dynamics
+  `25.30 / 25.23 ms`, decoder `9.28 / 9.28 ms`, cache commit `1.53 / 1.48 ms`, and streaming
+  `36.15 / 36.01 ms` (`27.66 fps`). Reject; JSPI call plumbing is not a win for this current
+  threaded WASM path.
+- Tested the current npm dev tag, `onnxruntime-web@1.27.0-dev.20260506-673c3320fc`, with matching
+  JS and `.wasm` files staged under an ignored trial path. Browser output validation passed twice:
+  first at dynamics `25.30 / 25.19 ms`, decoder `9.23 / 9.22 ms`, cache commit
+  `1.54 / 1.48 ms`, streaming `36.11 / 35.93 ms` (`27.69 fps`), and repeat at dynamics
+  `25.25 / 25.09 ms`, decoder `9.23 / 9.23 ms`, cache commit `1.53 / 1.48 ms`, streaming
+  `36.06 / 35.90 ms` (`27.73 fps`). Same-window pinned controls were noisy
+  (`36.82 / 36.48 ms` then `36.27 / 35.98 ms`), while the earlier accepted pinned window was
+  faster at `35.86 / 35.62 ms`. Reject; the prerelease runtime is not a stable/material win and
+  still does not approach `30 fps`.
+- Tested ORT WASM allocation session options on the accepted pinned runtime. All variants passed
+  browser output validation at `sample_steps=2`, but none produced a full-frame win:
+  - `enableCpuMemArena=true`: dynamics `25.13 / 24.95 ms`, decoder `9.20 / 9.19 ms`, cache commit
+    `1.53 / 1.48 ms`, streaming `35.89 / 35.66 ms` (`27.87 fps`);
+  - `enableMemPattern=true`: dynamics `25.41 / 25.05 ms`, decoder `9.07 / 9.07 ms`, cache commit
+    `1.54 / 1.48 ms`, streaming `36.05 / 35.68 ms` (`27.74 fps`);
+  - both enabled: dynamics `25.54 / 25.30 ms`, decoder `9.08 / 9.07 ms`, cache commit
+    `1.53 / 1.48 ms`, streaming `36.19 / 35.90 ms` (`27.63 fps`).
+  Reject; memory pattern can help decoder slightly, but the dynamics regression and overall frame
+  noise leave the default session options better.
+- After removing the temporary runtime hooks, the accepted no-override WASM benchmark passed output
+  validation again with standard `ort.wasm.min.mjs`, `wasmNumThreads=4`, and default
+  `graphOptimizationLevel=all`: dynamics `25.21 / 24.90 ms`, decoder `9.23 / 9.23 ms`, cache
+  commit `1.54 / 1.49 ms`, and streaming `36.02 / 35.62 ms` (`27.76 fps`), with `6` unique frame
+  hashes and `6` unique latent hashes.
+- Accepted a runtime-only WASM cache scheduling change. The benchmark and demo now use a Web Worker
+  for the entry-cache slide/rebase on the WASM backend, copying the small K/V entry tensors while
+  transferring the persistent K/V cache buffers, and start that async update before the decoder
+  runs. This does not change the ONNX graphs, so the existing export/JAX validation envelope for the
+  promoted s2 artifact still applies.
+  - Explicit worker-cache benchmark runs passed browser output validation with `6` unique frame
+    hashes and `6` unique latent hashes. Timings were dynamics `25.49 / 25.34 ms`, decoder
+    `9.20 / 9.19 ms`, cache wait `0.241 / 0.230 ms`, streaming `35.02 / 34.89 ms`
+    (`28.56 fps`), and repeat dynamics `25.66 / 25.50 ms`, decoder `9.25 / 9.26 ms`, cache wait
+    `0.235 / 0.225 ms`, streaming `35.24 / 35.05 ms` (`28.38 fps`).
+  - The adjacent synchronous-cache default measured dynamics `25.27 / 24.95 ms`, decoder
+    `9.24 / 9.23 ms`, cache commit `1.54 / 1.49 ms`, and streaming `36.08 / 35.65 ms`
+    (`27.72 fps`), so the worker path is a real cache-overlap win even though dynamics and decoder
+    remain the dominant costs.
+  - Promoted the WASM benchmark default to `workerCacheUpdate: true`. A no-override default run
+    confirmed the default and passed output validation: dynamics `25.91 / 25.44 ms`, decoder
+    `9.31 / 9.27 ms`, cache wait `0.236 / 0.225 ms`, and streaming `35.55 / 34.93 ms`
+    (`28.13 fps`).
+  - Promoted the same worker updater into the live demo for WASM, with cleanup on failed runtime
+    construction. WASM demo smoke passed `starts and renders a frame @demo`,
+    `changes the display over generated frames @demo`, and a new cache lifecycle test that fills
+    from the initial artifact cache to the full context length and then keeps the cache full on the
+    full-cache slide path, all with
+    `?backend=wasm&assetBase=/dream_arcade_assets/breakout_wasm_default_mha`.
+- Fixed the benchmark's `provider=wasm` defaults to match the accepted WASM/demo runtime:
+  `ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs` and `wasmNumThreads=4` now apply
+  when the caller does not pass explicit overrides. This is a runtime harness/default fix only; it
+  does not change ONNX graphs or the JAX validation envelope, and it preserves `sample_steps=2`.
+  A no-override WASM benchmark then confirmed the defaults in the reported config and passed output
+  validation with `6` unique frame hashes and `6` unique latent hashes: dynamics
+  `26.01 / 25.62 ms`, decoder `9.26 / 9.25 ms`, cache wait `0.246 / 0.237 ms`, and streaming
+  `35.63 / 35.11 ms` (`28.06 fps`). The same run without those explicit settings had left
+  `wasmNumThreads` unset and loaded the WebGPU bundle, measuring only `37.82 / 37.36 ms`
+  (`26.44 fps`), so the default fix avoids a misleading slow WASM benchmark path.
+- Rejected a copied decoder `SkipSimplifiedLayerNormalization` primitive-lowering trial. The trial
+  replaced `12` decoder skip-SLN nodes with equivalent `Add/Mul/ReduceMean/Sqrt/Div/Mul`
+  arithmetic (`429 -> 501` decoder nodes). CPU comparison against the accepted decoder was valid
+  (`patches` max/mean abs `9.536743e-7 / 3.998058e-8`), and browser output validation passed, but
+  decoder timing regressed to `9.66 / 9.64 ms` and streaming to `38.34 / 37.71 ms`
+  (`26.08 fps`). The adjacent accepted-default control was faster at decoder
+  `9.40 / 9.37 ms`, streaming `37.82 / 37.36 ms` (`26.44 fps`) under the same temporarily
+  unset-thread benchmark defaults. The trial asset was removed.
+- Accepted a runtime-only decoder worker pipeline for pure WASM. The dynamics step still runs on the
+  main ORT WASM instance with `wasmNumThreads=4`, while the decoder runs in a separate Web Worker
+  with its own ORT WASM instance. The generated latent is copied to the decoder worker, the cache
+  worker update is awaited immediately so the next dynamics frame can start, and decoded patches are
+  displayed one frame later. This changes scheduling only; the ONNX graphs and the existing
+  JAX/export validation envelope are unchanged, and browser output validation hashes are computed
+  from the actual worker-decoded frames.
+  - One decoder worker thread crossed the target: dynamics `26.22 / 25.40 ms`, worker decoder
+    `30.43 / 30.38 ms`, cache wait `1.57 / 1.40 ms`, and displayed-frame interval
+    `31.08 / 30.34 ms` (`32.18 fps`).
+  - Two worker threads passed output validation at `28.60 / 27.42 ms` (`34.97 fps`), with dynamics
+    `26.51 / 25.74 ms`, worker decoder `16.45 / 16.31 ms`, and cache wait `1.59 / 1.44 ms`.
+  - Three worker threads were best and repeatable: first run `28.43 / 27.53 ms` (`35.18 fps`),
+    repeat `28.41 / 27.70 ms` (`35.21 fps`). Worker decoder was about `12.15-12.18 ms`, while
+    dynamics stayed around `26.39-26.45 ms` and cache wait around `1.51-1.60 ms`.
+  - Four worker threads still passed output validation but increased dynamics contention:
+    `29.95 / 29.51 ms` (`33.39 fps`). Keep the decoder worker default at `3` threads.
+  - Promoted the benchmark default for `provider=wasm` to `decoderWorkerPipeline: true` and
+    `decoderWorkerNumThreads: 3`. The no-override WASM benchmark confirmed the config and passed
+    output validation with `6` unique frame hashes and `6` unique latent hashes: dynamics
+    `26.64 / 26.13 ms`, worker decoder `12.21 / 12.14 ms`, cache wait `1.55 / 1.42 ms`, and
+    displayed-frame interval `28.62 / 27.75 ms` (`34.94 fps`).
+  - Promoted the same one-frame decoder pipeline into the live WASM demo. Demo smoke passed
+    `starts and renders a frame @demo`, `changes the display over generated frames @demo`, and the
+    WASM cache lifecycle test, which now also checks that the demo has the decoder worker enabled.
+    The manual/debug frame generator remains sequential so the cache lifecycle test can directly
+    verify K/V fill and full-cache sliding behavior.
+
+Current WASM conclusion:
+- The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
+  MatMul attention for the remaining explicit attention islands, the extended static head-merge
+  cleanup including ranked MHA query merges, the decoder singleton-key attention bypass, the decoder
+  primitive RMSNorm rewrite, the worker-backed JavaScript cache updater for WASM, the decoder
+  worker pipeline with `decoderWorkerNumThreads=3`, `wasmNumThreads=4`, and ORT WASM
+  `graphOptimizationLevel=all`.
+- The pure-WASM generated-frame interval now has repeated validated windows around `27.4-28.6 ms`
+  (`34.9-35.2 fps`) in headed Chrome. The `30 fps` target is reached for the accepted WASM runtime
+  path without changing `sample_steps=2`.

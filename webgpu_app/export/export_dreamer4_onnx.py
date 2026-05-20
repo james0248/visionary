@@ -5680,6 +5680,653 @@ def fuse_manual_mha_attention_for_webgpu(
     }
 
 
+def rewrite_attention_einsums_as_matmul_for_wasm(path: Path, enabled: bool = True) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = ("Einsum", "MatMul", "FusedMatMul", "Transpose", "Softmax", "Gemm")
+    if not enabled:
+        return {
+            "enabled": False,
+            "reason": "not a selected WASM attention MatMul artifact",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    model = onnx.load(path.as_posix(), load_external_data=True)
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def equation(node: onnx.NodeProto) -> str:
+        value = attr_value(node, "equation", b"")
+        if isinstance(value, bytes):
+            return value.decode("utf-8")
+        return str(value)
+
+    replacements: dict[str, list[onnx.NodeProto]] = {}
+    rewrites = Counter()
+    examples: list[dict[str, Any]] = []
+
+    for node in model.graph.node:
+        if node.op_type != "Einsum":
+            continue
+        node_equation = equation(node)
+        prefix = node.name or node.output[0]
+        if node_equation == "bhqd,bhkd->bhqk":
+            k_t = f"{prefix}__matmul_k_t"
+            replacements[prefix] = [
+                onnx.helper.make_node(
+                    "Transpose",
+                    [node.input[1]],
+                    [k_t],
+                    name=f"{prefix}__matmul_transpose_k",
+                    perm=[0, 1, 3, 2],
+                ),
+                onnx.helper.make_node(
+                    "MatMul",
+                    [node.input[0], k_t],
+                    list(node.output),
+                    name=f"{prefix}__matmul",
+                ),
+            ]
+        elif node_equation == "bqhd,bkhd->bhqk":
+            q_t = f"{prefix}__matmul_q_t"
+            k_t = f"{prefix}__matmul_k_t"
+            replacements[prefix] = [
+                onnx.helper.make_node(
+                    "Transpose",
+                    [node.input[0]],
+                    [q_t],
+                    name=f"{prefix}__matmul_transpose_q",
+                    perm=[0, 2, 1, 3],
+                ),
+                onnx.helper.make_node(
+                    "Transpose",
+                    [node.input[1]],
+                    [k_t],
+                    name=f"{prefix}__matmul_transpose_k",
+                    perm=[0, 2, 3, 1],
+                ),
+                onnx.helper.make_node(
+                    "MatMul",
+                    [q_t, k_t],
+                    list(node.output),
+                    name=f"{prefix}__matmul",
+                ),
+            ]
+        elif node_equation == "bhqk,bkhd->bqhd":
+            v_t = f"{prefix}__matmul_v_t"
+            matmul_output = f"{prefix}__matmul_bhqd"
+            replacements[prefix] = [
+                onnx.helper.make_node(
+                    "Transpose",
+                    [node.input[1]],
+                    [v_t],
+                    name=f"{prefix}__matmul_transpose_v",
+                    perm=[0, 2, 1, 3],
+                ),
+                onnx.helper.make_node(
+                    "MatMul",
+                    [node.input[0], v_t],
+                    [matmul_output],
+                    name=f"{prefix}__matmul",
+                ),
+                onnx.helper.make_node(
+                    "Transpose",
+                    [matmul_output],
+                    list(node.output),
+                    name=f"{prefix}__matmul_transpose_out",
+                    perm=[0, 2, 1, 3],
+                ),
+            ]
+        else:
+            continue
+        rewrites[node_equation] += 1
+        if len(examples) < 12:
+            examples.append({"node": node.name, "equation": node_equation})
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_attention_einsum_matmul_rewrite",
+            "reason": "No supported attention Einsum nodes found.",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node.name or node.output[0]
+        rewritten_nodes.extend(replacements.get(key, [node]))
+
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_attention_einsum_matmul_rewrite",
+        "reason": (
+            "Replace attention Einsum equations with equivalent batched MatMul "
+            "and explicit Transpose nodes for the ORT WASM CPU kernel path."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+    }
+
+
+def rewrite_static_head_merges_for_wasm(path: Path, enabled: bool = True) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = ("Split", "Concat", "Squeeze", "Reshape", "Transpose", "MatMul", "Gemm")
+    if not enabled:
+        return {
+            "enabled": False,
+            "reason": "not a selected WASM static head-merge artifact",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    try:
+        inferred = onnx.shape_inference.infer_shapes(model)
+    except Exception:
+        inferred = model
+    value_shapes = {
+        value.name: _tensor_shape(value)
+        for value in (
+            list(inferred.graph.input)
+            + list(inferred.graph.value_info)
+            + list(inferred.graph.output)
+        )
+    }
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def axes_input(node: onnx.NodeProto) -> tuple[int, ...] | None:
+        if len(node.input) < 2 or node.input[1] not in initializer_arrays:
+            return None
+        return tuple(
+            int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1)
+        )
+
+    replacements: dict[str, list[onnx.NodeProto]] = {}
+    skip_nodes: set[str] = set()
+    stale_value_info: set[str] = set()
+    new_initializers: list[onnx.TensorProto] = []
+    rewrites = Counter()
+    examples: list[dict[str, Any]] = []
+
+    for split in model.graph.node:
+        if split.op_type != "Split" or len(split.input) < 2:
+            continue
+        if int(attr_value(split, "axis", 0)) != 2:
+            continue
+        split_sizes = initializer_arrays.get(split.input[1])
+        if split_sizes is None:
+            continue
+        sizes = tuple(int(value) for value in np.asarray(split_sizes).reshape(-1))
+        input_shape = value_shapes.get(split.input[0])
+        if (
+            not sizes
+            or set(sizes) != {1}
+            or input_shape is None
+            or len(input_shape) != 4
+            or len(split.output) != len(sizes)
+        ):
+            continue
+
+        output_consumers = [consumers.get(output_name, []) for output_name in split.output]
+        if any(len(value_consumers) != 1 for value_consumers in output_consumers):
+            continue
+        concat = output_consumers[0][0]
+        if (
+            concat.op_type != "Concat"
+            or any(value_consumers[0] is not concat for value_consumers in output_consumers)
+            or list(concat.input) != list(split.output)
+            or int(attr_value(concat, "axis", 0)) != 3
+        ):
+            continue
+        squeeze = _single_consumer(consumers, concat.output[0], "Squeeze")
+        axes = axes_input(squeeze) if squeeze is not None else None
+        if squeeze is None or axes is None or 2 not in axes:
+            continue
+
+        num_heads = int(input_shape[2])
+        head_dim = int(input_shape[3])
+        concat_shape = (int(input_shape[0]), int(input_shape[1]), 1, num_heads * head_dim)
+        normalized_axes = tuple(axis if axis >= 0 else axis + len(concat_shape) for axis in axes)
+        output_shape = value_shapes.get(squeeze.output[0])
+        if (
+            num_heads <= 0
+            or head_dim <= 0
+            or any(axis < 0 or axis >= len(concat_shape) for axis in normalized_axes)
+            or any(concat_shape[axis] != 1 for axis in normalized_axes)
+        ):
+            continue
+        expected_shape = tuple(
+            dim for index, dim in enumerate(concat_shape) if index not in normalized_axes
+        )
+        if (
+            len(expected_shape) < 2
+            or any(dim <= 0 for dim in expected_shape)
+            or num_heads <= 0
+            or head_dim <= 0
+            or output_shape != expected_shape
+        ):
+            continue
+
+        prefix = node_key(split)
+        shape_name = f"{prefix}__static_head_merge_shape"
+        new_initializers.append(
+            onnx.numpy_helper.from_array(
+                np.asarray(expected_shape, dtype=np.int64),
+                shape_name,
+            )
+        )
+        replacements[prefix] = [
+            onnx.helper.make_node(
+                "Reshape",
+                [split.input[0], shape_name],
+                [squeeze.output[0]],
+                name=f"{prefix}__static_head_merge_reshape",
+            )
+        ]
+        skip_nodes.update({node_key(concat), node_key(squeeze)})
+        stale_value_info.update(split.output)
+        stale_value_info.update(concat.output)
+        rewrite_kind = (
+            "split_concat_squeeze_to_reshape"
+            if len(expected_shape) == 2
+            else "ranked_split_concat_squeeze_to_reshape"
+        )
+        rewrites[rewrite_kind] += 1
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "split": split.name,
+                    "concat": concat.name,
+                    "squeeze": squeeze.name,
+                    "input_shape": list(input_shape),
+                    "output": squeeze.output[0],
+                    "output_shape": list(output_shape),
+                    "squeeze_axes": list(normalized_axes),
+                    "heads": num_heads,
+                    "head_dim": head_dim,
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_static_head_merge_wasm_rewrite",
+            "reason": "No eligible Split -> Concat -> Squeeze head-merge islands found.",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in skip_nodes:
+            continue
+        rewritten_nodes.extend(replacements.get(key, [node]))
+
+    kept_value_info = [
+        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    model.graph.initializer.extend(new_initializers)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_static_head_merge_wasm_rewrite",
+        "reason": (
+            "Replace static attention head-merge Split/Concat/Squeeze islands with "
+            "one equivalent Reshape for the ORT WASM CPU path."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+    }
+
+
+def rewrite_singleton_key_attention_for_wasm(path: Path, enabled: bool = True) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = (
+        "MatMul",
+        "Softmax",
+        "Transpose",
+        "RotaryEmbedding",
+        "Gather",
+        "Unsqueeze",
+        "SimplifiedLayerNormalization",
+    )
+    if not enabled:
+        return {
+            "enabled": False,
+            "reason": "not a selected WASM singleton-key attention artifact",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    try:
+        inferred = onnx.shape_inference.infer_shapes(model, strict_mode=False)
+    except Exception:
+        inferred = model
+    value_shapes = {
+        value.name: _tensor_shape(value)
+        for value in (
+            list(inferred.graph.input)
+            + list(inferred.graph.value_info)
+            + list(inferred.graph.output)
+        )
+    }
+
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    replacements: dict[str, str] = {}
+    skip_nodes: set[str] = set()
+    rewrites = Counter()
+    examples: list[dict[str, Any]] = []
+
+    for score_matmul in model.graph.node:
+        if score_matmul.op_type != "MatMul" or len(score_matmul.output) != 1:
+            continue
+        score_shape = value_shapes.get(score_matmul.output[0])
+        if score_shape is None or len(score_shape) < 2 or score_shape[-2:] != (1, 1):
+            continue
+        softmax = _single_consumer(consumers, score_matmul.output[0], "Softmax")
+        value_matmul = _single_consumer(consumers, softmax.output[0], "MatMul") if softmax else None
+        if (
+            softmax is None
+            or value_matmul is None
+            or len(value_matmul.input) < 2
+            or value_matmul.input[0] != softmax.output[0]
+            or len(value_matmul.output) != 1
+        ):
+            continue
+        value_input = value_matmul.input[1]
+        if value_shapes.get(value_input) != value_shapes.get(value_matmul.output[0]):
+            continue
+
+        replacements[value_matmul.output[0]] = value_input
+        skip_nodes.update({node_key(score_matmul), node_key(softmax), node_key(value_matmul)})
+        rewrites["singleton_score_softmax_value_bypass"] += 1
+        if len(examples) < 8:
+            examples.append(
+                {
+                    "score_matmul": score_matmul.name,
+                    "softmax": softmax.name,
+                    "value_matmul": value_matmul.name,
+                    "score_shape": list(score_shape),
+                    "value_input": value_input,
+                    "output": value_matmul.output[0],
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_singleton_key_attention_wasm_rewrite",
+            "reason": "No eligible singleton-key MatMul -> Softmax -> MatMul chains found.",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    for node in model.graph.node:
+        if node_key(node) in skip_nodes:
+            continue
+        for index, input_name in enumerate(node.input):
+            if input_name in replacements:
+                node.input[index] = replacements[input_name]
+
+    live_values = {output.name for output in model.graph.output}
+    live_nodes: list[onnx.NodeProto] = []
+    for node in reversed(model.graph.node):
+        if node_key(node) in skip_nodes:
+            continue
+        if any(output_name in live_values for output_name in node.output):
+            live_nodes.append(node)
+            live_values.update(input_name for input_name in node.input if input_name)
+    live_nodes.reverse()
+
+    kept_value_info = [
+        value_info for value_info in model.graph.value_info if value_info.name in live_values
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(live_nodes)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_singleton_key_attention_wasm_rewrite",
+        "reason": (
+            "Bypass attention chains whose score tensor has a singleton key axis. "
+            "Softmax over a 1-wide axis is exactly one, so the attention result is "
+            "the value tensor."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+    }
+
+
+def rewrite_decoder_rmsnorm_as_primitives_for_wasm(
+    path: Path, enabled: bool = True
+) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = (
+        "SimplifiedLayerNormalization",
+        "Mul",
+        "ReduceMean",
+        "Add",
+        "Sqrt",
+        "Div",
+    )
+    if not enabled:
+        return {
+            "enabled": False,
+            "reason": "not a selected WASM decoder primitive RMSNorm artifact",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    rewritten_nodes: list[onnx.NodeProto] = []
+    new_initializers: list[onnx.TensorProto] = []
+    rewrites = Counter()
+    examples: list[dict[str, Any]] = []
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    for node in model.graph.node:
+        if (
+            node.op_type != "SimplifiedLayerNormalization"
+            or len(node.input) < 2
+            or len(node.output) != 1
+        ):
+            rewritten_nodes.append(node)
+            continue
+
+        prefix = node.name or node.output[0]
+        axis = int(attr_value(node, "axis", -1))
+        epsilon = float(attr_value(node, "epsilon", 1e-6))
+        x_input = node.input[0]
+        scale_input = node.input[1]
+        square_output = f"{prefix}__primitive_square"
+        mean_output = f"{prefix}__primitive_mean"
+        add_output = f"{prefix}__primitive_add_eps"
+        sqrt_output = f"{prefix}__primitive_sqrt"
+        div_output = f"{prefix}__primitive_div"
+        axes_name = f"{prefix}__primitive_axes"
+        epsilon_name = f"{prefix}__primitive_epsilon"
+
+        new_initializers.extend(
+            [
+                onnx.numpy_helper.from_array(np.asarray([axis], dtype=np.int64), axes_name),
+                onnx.numpy_helper.from_array(np.asarray(epsilon, dtype=np.float32), epsilon_name),
+            ]
+        )
+        rewritten_nodes.extend(
+            [
+                onnx.helper.make_node(
+                    "Mul",
+                    [x_input, x_input],
+                    [square_output],
+                    name=f"{prefix}__primitive_square",
+                ),
+                onnx.helper.make_node(
+                    "ReduceMean",
+                    [square_output, axes_name],
+                    [mean_output],
+                    name=f"{prefix}__primitive_mean",
+                    keepdims=1,
+                ),
+                onnx.helper.make_node(
+                    "Add",
+                    [mean_output, epsilon_name],
+                    [add_output],
+                    name=f"{prefix}__primitive_add_eps",
+                ),
+                onnx.helper.make_node(
+                    "Sqrt",
+                    [add_output],
+                    [sqrt_output],
+                    name=f"{prefix}__primitive_sqrt",
+                ),
+                onnx.helper.make_node(
+                    "Div",
+                    [x_input, sqrt_output],
+                    [div_output],
+                    name=f"{prefix}__primitive_div",
+                ),
+                onnx.helper.make_node(
+                    "Mul",
+                    [div_output, scale_input],
+                    list(node.output),
+                    name=f"{prefix}__primitive_scale",
+                ),
+            ]
+        )
+        rewrites["simplified_layer_norm_to_rmsnorm_primitives"] += 1
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "node": node.name,
+                    "axis": axis,
+                    "epsilon": epsilon,
+                    "output": node.output[0],
+                }
+            )
+
+    if not rewrites:
+        return {
+            "enabled": True,
+            "tool": "custom_decoder_rmsnorm_primitive_wasm_rewrite",
+            "reason": "No SimplifiedLayerNormalization nodes found.",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    model.graph.initializer.extend(new_initializers)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_decoder_rmsnorm_primitive_wasm_rewrite",
+        "reason": (
+            "Replace decoder SimplifiedLayerNormalization with equivalent RMSNorm "
+            "primitive arithmetic for the ORT WASM CPU path."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+    }
+
+
 def rewrite_rotary_embedding_for_webgpu(path: Path) -> dict[str, Any]:
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
@@ -7588,6 +8235,10 @@ def main() -> None:
         "rotary_embedding": rewrite_rotary_embedding_for_webgpu,
         "fuse_gqa_attention": fuse_manual_gqa_attention_for_webgpu,
         "fuse_mha_attention": fuse_manual_mha_attention_for_webgpu,
+        "attention_einsum_matmul": rewrite_attention_einsums_as_matmul_for_wasm,
+        "static_head_merge_wasm": rewrite_static_head_merges_for_wasm,
+        "singleton_key_attention_wasm": rewrite_singleton_key_attention_for_wasm,
+        "decoder_rmsnorm_primitive_wasm": rewrite_decoder_rmsnorm_as_primitives_for_wasm,
         "squeeze_concat": rewrite_squeeze_concat_for_webgpu,
         "unsqueeze_transpose_squeeze": rewrite_unsqueeze_transpose_squeeze_for_webgpu,
         "attention_scale_folding": fold_attention_scale_into_query_norm_for_webgpu,
@@ -7626,6 +8277,14 @@ def main() -> None:
     rotary_embedding_rewrite = pass_results["rotary_embedding_rewrite"]
     fused_gqa_attention_rewrite = pass_results["fused_gqa_attention_rewrite"]
     fused_mha_attention_rewrite = pass_results["fused_mha_attention_rewrite"]
+    attention_einsum_matmul_rewrite = pass_results["attention_einsum_matmul_rewrite"]
+    static_head_merge_wasm_rewrite = pass_results["static_head_merge_wasm_rewrite"]
+    singleton_key_attention_wasm_rewrite = pass_results[
+        "singleton_key_attention_wasm_rewrite"
+    ]
+    decoder_rmsnorm_primitive_wasm_rewrite = pass_results[
+        "decoder_rmsnorm_primitive_wasm_rewrite"
+    ]
     squeeze_concat_rewrite = pass_results["squeeze_concat_rewrite"]
     unsqueeze_transpose_squeeze_rewrite = pass_results["unsqueeze_transpose_squeeze_rewrite"]
     attention_scale_folding = pass_results["attention_scale_folding"]
@@ -8753,6 +9412,18 @@ def main() -> None:
         entry["rotary_embedding_rewrite"] = rotary_embedding_rewrite[entry["name"]]
         entry["fused_gqa_attention_rewrite"] = fused_gqa_attention_rewrite[entry["name"]]
         entry["fused_mha_attention_rewrite"] = fused_mha_attention_rewrite[entry["name"]]
+        entry["attention_einsum_matmul_rewrite"] = attention_einsum_matmul_rewrite[
+            entry["name"]
+        ]
+        entry["static_head_merge_wasm_rewrite"] = static_head_merge_wasm_rewrite[
+            entry["name"]
+        ]
+        entry["singleton_key_attention_wasm_rewrite"] = (
+            singleton_key_attention_wasm_rewrite[entry["name"]]
+        )
+        entry["decoder_rmsnorm_primitive_wasm_rewrite"] = (
+            decoder_rmsnorm_primitive_wasm_rewrite[entry["name"]]
+        )
         entry["squeeze_concat_rewrite"] = squeeze_concat_rewrite[entry["name"]]
         entry["unsqueeze_transpose_squeeze_rewrite"] = unsqueeze_transpose_squeeze_rewrite[
             entry["name"]
@@ -8774,7 +9445,7 @@ def main() -> None:
             "preferred_prefill_export": DYNAMICS_CACHED_PREFILL_NAME,
             "preferred_decoder_export": TOKENIZER_DECODER_STEP_NAME,
             "preferred_full_cache_step_export_wasm": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_FULL_CACHE_NAME
+                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
             ),
             "decode_z": {
                 "source": "final_z_after_velocity_update",

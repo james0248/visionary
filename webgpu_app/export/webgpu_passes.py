@@ -171,6 +171,18 @@ def run_webgpu_passes(
             name: rewrites["fuse_mha_attention"](path, enabled=options.fuse_mha_attention)
             for name, path in exported_paths.items()
         },
+        "attention_einsum_matmul_rewrite": disabled(
+            exported_paths, "attention Einsum -> MatMul is WASM-only"
+        ),
+        "static_head_merge_wasm_rewrite": disabled(
+            exported_paths, "static head merge Reshape is WASM-only"
+        ),
+        "singleton_key_attention_wasm_rewrite": disabled(
+            exported_paths, "singleton-key attention bypass is WASM-only"
+        ),
+        "decoder_rmsnorm_primitive_wasm_rewrite": disabled(
+            exported_paths, "decoder RMSNorm primitive rewrite is WASM-only"
+        ),
         "squeeze_concat_rewrite": {
             name: rewrites["squeeze_concat"](path, enabled=not options.skip_squeeze_concat_rewrite)
             for name, path in exported_paths.items()
