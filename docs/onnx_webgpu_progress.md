@@ -7064,6 +7064,13 @@ Rejected / kept out:
     `31.72 ms/frame`, dynamics `27.60 ms`, cache wait `1.52 ms`.
   - Conclusion: the current `3`-thread decoder worker remains the best default; lighter settings
     are noise-level or slower and can expose decoder wait.
+- Retested Safari/WebKit main WASM thread counts on the accepted bundle:
+  - `wasmNumThreads=4`: output validation passed but regressed to `28.71 fps`,
+    `34.83 ms/frame`, dynamics `30.97 ms`, cache wait `1.13 ms`.
+  - `wasmNumThreads=2`: output validation passed but regressed to `28.56 fps`,
+    `35.01 ms/frame`, dynamics `31.10 ms`, cache wait `1.19 ms`.
+  - The adjacent no-override WebKit sanity run with the current default `wasmNumThreads=3`
+    remained faster at `31.22 fps`; keep the Safari/WebKit default at `3`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
