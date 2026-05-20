@@ -7368,6 +7368,11 @@ Rejected / kept out:
   sizes further (`sample 2236 -> 2090`, `entry 1167 -> 1098`), but Chrome output and latent
   validation regressed to `37.76 fps` / `26.49 ms` with large frame spikes. Keep the head-time split
   cache rewrite without rank-2 SwiGLU.
+- Rejected post-head-time Chrome thread retunes. With the accepted head-time split cache graphs,
+  the default `wasmNumThreads=4` / `decoderWorkerNumThreads=3` remains best in the validated window
+  at `39.92 fps`. Tested alternatives also passed output and latent validation but did not improve:
+  `3/3` measured `39.61 fps`, and `4/2` regressed to `37.40 fps`. Keep the current Chrome thread
+  split.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
