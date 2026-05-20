@@ -74,6 +74,22 @@ Rejected or inactive paths:
   about `22 fps` for WASM, so the remaining optimization target is roughly a `2.7x` speedup to reach
   `60 fps` without changing `sample_steps=2`.
 
+### 2026-05-21 WASM Artifact Selection
+
+- Added benchmark stage timing from the actual demo frame loop. For Chrome WASM with the previous
+  default packed full-cache entry graph, visible validation passed but the frame was dominated by
+  dynamics: `23.3 fps`, `42.9 ms/frame`, `dynamicsMs ~= 40.3 ms`, cache update wait
+  `~= 1.6 ms`, and render `~= 0.06 ms`. The decoder worker is overlapped with dynamics; its total
+  worker time was `~= 43.6 ms`, but `decoderWaitMs` was effectively zero.
+- Tested available dynamics artifacts without changing `sample_steps=2`:
+  - `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2`: Chrome WASM
+    `22.9 fps`, validation passed; reject.
+  - `breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2`: Chrome WASM
+    `24.2 fps`, validation passed; WebKit/Safari-family WASM `22.2 fps`, validation passed.
+- Promoted `breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2` as the WASM default
+  full-cache step artifact. WebGPU keeps the packed artifact, and Safari-profile WebGPU keeps the
+  Safari-specific graph-capture-safe artifact.
+
 ## Iteration Log
 
 ### 2026-04-29

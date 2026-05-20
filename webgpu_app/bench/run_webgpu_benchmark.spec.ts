@@ -313,6 +313,15 @@ function timingFromWindow(window: any) {
     if (Number.isFinite(interval)) intervals.push(interval);
   }
   const windowMsPerFrame = window.elapsedMs / Math.max(window.endFrame - window.startFrame, 1);
+  const stageSamples = new Map<string, number[]>();
+  for (const entry of stats) {
+    for (const [name, value] of Object.entries(entry.stages ?? {})) {
+      if (!Number.isFinite(value)) continue;
+      const samples = stageSamples.get(name) ?? [];
+      samples.push(value as number);
+      stageSamples.set(name, samples);
+    }
+  }
   return {
     measured_frames: window.endFrame - window.startFrame,
     elapsed_ms: window.elapsedMs,
@@ -320,6 +329,7 @@ function timingFromWindow(window: any) {
     window_fps: 1000 / windowMsPerFrame,
     frame_latency: summarize(latencies),
     frame_interval: summarize(intervals),
+    stages: Object.fromEntries([...stageSamples].map(([name, samples]) => [name, summarize(samples)])),
   };
 }
 
@@ -393,6 +403,7 @@ async function runBenchmark(
             streaming_frame: timing.frame_interval ?? timing.frame_latency,
             frame_latency: timing.frame_latency,
             frame_interval: timing.frame_interval,
+            stages: timing.stages,
             measured_frames: timing.measured_frames,
             elapsed_ms: timing.elapsed_ms,
             steady_state_ms_per_frame: timing.window_ms_per_frame,

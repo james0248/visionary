@@ -58,6 +58,7 @@ The benchmark only runs when these cached demo artifacts are present in
 `webgpu_app/dream_arcade_assets/breakout/breakout_onnx_manifest.json`:
 
 - `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2.onnx`
+- `breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2.onnx`
 - `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2_final_z_add_zero_safari_trial.onnx`
 - `breakout_tokenizer_decoder_b1_t1.onnx` preferred, with
   `breakout_tokenizer_decode_z_b1_t1.onnx` as the fallback
@@ -151,9 +152,9 @@ without visible-frame validation should be treated as invalid.
 The pure WASM path can be selected with `provider=wasm`; the demo then defaults to
 `ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`, `wasmNumThreads=4`, and the
 decoder worker pipeline with `decoderWorkerNumThreads=3`.
-The current actual-demo WASM baseline is far below the 60 fps target: about `22.5 fps` in Chrome
-and `21.8 fps` in WebKit on the local machine after this benchmark proxy fix. Keep validating
-`wasmNumThreads` and decoder worker settings per browser and machine.
+The current actual-demo WASM baseline is far below the 60 fps target: about `24.2 fps` in Chrome
+and `22.2 fps` in WebKit on the local machine with the un-packed full-cache entry graph. Keep
+validating `wasmNumThreads` and decoder worker settings per browser and machine.
 
 ## Graph Capture
 

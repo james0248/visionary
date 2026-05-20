@@ -61,9 +61,11 @@ const DECODER_EXPORT_FALLBACKS = parseConfigJson('decoderExportFallbacks', [
 ]);
 const FULL_CACHE_STEP_EXPORT_FALLBACKS = parseConfigJson('fullCacheStepExportFallbacks', [
   ...(requestedBackend === 'wasm'
-    ? ['breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2']
+    ? ['breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2']
     : []),
-  ...(browserProfile === 'safari' ? [SAFARI_SAFE_FULL_CACHE_STEP_EXPORT_NAME] : []),
+  ...(requestedBackend !== 'wasm' && browserProfile === 'safari'
+    ? [SAFARI_SAFE_FULL_CACHE_STEP_EXPORT_NAME]
+    : []),
   'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2',
   'breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2',
   'breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2',
@@ -2729,12 +2731,22 @@ function renderDecoderOutputs(runtime, decoderOutputs) {
 }
 
 async function renderPendingDecoderFrame(runtime) {
-  if (!runtime.pendingDecoderFrame) return false;
+  if (!runtime.pendingDecoderFrame) return null;
   const pending = runtime.pendingDecoderFrame;
   runtime.pendingDecoderFrame = null;
-  renderDecoderOutputs(runtime, await pending.decoderOutputs);
+  const decoderWaitStarted = performance.now();
+  const decoderOutputs = await pending.decoderOutputs;
+  const decoderCompleted = performance.now();
+  const renderStarted = decoderCompleted;
+  renderDecoderOutputs(runtime, decoderOutputs);
+  const renderCompleted = performance.now();
   disposeStepGpuTensor(pending.zOutput, pending.preserveStepOutputs);
-  return true;
+  return {
+    decoderWaitMs: decoderCompleted - decoderWaitStarted,
+    decoderTotalMs:
+      pending.decoderStarted == null ? null : decoderCompleted - pending.decoderStarted,
+    renderMs: renderCompleted - renderStarted,
+  };
 }
 
 async function ensureDecoderGraphCaptureSession(runtime) {
@@ -3268,12 +3280,12 @@ function waitForFrameCount(targetFrame, timeoutMs = 240_000) {
   });
 }
 
-function recordGeneratedFrame(started) {
+function recordGeneratedFrame(started, stages = {}) {
   frameCount += 1;
   statsFramesSinceUpdate += 1;
   const now = performance.now();
   const elapsed = now - started;
-  frameStats.push({ frame: frameCount, started, completed: now, elapsedMs: elapsed });
+  frameStats.push({ frame: frameCount, started, completed: now, elapsedMs: elapsed, stages });
   if (frameStats.length > 512) frameStats = frameStats.slice(-512);
   resolveFrameWaiters();
   const statsWindowStart = lastStatsUpdateTime || lastFrameTime;
@@ -3292,6 +3304,7 @@ function recordGeneratedFrame(started) {
 
 async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpdate?: boolean } = {}) {
   const started = performance.now();
+  const stages: Record<string, number | null> = {};
   const cacheLengthBefore = runtime.cache.length.data[0];
   const useFullCacheStep =
     runtime.sessions.fullStep &&
@@ -3351,6 +3364,7 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
   };
   let usedGraphCaptureStep = useGraphCaptureStep;
   let outputs;
+  const dynamicsStarted = performance.now();
   try {
     if (usedGraphCaptureStep) {
       ensureGraphCaptureFixedCache(runtime, activeStep.graphCapture);
@@ -3400,6 +3414,7 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
       activeStep.outputFetches ?? fetchNames,
     );
   }
+  stages.dynamicsMs = performance.now() - dynamicsStarted;
   prefillNextNoiseInputSlot(frameInputs);
   if (usedGraphCaptureStep) activeStep.graphCapture.capturedOnce = true;
   const preserveStepOutputs = Boolean(
@@ -3413,6 +3428,7 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
           v: await cloneTensorToCpuForDebug(runtime.device, outputs[activeStep.names.v]),
         }
       : null;
+  const cacheUpdateStarted = performance.now();
   const entryCacheUpdate =
     activeStep.names.cacheUpdate === 'entry' && runtime.cacheUpdater?.async
       ? runtime.cacheUpdater.update(
@@ -3424,11 +3440,16 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
       : null;
 
   const pipelineDecoder = Boolean(options.pipelineDecoder && runtime.decoderWorker);
+  const pipelinedDecoderStarted = pipelineDecoder ? performance.now() : null;
   const pipelinedDecoderOutputs = pipelineDecoder ? runWorkerDecoder(runtime, zOutput) : null;
   if (!pipelineDecoder) {
+    const decoderStarted = performance.now();
     const decoderOutputs = await runDecoder(runtime, zOutput);
+    stages.decoderMs = performance.now() - decoderStarted;
     disposeStepGpuTensor(zOutput, preserveStepOutputs);
+    const renderStarted = performance.now();
     renderDecoderOutputs(runtime, decoderOutputs);
+    stages.renderMs = performance.now() - renderStarted;
   }
 
   if (activeStep.names.cacheUpdate === 'entry') {
@@ -3436,14 +3457,19 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
       throw new Error('Entry-cache dynamics output requires a cache updater.');
     }
     if (entryCacheUpdate) {
+      const cacheWaitStarted = performance.now();
       runtime.cache = await entryCacheUpdate;
+      stages.cacheUpdateWaitMs = performance.now() - cacheWaitStarted;
+      stages.cacheUpdateTotalMs = performance.now() - cacheUpdateStarted;
     } else {
+      const cacheUpdateApplyStarted = performance.now();
       runtime.cacheUpdater.update(
         runtime.cache,
         outputs[activeStep.names.k],
         outputs[activeStep.names.v],
         runtime.cache.length,
       );
+      stages.cacheUpdateMs = performance.now() - cacheUpdateApplyStarted;
     }
     if (cacheUpdateFenceEnabled && runtime.device) await runtime.device.queue.onSubmittedWorkDone();
     if (activeStep.names.length) {
@@ -3484,14 +3510,15 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
     const rendered = await renderPendingDecoderFrame(runtime);
     runtime.pendingDecoderFrame = {
       decoderOutputs: pipelinedDecoderOutputs,
+      decoderStarted: pipelinedDecoderStarted,
       zOutput,
       preserveStepOutputs,
     };
-    if (rendered) recordGeneratedFrame(started);
+    if (rendered) recordGeneratedFrame(started, { ...stages, ...rendered });
     return debugCacheUpdate;
   }
 
-  recordGeneratedFrame(started);
+  recordGeneratedFrame(started, stages);
   return debugCacheUpdate;
 }
 
