@@ -7034,6 +7034,26 @@ Rejected / kept out:
     WASM cache lifecycle test, which now also checks that the demo has the decoder worker enabled.
     The manual/debug frame generator remains sequential so the cache lifecycle test can directly
     verify K/V fill and full-cache sliding behavior.
+- Rejected a dynamics-worker ownership trial. The prototype moved the WASM dynamics session and
+  K/V cache mutation into a dedicated Worker so the persistent cache buffers stayed resident in the
+  same thread that runs ORT, and only action/noise inputs plus `final_z` crossed the worker
+  boundary. Chrome output validation passed, but the worker path was slower than the accepted main
+  dynamics plus cache-worker pipeline:
+  - Dynamics worker with `wasmNumThreads=4`: `29.60 fps`, `33.78 ms/frame`,
+    worker dynamics `29.97 ms`, main-observed dynamics `31.31 ms`, cache update `1.21 ms`.
+  - Dynamics worker with `wasmNumThreads=3`: `28.10 fps`, `35.59 ms/frame`,
+    worker dynamics `31.52 ms`, main-observed dynamics `32.87 ms`, cache update `1.20 ms`.
+  - Adjacent accepted default control: `30.41 fps`, `32.88 ms/frame`,
+    dynamics `28.77 ms`, cache wait `1.42 ms`.
+  - Conclusion: keeping K/V ownership inside the dynamics worker removes the cache transfer shape,
+    but ORT dynamics itself slows down under Worker/decoder contention enough to lose overall. The
+    prototype was reverted; no runtime code remains from this trial.
+- Post-revert sanity on the accepted default bundle passed output validation in both browser
+  families:
+  - WebKit/Safari-family WASM: `31.22 fps`, `32.03 ms/frame`, dynamics `28.18 ms`, cache wait
+    `1.12 ms`, `wasmNumThreads=3`.
+  - Chrome WASM: `29.14 fps`, `34.31 ms/frame`, dynamics `30.04 ms`, cache wait `1.53 ms`,
+    `wasmNumThreads=4`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
