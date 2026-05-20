@@ -7269,6 +7269,12 @@ Rejected / kept out:
   Chromium defaults of four main WASM threads and three decoder-worker threads.
 - Added `decoder_worker_num_threads` to the demo runtime snapshot captured by the benchmark JSON so
   future WASM thread-retune results report both thread pools rather than only `wasm_num_threads`.
+- Retested the latest published `onnxruntime-web@1.26.0` dist against the current split-dynamics
+  WASM path by temporarily swapping only the ignored served `node_modules/onnxruntime-web/dist`
+  files, then restoring the pinned `1.24.3` dist. Chrome output and latent validation passed, but
+  the current split window stayed neutral/slightly slower than the pinned control at `33.91 fps` /
+  `29.49 ms`, dynamics `27.18 ms` (`sample 18.16 ms`, `entry 8.98 ms`) and decoder total
+  `39.49 ms`. Keep the pinned runtime.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
