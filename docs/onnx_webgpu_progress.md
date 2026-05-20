@@ -7405,6 +7405,15 @@ Rejected / kept out:
   actual-demo proxy passed output and latent validation, but regressed to `31.19 fps` / `32.06 ms`;
   dynamics rose to `29.44 ms` (`sample 19.39 ms`, `entry 10.01 ms`). Keep Chrome at the current
   `4/3` split.
+- Rejected revisiting ORT WASM `env.wasm.proxy=true` after isolating model-byte copies. The earlier
+  proxy trial failed during setup because session creation detached shared model buffers; a
+  temporary query flag fixed that part by giving each main-thread session its own copied
+  `Uint8Array`. The actual demo still failed before frame 1: ORT proxy transferred and detached
+  input tensor buffers during `session.run`, so the split path hit
+  `Failed to execute 'postMessage' on 'Worker': ArrayBuffer ... is already detached`. The cache
+  tensors must remain reusable and updateable across sample, entry, and cache-update stages, so
+  proxy mode is invalid for this CPU-cache design without adding per-run cache copies that would
+  swamp the frame budget.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
