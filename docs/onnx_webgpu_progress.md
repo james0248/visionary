@@ -7388,6 +7388,9 @@ Rejected / kept out:
   graphs by temporarily serving the ignored `node_modules/ort126/dist` files, then restoring the
   pinned `1.24.3` dist. Chrome output and latent validation passed, but timing regressed to
   `38.60 fps` / `25.91 ms`. Keep the pinned runtime.
+- Rejected post-head-time runtime `graphOptimizationLevel=extended`. The first Chrome window looked
+  promising at `40.39 fps`, but the repeat fell back to `38.44 fps`, and WebKit regressed to
+  `35.84 fps`. Keep the WASM default at `graphOptimizationLevel=all`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
