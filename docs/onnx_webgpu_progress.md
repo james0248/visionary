@@ -7414,6 +7414,16 @@ Rejected / kept out:
   tensors must remain reusable and updateable across sample, entry, and cache-update stages, so
   proxy mode is invalid for this CPU-cache design without adding per-run cache copies that would
   swamp the frame budget.
+- Rejected a targeted stack-concat cleanup retest on the accepted head-time split graphs. The
+  copied generated-asset trial rewrote every eligible
+  `Unsqueeze* -> Concat(axis=inserted)` group into `Concat -> Reshape`, reducing the split sample
+  graph `2236 -> 1972` nodes by removing `384` `Unsqueeze` nodes and the split entry graph
+  `1167 -> 1035` nodes by removing `204` `Unsqueeze` nodes. Native ORT stayed bit-exact against
+  the accepted head-time files (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and
+  `candidate_v_entry`). Chrome output and latent validation passed, but timing was not better:
+  `38.35 fps` / `26.08 ms`, with dynamics `23.82 ms`, below the adjacent default control at
+  `38.90 fps` and below the accepted `39.92 fps` window. Keep the current head-time split graphs
+  without this stack-concat lowering.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
