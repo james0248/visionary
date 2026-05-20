@@ -153,6 +153,14 @@ Rejected or inactive paths:
     `Gemm`, `Transpose`, `Gather`, `MultiHeadAttention`, `SimplifiedLayerNormalization`, and
     `Unsqueeze` dominate. This matches the prior rejected GQA/materialization and layout-cleanup
     trials; a larger dynamics-graph change is needed for another material WASM jump.
+  - Retested the existing `breakout_dynamics_sample_append_context_slide_full_cache_b1_t1_s2`
+    artifact, which avoids the entry-cache worker but returns the whole cache. It validated but was
+    slower at `25.98 fps`, with dynamics around `35.3 ms`.
+  - Temporarily instrumented normal-noise prefill in the demo loop. It measured only about
+    `0.05 ms/frame`, so moving noise generation out of the hot path is not a meaningful route.
+  - Forced the WASM entry-cache update back onto the main thread to check whether the cache worker
+    now contends with the decoder worker. Output validation passed, but Chrome measured
+    `31.20 fps`; keep the worker cache updater.
 
 ## Iteration Log
 
