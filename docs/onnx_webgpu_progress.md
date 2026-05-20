@@ -7135,6 +7135,9 @@ Rejected / kept out:
     validation but were slower.
   - Releasing the original full-step session after split session compilation validated but slowed
     the short Chromium window to `28.99 fps`; keep the full-step session resident as the fallback.
+  - Running ORT `ORT_ENABLE_EXTENDED` optimization on the extracted split models reduced the sample
+    graph `2308 -> 2284` nodes and the entry graph `1178 -> 1166` nodes, but browser validation
+    regressed the short Chromium window to `28.81 fps`; keep the plain extracted split files.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
