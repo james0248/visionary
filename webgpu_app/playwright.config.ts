@@ -26,30 +26,46 @@ export default defineConfig({
   },
   use: {
     baseURL: 'http://127.0.0.1:4173',
-    browserName: 'chromium',
-    ...(browserChannel && browserChannel !== 'bundled' ? { channel: browserChannel } : {}),
     headless,
-    launchOptions: {
-      env: {
-        ...process.env,
-        HOME: chromeHome,
-        CFFIXED_USER_HOME: chromeHome,
-      },
-      args: [
-        '--enable-unsafe-webgpu',
-        '--disable-dawn-features=disallow_unsafe_apis',
-        '--ignore-gpu-blocklist',
-        '--enable-gpu-rasterization',
-        '--disable-gpu-sandbox',
-        ...crashpadArgs,
-      ],
-    },
     trace: 'retain-on-failure',
   },
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        browserName: 'chromium',
+        ...(browserChannel && browserChannel !== 'bundled' ? { channel: browserChannel } : {}),
+        launchOptions: {
+          env: {
+            ...process.env,
+            HOME: chromeHome,
+            CFFIXED_USER_HOME: chromeHome,
+          },
+          args: [
+            '--enable-unsafe-webgpu',
+            '--disable-dawn-features=disallow_unsafe_apis',
+            '--ignore-gpu-blocklist',
+            '--enable-gpu-rasterization',
+            '--disable-gpu-sandbox',
+            ...crashpadArgs,
+          ],
+        },
+      },
+    },
+    {
+      name: 'webkit',
+      use: {
+        ...devices['Desktop Safari'],
+        browserName: 'webkit',
+        launchOptions: {
+          env: {
+            ...process.env,
+            HOME: chromeHome,
+            CFFIXED_USER_HOME: chromeHome,
+          },
+        },
+      },
     },
   ],
   webServer: {

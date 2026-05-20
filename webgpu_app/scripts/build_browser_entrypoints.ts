@@ -13,11 +13,6 @@ const defaultEntries: BrowserBuildEntry[] = [
     outdir: 'demo',
     outfile: 'demo/main.js',
   },
-  {
-    entrypoint: 'bench/benchmark.ts',
-    outdir: 'bench',
-    outfile: 'bench/benchmark.js',
-  },
 ];
 
 function cleanOutput(outfile: string) {

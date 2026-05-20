@@ -300,6 +300,7 @@ let lastStatsUpdateTime = 0;
 let statsFramesSinceUpdate = 0;
 let noiseGenerator = new NormalNoiseGenerator(0);
 let targetFps = parseTargetFps(configValue('fps', DEFAULT_TARGET_FPS));
+let frameStats = [];
 const graphCaptureConfig = configValue('graphCapture', null);
 const graphCaptureRequested =
   graphCaptureConfig == null ? null : parseBooleanConfig(graphCaptureConfig, true);
@@ -3192,6 +3193,7 @@ async function resetDemo() {
   runtime.pendingDecoderFrame = null;
   resetCacheFromInitialArtifacts(runtime);
   frameCount = 0;
+  frameStats = [];
   lastStatsUpdateTime = 0;
   statsFramesSinceUpdate = 0;
   noiseGenerator = new NormalNoiseGenerator(runtime.contextManifest.noise_seed ?? 0);
@@ -3239,8 +3241,10 @@ async function resetDemo() {
 function recordGeneratedFrame(started) {
   frameCount += 1;
   statsFramesSinceUpdate += 1;
-  const elapsed = performance.now() - started;
   const now = performance.now();
+  const elapsed = now - started;
+  frameStats.push({ frame: frameCount, started, completed: now, elapsedMs: elapsed });
+  if (frameStats.length > 512) frameStats = frameStats.slice(-512);
   const statsWindowStart = lastStatsUpdateTime || lastFrameTime;
   const shouldUpdateStats =
     frameCount === 1 || now - statsWindowStart >= STATS_UPDATE_INTERVAL_MS;
@@ -3551,6 +3555,9 @@ window.visionaryDemoDebug = {
   },
   get loadEvents() {
     return loadEvents;
+  },
+  get frameStats() {
+    return frameStats.slice();
   },
   async generateFrame(options = {}) {
     return generateFrame(options);

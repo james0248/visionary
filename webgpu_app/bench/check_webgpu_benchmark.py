@@ -22,7 +22,12 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def by_name(result: dict[str, Any]) -> dict[str, dict[str, Any]]:
     keyed = {}
-    for entry in result.get("results", []):
+    entries = result.get("results", [])
+    if isinstance(entries, dict):
+        entries = entries.values()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
         key = entry.get("mode") or entry.get("name")
         if key is not None:
             keyed[key] = entry

@@ -5,10 +5,12 @@
 Make the Dreamer4 ONNX export fast enough for a live browser demo using ONNX Runtime WebGPU.
 
 Demo benchmark contract:
-- Prefill the cached dynamics model once with 64 context frames.
-- Generate each new frame from the committed KV cache.
+- Start from an offline full 64-frame K/V cache artifact.
+- Generate each new frame from the committed full cache.
 - Decode only the newly predicted frame.
-- Benchmark only demo-relevant paths: cached prefill, cached step/sample frame, decoder, full streaming frame.
+- Benchmark the real demo stream loop, not a parallel benchmark-only runtime.
+- Validate visible generated frames with screenshot hashes and a loose Breakout brick-band coverage
+  check before treating the FPS as valid.
 
 ## Current State
 
@@ -16,17 +18,16 @@ The branch now keeps the fp32 WebGPU path as the maintained demo/export target. 
 uses:
 - `sample_steps=2`.
 - Curated Breakout assets under `webgpu_app/dream_arcade_assets/breakout`.
-- A cache-length entry dynamics step graph while filling the initial short cache:
-  `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2.onnx`.
-- A packed and partial-head-split-rewritten full-cache entry dynamics step graph after the logical
-  cache reaches 64:
+- Offline full-cache context/cache artifacts:
+  `breakout_demo_context_noop60_fire4.*` and `breakout_demo_initial_cache_noop60_fire4.*`.
+- A packed and partial-head-split-rewritten full-cache entry dynamics step graph for every generated
+  frame:
   `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2.onnx`.
-- A packed and partial-head-split-rewritten single-frame tokenizer decode graph:
-  `breakout_tokenizer_decode_z_b1_t1.onnx`.
-- Offline context/cache artifacts generated from the first Breakout episode frames.
+- A single-frame tokenizer decoder graph:
+  `breakout_tokenizer_decoder_b1_t1.onnx`.
 
 The maintained benchmark surface is latency plus graph capture:
-- `bun run benchmark:webgpu` runs the browser streaming benchmark and graph-capture check.
+- `bun run benchmark:webgpu` runs the actual demo streaming benchmark and graph-capture check.
 - `bun run benchmark:webgpu:smoke` runs the smoke subset.
 - Benchmark controls should be passed as wrapper flags after `--`, for example
   `--webgpu-benchmark-asset-base` or `--webgpu-benchmark-timed-runs`, instead of leading shell
@@ -40,6 +41,32 @@ Rejected or inactive paths:
   unstable outputs. The stable branch target is fp32.
 - ORT WebGPU profiling callbacks/session profiling did not provide reliable actionable attribution,
   so the maintained workflow keeps timing and graph capture only.
+
+### 2026-05-21 Actual Demo Benchmark Proxy
+
+- Replaced the standalone `/bench/index.html` benchmark runtime with a Playwright benchmark that
+  opens `/demo/index.html`, drives the visible Start/Pause stream loop, and records generated-frame
+  timings from the demo debug API. This removes the previous proxy gap where benchmark FPS could
+  disagree with the real demo.
+- Added `visionaryDemoDebug.frameStats` from `recordGeneratedFrame()` so the benchmark can report
+  per-frame latency and frame intervals from the actual demo loop.
+- The benchmark now writes `schema_version: 3` with `benchmark_kind: actual_demo_stream`,
+  `demo.initial`/`demo.final` runtime snapshots, and `streaming_frame.output_validation` based on
+  visible screenshot hashes plus a loose brick-band coverage check. Validation fails if generated
+  frames are static or the visible Breakout brick band catastrophically disappears.
+- Removed the benchmark-only browser entry from the build. `bun run build:webgpu:browser` now builds
+  only `demo/main.ts`; the benchmark uses the built demo bundle directly.
+- Added a Playwright `webkit` project so the same WASM actual-demo benchmark can run under a
+  Safari-family engine in addition to Chrome.
+- Baseline after the proxy fix:
+  - Chrome WebGPU default actual demo: `36.3 fps`, visible validation passed.
+  - Chrome WebGPU graph-capture actual demo: `40.0 fps`, visible validation passed.
+  - Chrome WASM actual demo: `22.5 fps`, visible validation passed, decoder worker enabled.
+  - WebKit/Safari-family WASM actual demo: `21.8 fps`, visible validation passed, decoder worker
+    enabled.
+- Conclusion: the old standalone WASM benchmark was optimistic. The real demo path is currently
+  about `22 fps` for WASM, so the remaining optimization target is roughly a `2.7x` speedup to reach
+  `60 fps` without changing `sample_steps=2`.
 
 ## Iteration Log
 

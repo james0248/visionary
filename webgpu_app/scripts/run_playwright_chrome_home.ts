@@ -22,6 +22,8 @@ const benchmarkFlagEnv = new Map([
   ['--webgpu-benchmark-prefill-artifact', 'WEBGPU_BENCHMARK_PREFILL_ARTIFACT'],
   ['--webgpu-benchmark-step-artifact', 'WEBGPU_BENCHMARK_STEP_ARTIFACT'],
   ['--webgpu-benchmark-decoder-artifact', 'WEBGPU_BENCHMARK_DECODER_ARTIFACT'],
+  ['--webgpu-benchmark-context-name', 'WEBGPU_BENCHMARK_CONTEXT_NAME'],
+  ['--webgpu-benchmark-initial-cache-name', 'WEBGPU_BENCHMARK_INITIAL_CACHE_NAME'],
   ['--webgpu-benchmark-asset-base', 'WEBGPU_BENCHMARK_ASSET_BASE'],
   ['--webgpu-benchmark-browser-profile', 'WEBGPU_BENCHMARK_BROWSER_PROFILE'],
   ['--webgpu-benchmark-profiling', 'WEBGPU_BENCHMARK_PROFILING'],
