@@ -7140,6 +7140,11 @@ Rejected / kept out:
     regressed the short Chromium window to `28.81 fps`; keep the plain extracted split files.
   - Forcing the WASM entry-cache update back onto the main thread under split validated but
     measured only `29.60 fps` and introduced decoder wait; keep the worker cache updater.
+  - Retested WASM `executionMode: 'parallel'` on the main split sessions. It passed validation but
+    regressed the short Chromium window to `27.89 fps`; keep the default ORT execution mode.
+  - Retested split-session `graphOptimizationLevel` after rebuilding the browser bundle from the
+    committed source: `all` remained best at `31.15 fps` on the short Chromium window, while
+    `extended` measured `29.34 fps` and `basic` measured `28.63 fps`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
