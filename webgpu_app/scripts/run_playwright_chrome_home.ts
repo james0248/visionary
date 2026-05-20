@@ -32,6 +32,9 @@ const benchmarkFlagEnv = new Map([
   ['--webgpu-benchmark-profiling-top-k', 'WEBGPU_BENCHMARK_PROFILING_TOP_K'],
   ['--webgpu-benchmark-ort-module', 'WEBGPU_BENCHMARK_ORT_MODULE'],
   ['--webgpu-benchmark-wasm-num-threads', 'WEBGPU_BENCHMARK_WASM_NUM_THREADS'],
+  ['--webgpu-benchmark-decoder-worker-pipeline', 'WEBGPU_BENCHMARK_DECODER_WORKER_PIPELINE'],
+  ['--webgpu-benchmark-decoder-worker-num-threads', 'WEBGPU_BENCHMARK_DECODER_WORKER_NUM_THREADS'],
+  ['--webgpu-benchmark-validation-frames', 'WEBGPU_BENCHMARK_VALIDATION_FRAMES'],
   ['--demo-query', 'DEMO_QUERY'],
   ['--allow-software-webgpu', 'ALLOW_SOFTWARE_WEBGPU'],
 ]);
