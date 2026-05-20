@@ -7184,6 +7184,10 @@ Rejected / kept out:
   stable and shared with the worker preserved output and latent validation, but did not reduce cache
   wait and regressed the short Chromium window to `29.66 fps` / `33.72 ms` with cache wait
   `1.52 ms`. Keep the transferable ArrayBuffer cache updater.
+- Rejected rewriting the current split graphs' no-bias `Gemm(A, B)` nodes to `MatMul(A, B)` before
+  a browser trial. The rewrite was CPU-exact (`max abs diff 0.0`) for split sample and entry, but
+  native ORT timing was noise-level and mixed: sample `~10.17 ms -> ~10.09 ms`, entry
+  `~4.73 ms -> ~4.77 ms`. This is too small and inconsistent to move the actual demo frame budget.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
