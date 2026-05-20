@@ -7262,6 +7262,11 @@ Rejected / kept out:
   output and latent validation still passed, but the actual-demo window regressed to `33.65 fps` /
   `29.72 ms`, with dynamics `27.41 ms` and decoder total `39.76 ms`. Keep the default ORT session
   options.
+- Rejected a combined split-pipeline thread retune with `wasmNumThreads=5` and
+  `decoderWorkerNumThreads=1`. Chrome output and latent validation passed, but the actual-demo
+  window regressed to `29.06 fps` / `34.41 ms`; dynamics slowed sharply to `32.15 ms`
+  (`sample 21.54 ms`, `entry 10.57 ms`) while decoder total rose to `45.85 ms`. Keep the current
+  Chromium defaults of four main WASM threads and three decoder-worker threads.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
