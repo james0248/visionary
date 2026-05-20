@@ -89,6 +89,7 @@ function benchmarkConfig(options: BenchmarkOptions) {
       process.env.WEBGPU_BENCHMARK_DECODER_WORKER_PIPELINE ?? (wasmDefaults ? 'true' : null),
     decoderWorkerNumThreads:
       process.env.WEBGPU_BENCHMARK_DECODER_WORKER_NUM_THREADS ?? (wasmDefaults ? '3' : null),
+    splitWasmDynamics: process.env.WEBGPU_BENCHMARK_SPLIT_WASM_DYNAMICS ?? null,
   };
 }
 
@@ -108,6 +109,7 @@ function demoUrl(config: ReturnType<typeof benchmarkConfig>) {
   if (config.wasmNumThreads) params.set('wasmNumThreads', config.wasmNumThreads);
   if (config.decoderWorkerPipeline) params.set('decoderWorkerPipeline', config.decoderWorkerPipeline);
   if (config.decoderWorkerNumThreads) params.set('decoderWorkerNumThreads', config.decoderWorkerNumThreads);
+  if (config.splitWasmDynamics) params.set('splitWasmDynamics', config.splitWasmDynamics);
   if (config.graphCapture) {
     params.set('graphCapture', 'true');
     params.set('allowUnsafeGraphCapture', 'true');
@@ -328,6 +330,7 @@ async function runtimeSnapshot(page: Page) {
       full_graph_capture: Boolean(runtime.fullGraphCapture?.enabled),
       decoder_graph_capture: Boolean(runtime.decoderGraphCapture),
       decoder_worker: Boolean(runtime.decoderWorker),
+      split_wasm_dynamics: Boolean(runtime.splitWasmDynamics),
       step_export: runtime.specs.fullStep?.name ?? runtime.specs.step?.name ?? null,
       decoder_export: runtime.specs.decoder?.name ?? null,
       sample_steps:

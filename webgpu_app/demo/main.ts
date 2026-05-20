@@ -95,6 +95,7 @@ const DEFAULT_ORT_MODULE =
 const DEFAULT_ORT_WASM_BASE = `/node_modules/onnxruntime-web/dist/`;
 const DEFAULT_DECODER_WORKER_PIPELINE = requestedBackend === 'wasm';
 const DEFAULT_DECODER_WORKER_NUM_THREADS = 3;
+const DEFAULT_SPLIT_WASM_DYNAMICS = requestedBackend === 'wasm' && browserProfile === 'chromium';
 const explicitOrtModule = explicitConfigValue('ortModule');
 const wasmOrtModule = configValue('wasmOrtModule', DEFAULT_ORT_MODULE);
 const ortModuleConfig =
@@ -382,6 +383,10 @@ const preallocateDecoderOutputsEnabled = parseBooleanConfig(
 const decoderWorkerPipelineEnabled = parseBooleanConfig(
   configValue('decoderWorkerPipeline', DEFAULT_DECODER_WORKER_PIPELINE),
   DEFAULT_DECODER_WORKER_PIPELINE,
+);
+const splitWasmDynamicsEnabled = parseBooleanConfig(
+  configValue('splitWasmDynamics', DEFAULT_SPLIT_WASM_DYNAMICS),
+  DEFAULT_SPLIT_WASM_DYNAMICS,
 );
 const decoderWorkerNumThreadsParam = Number(
   configValue('decoderWorkerNumThreads', DEFAULT_DECODER_WORKER_NUM_THREADS),
@@ -673,6 +678,16 @@ async function fetchJson(url, label) {
   return JSON.parse(new TextDecoder().decode(bytes));
 }
 
+async function fetchOptionalBytes(url, label) {
+  try {
+    return await fetchBytes(url, label);
+  } catch (error) {
+    recordLoadEvent(`${label} unavailable`, 0);
+    console.info(`${label} unavailable:`, error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
 async function fetchTensorFromArtifact(baseUrl, spec, label) {
   const bytes = await fetchBytes(`${baseUrl}/${spec.path}`, label);
   const ArrayType = dtypeArray(spec.dtype);
@@ -739,6 +754,73 @@ function stepNamesForSpec(stepSpec) {
     v,
     length: optionalOutputName(stepSpec, 'candidate_cache_length'),
     cacheUpdate: entryK && entryV ? 'entry' : 'full',
+  };
+}
+
+function splitDynamicsPath(path, suffix) {
+  return path.replace(/\.onnx$/i, `${suffix}.onnx`);
+}
+
+function splitWasmDynamicsSpecsForSpec(stepSpec) {
+  const inputs = stepSpec.inputs ?? {};
+  const outputs = stepSpec.outputs ?? {};
+  const finalZSpec = outputs.final_z;
+  const kEntrySpec = outputs.candidate_k_entry;
+  const vEntrySpec = outputs.candidate_v_entry;
+  if (
+    !inputs.sample_noise ||
+    !inputs.context_noise ||
+    !inputs.actions ||
+    !inputs.k_cache ||
+    !inputs.v_cache ||
+    !finalZSpec ||
+    !kEntrySpec ||
+    !vEntrySpec
+  ) {
+    return null;
+  }
+  const sampleSpec = {
+    ...stepSpec,
+    name: `${stepSpec.name}_sample_only_final_z`,
+    path: splitDynamicsPath(stepSpec.path, '_sample_only_final_z'),
+    external_data: [],
+    inputs: {
+      sample_noise: inputs.sample_noise,
+      actions: inputs.actions,
+      k_cache: inputs.k_cache,
+      v_cache: inputs.v_cache,
+    },
+    outputs: {
+      final_z: finalZSpec,
+    },
+  };
+  const entrySpec = {
+    ...stepSpec,
+    name: `${stepSpec.name}_context_entry_from_final_z`,
+    path: splitDynamicsPath(stepSpec.path, '_context_entry_from_final_z'),
+    external_data: [],
+    inputs: {
+      final_z: finalZSpec,
+      context_noise: inputs.context_noise,
+      actions: inputs.actions,
+      k_cache: inputs.k_cache,
+      v_cache: inputs.v_cache,
+    },
+    outputs: {
+      candidate_k_entry: kEntrySpec,
+      candidate_v_entry: vEntrySpec,
+    },
+  };
+  return {
+    sampleSpec,
+    entrySpec,
+    names: {
+      finalZ: 'final_z',
+      k: 'candidate_k_entry',
+      v: 'candidate_v_entry',
+      length: null,
+      cacheUpdate: 'entry',
+    },
   };
 }
 
@@ -2969,6 +3051,8 @@ async function createStepSessionsForBackend(
 async function createRuntimeForBackend(backend, loaded) {
   let fullStepSession = null;
   let fullStepGraphCaptureSession = null;
+  let splitSampleSession = null;
+  let splitEntrySession = null;
   let decoderSession = null;
   let decoderGraphCaptureSession = null;
   let cacheUpdater = null;
@@ -2993,6 +3077,30 @@ async function createRuntimeForBackend(backend, loaded) {
     );
     fullStepSession = fullStepRuntime.session;
     fullStepGraphCaptureSession = fullStepRuntime.graphCaptureSession;
+    if (backend === 'wasm' && loaded.splitWasmDynamics) {
+      try {
+        splitSampleSession = await createSession(
+          loaded.splitWasmDynamics.sampleSpec,
+          'dynamics sample',
+          loaded.splitWasmDynamics.sampleModelBytes,
+          backend,
+        );
+        splitEntrySession = await createSession(
+          loaded.splitWasmDynamics.entrySpec,
+          'dynamics context entry',
+          loaded.splitWasmDynamics.entryModelBytes,
+          backend,
+        );
+      } catch (error) {
+        await Promise.all([releaseSession(splitSampleSession), releaseSession(splitEntrySession)]);
+        splitSampleSession = null;
+        splitEntrySession = null;
+        console.info(
+          'Split WASM dynamics unavailable:',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     const device = backend === 'webgpu' ? ort.env.webgpu?.device : null;
     if (backend === 'webgpu' && !device) {
       throw new Error('WebGPU session was created but ORT did not expose a GPU device.');
@@ -3098,17 +3206,22 @@ async function createRuntimeForBackend(backend, loaded) {
         stepGraphCapture: null,
         fullStep: fullStepSession,
         fullStepGraphCapture: fullStepGraphCaptureSession,
+        splitSample: splitSampleSession,
+        splitEntry: splitEntrySession,
         decoder: decoderSession,
         decoderGraphCapture: decoderGraphCaptureSession,
       },
       specs: {
         step: loaded.fullStepSpec,
         fullStep: loaded.fullStepSpec,
+        splitSample: loaded.splitWasmDynamics?.sampleSpec ?? null,
+        splitEntry: loaded.splitWasmDynamics?.entrySpec ?? null,
         decoder: loaded.decoderSpec,
       },
       names: {
         step: fullStepNames,
         fullStep: fullStepNames,
+        split: loaded.splitWasmDynamics?.names ?? null,
         patches: outputName(loaded.decoderSpec, 'patches'),
       },
       dtypes: {
@@ -3122,6 +3235,7 @@ async function createRuntimeForBackend(backend, loaded) {
       displayPixels: loaded.displayPixels,
       patchRenderMap: createPatchRenderMap(loaded.contextManifest.preprocessor),
       cacheUpdater,
+      splitWasmDynamics: Boolean(backend === 'wasm' && splitSampleSession && splitEntrySession),
       graphCapture: null,
       fullGraphCapture,
       decoderGraphCapture: decoderRuntime.graphCaptureEnabled || decoderGraphCapturePending,
@@ -3162,6 +3276,8 @@ async function createRuntimeForBackend(backend, loaded) {
     await Promise.all([
       releaseSession(fullStepSession),
       releaseSession(fullStepGraphCaptureSession),
+      releaseSession(splitSampleSession),
+      releaseSession(splitEntrySession),
       releaseSession(decoderSession),
       releaseSession(decoderGraphCaptureSession),
     ]);
@@ -3230,10 +3346,41 @@ async function loadRuntime() {
   elements.context.textContent = `${contextManifest.prefix_frames} frames @ ${contextManifest.episode_start}`;
 
   setStatus('Loading ONNX models');
-  const [fullStepModelBytes, decoderModelBytes] = await Promise.all([
+  const splitWasmDynamicsSpecs =
+    requestedBackend === 'wasm' && splitWasmDynamicsEnabled
+      ? splitWasmDynamicsSpecsForSpec(fullStepSpec)
+      : null;
+  const splitSampleBytesPromise = splitWasmDynamicsSpecs
+    ? fetchOptionalBytes(
+        `${ASSET_DIR}/${splitWasmDynamicsSpecs.sampleSpec.path}`,
+        'split dynamics sample model',
+      )
+    : Promise.resolve(null);
+  const splitEntryBytesPromise = splitWasmDynamicsSpecs
+    ? fetchOptionalBytes(
+        `${ASSET_DIR}/${splitWasmDynamicsSpecs.entrySpec.path}`,
+        'split dynamics context-entry model',
+      )
+    : Promise.resolve(null);
+  const [
+    fullStepModelBytes,
+    decoderModelBytes,
+    splitSampleModelBytes,
+    splitEntryModelBytes,
+  ] = await Promise.all([
     fetchBytes(`${ASSET_DIR}/${fullStepSpec.path}`, 'full-cache dynamics model'),
     fetchBytes(`${ASSET_DIR}/${decoderSpec.path}`, 'decoder model'),
+    splitSampleBytesPromise,
+    splitEntryBytesPromise,
   ]);
+  const splitWasmDynamics =
+    splitWasmDynamicsSpecs && splitSampleModelBytes && splitEntryModelBytes
+      ? {
+          ...splitWasmDynamicsSpecs,
+          sampleModelBytes: splitSampleModelBytes,
+          entryModelBytes: splitEntryModelBytes,
+        }
+      : null;
 
   const loaded = {
     manifest,
@@ -3247,6 +3394,7 @@ async function loadRuntime() {
     initialLength,
     fullStepSpec,
     fullStepModelBytes,
+    splitWasmDynamics,
     decoderModelBytes,
   };
   let lastError = null;
@@ -3427,57 +3575,113 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
       frameInputs.positionInputs,
     ),
   };
+  const pipelineDecoder = Boolean(options.pipelineDecoder && runtime.decoderWorker);
+  let pipelinedDecoderStarted = null;
+  let pipelinedDecoderOutputs = null;
   let usedGraphCaptureStep = useGraphCaptureStep;
   let outputs;
+  let zOutput;
+  let latent;
   const dynamicsStarted = performance.now();
-  try {
-    if (usedGraphCaptureStep) {
-      ensureGraphCaptureFixedCache(runtime, activeStep.graphCapture);
-      const graphCaptureFeeds = (() => {
-        updateGraphCaptureStepInputs(
-          runtime,
-          activeStep,
-          sampleNoise,
-          contextNoise,
-          action,
-          cacheLengthBefore,
-        );
-        return graphCaptureStepFeeds(runtime, activeStep);
-      })();
-      if (graphCaptureUploadFenceEnabled) await runtime.device.queue.onSubmittedWorkDone();
-      outputs = await activeStep.graphCaptureSession.run(
-        graphCaptureFeeds,
-        activeStep.graphCapture?.outputFetches ?? fetchNames,
-      );
-    } else {
-      outputs = await activeStep.session.run(normalStepFeeds, activeStep.outputFetches ?? fetchNames);
-    }
-  } catch (error) {
-    if (!usedGraphCaptureStep) throw error;
-    activeStep.graphCapture.enabled = false;
-    activeStep.graphCapture.failedReason = error instanceof Error ? error.message : String(error);
-    usedGraphCaptureStep = false;
-    elements.backend.textContent = shouldUseDecoderGraphCapture(runtime)
-      ? `${runtime.backend} + decoder graph capture`
-      : runtime.backend;
-    console.warn('Falling back to WebGPU without dynamics graph capture:', error);
-    outputs = await activeStep.session.run(
+  const useSplitWasmDynamics = Boolean(
+    runtime.splitWasmDynamics &&
+      useFullCacheStep &&
+      runtime.sessions.splitSample &&
+      runtime.sessions.splitEntry &&
+      runtime.names.split &&
+      activeStep.names.cacheUpdate === 'entry',
+  );
+  if (useSplitWasmDynamics) {
+    elements.backend.textContent = runtime.decoderWorker
+      ? `${runtime.backend} + split dynamics + decoder worker`
+      : `${runtime.backend} + split dynamics`;
+    const splitNames = runtime.names.split;
+    const sampleStarted = performance.now();
+    const sampleOutputs = await runtime.sessions.splitSample.run(
       {
         sample_noise: sampleNoise,
+        actions: action,
+        k_cache: runtime.cache.k,
+        v_cache: runtime.cache.v,
+      },
+      [splitNames.finalZ],
+    );
+    stages.sampleDynamicsMs = performance.now() - sampleStarted;
+    zOutput = sampleOutputs[splitNames.finalZ];
+    latent = tensorSummaryForValidation(zOutput);
+    if (pipelineDecoder) {
+      pipelinedDecoderStarted = performance.now();
+      pipelinedDecoderOutputs = runWorkerDecoder(runtime, zOutput);
+    }
+    const entryStarted = performance.now();
+    const entryOutputs = await runtime.sessions.splitEntry.run(
+      {
+        final_z: zOutput,
         context_noise: contextNoise,
         actions: action,
         k_cache: runtime.cache.k,
         v_cache: runtime.cache.v,
-        ...stepPositionFeeds(
-          activeStep.spec,
-          cacheLengthBefore,
-          runtime.contextLength,
-          runtime.cache.length,
-          frameInputs.positionInputs,
-        ),
       },
-      activeStep.outputFetches ?? fetchNames,
+      [splitNames.k, splitNames.v],
     );
+    stages.entryDynamicsMs = performance.now() - entryStarted;
+    outputs = {
+      [activeStep.names.finalZ]: zOutput,
+      [activeStep.names.k]: entryOutputs[splitNames.k],
+      [activeStep.names.v]: entryOutputs[splitNames.v],
+    };
+  } else {
+    try {
+      if (usedGraphCaptureStep) {
+        ensureGraphCaptureFixedCache(runtime, activeStep.graphCapture);
+        const graphCaptureFeeds = (() => {
+          updateGraphCaptureStepInputs(
+            runtime,
+            activeStep,
+            sampleNoise,
+            contextNoise,
+            action,
+            cacheLengthBefore,
+          );
+          return graphCaptureStepFeeds(runtime, activeStep);
+        })();
+        if (graphCaptureUploadFenceEnabled) await runtime.device.queue.onSubmittedWorkDone();
+        outputs = await activeStep.graphCaptureSession.run(
+          graphCaptureFeeds,
+          activeStep.graphCapture?.outputFetches ?? fetchNames,
+        );
+      } else {
+        outputs = await activeStep.session.run(normalStepFeeds, activeStep.outputFetches ?? fetchNames);
+      }
+    } catch (error) {
+      if (!usedGraphCaptureStep) throw error;
+      activeStep.graphCapture.enabled = false;
+      activeStep.graphCapture.failedReason = error instanceof Error ? error.message : String(error);
+      usedGraphCaptureStep = false;
+      elements.backend.textContent = shouldUseDecoderGraphCapture(runtime)
+        ? `${runtime.backend} + decoder graph capture`
+        : runtime.backend;
+      console.warn('Falling back to WebGPU without dynamics graph capture:', error);
+      outputs = await activeStep.session.run(
+        {
+          sample_noise: sampleNoise,
+          context_noise: contextNoise,
+          actions: action,
+          k_cache: runtime.cache.k,
+          v_cache: runtime.cache.v,
+          ...stepPositionFeeds(
+            activeStep.spec,
+            cacheLengthBefore,
+            runtime.contextLength,
+            runtime.cache.length,
+            frameInputs.positionInputs,
+          ),
+        },
+        activeStep.outputFetches ?? fetchNames,
+      );
+    }
+    zOutput = outputs[activeStep.names.finalZ];
+    latent = tensorSummaryForValidation(zOutput);
   }
   stages.dynamicsMs = performance.now() - dynamicsStarted;
   prefillNextNoiseInputSlot(frameInputs);
@@ -3485,8 +3689,6 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
   const preserveStepOutputs = Boolean(
     (usedGraphCaptureStep && activeStep.graphCapture?.outputFetches) || activeStep.outputFetches,
   );
-  const zOutput = outputs[activeStep.names.finalZ];
-  const latent = tensorSummaryForValidation(zOutput);
   const debugEntryOutputs =
     debugCacheBefore && activeStep.names.cacheUpdate === 'entry'
       ? {
@@ -3505,9 +3707,10 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
         )
       : null;
 
-  const pipelineDecoder = Boolean(options.pipelineDecoder && runtime.decoderWorker);
-  const pipelinedDecoderStarted = pipelineDecoder ? performance.now() : null;
-  const pipelinedDecoderOutputs = pipelineDecoder ? runWorkerDecoder(runtime, zOutput) : null;
+  if (pipelineDecoder && !pipelinedDecoderOutputs) {
+    pipelinedDecoderStarted = performance.now();
+    pipelinedDecoderOutputs = runWorkerDecoder(runtime, zOutput);
+  }
   if (!pipelineDecoder) {
     const decoderStarted = performance.now();
     const decoderOutputs = await runDecoder(runtime, zOutput);

@@ -68,13 +68,17 @@ function demoModelAssets() {
     'breakout_tokenizer_decoder_b1_t1',
     'breakout_tokenizer_decode_z_b1_t1',
   ].filter(Boolean);
-  return [
-    ...new Set(
-      preferredExports
-        .map((name) => manifest.exports?.find((entry) => entry.name === name)?.path)
-        .filter(Boolean),
-    ),
-  ];
+  const modelPaths = preferredExports
+    .map((name) => manifest.exports?.find((entry) => entry.name === name)?.path)
+    .filter(Boolean);
+  const derivedSplitPaths = modelPaths.flatMap((modelPath) => {
+    const stem = modelPath.replace(/\.onnx$/i, '');
+    return [
+      `${stem}_sample_only_final_z.onnx`,
+      `${stem}_context_entry_from_final_z.onnx`,
+    ].filter((derivedPath) => existsSync(join(assetDir, derivedPath)));
+  });
+  return [...new Set([...modelPaths, ...derivedSplitPaths])];
 }
 
 rmSync(outDir, { recursive: true, force: true });

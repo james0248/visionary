@@ -76,6 +76,35 @@ def set_sample_export_names(sample_steps: int) -> None:
 set_sample_export_names(4)
 
 
+def split_wasm_dynamics_paths(source_path: Path) -> tuple[Path, Path]:
+    stem = source_path.with_suffix("")
+    return (
+        source_path.with_name(f"{stem.name}_sample_only_final_z.onnx"),
+        source_path.with_name(f"{stem.name}_context_entry_from_final_z.onnx"),
+    )
+
+
+def export_split_wasm_dynamics_models(source_path: Path, *, overwrite: bool) -> tuple[Path, Path]:
+    sample_path, entry_path = split_wasm_dynamics_paths(source_path)
+    ensure_output(sample_path, overwrite=overwrite)
+    ensure_output(entry_path, overwrite=overwrite)
+    onnx.utils.extract_model(
+        str(source_path),
+        str(sample_path),
+        ["sample_noise", "actions", "k_cache", "v_cache"],
+        ["final_z"],
+        check_model=False,
+    )
+    onnx.utils.extract_model(
+        str(source_path),
+        str(entry_path),
+        ["final_z", "context_noise", "actions", "k_cache", "v_cache"],
+        ["candidate_k_entry", "candidate_v_entry"],
+        check_model=False,
+    )
+    return sample_path, entry_path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -7681,6 +7710,12 @@ def main() -> None:
     spatial_qk_head_layout_rewrite = pass_results["spatial_qk_head_layout_rewrite"]
     temporal_attention_bhsd_rewrite = pass_results["temporal_attention_bhsd_rewrite"]
     final_z_only_rewrite = pass_results["final_z_only_rewrite"]
+    split_wasm_dynamics_model_paths = None
+    if args.export_cached and args.export_target == "wasm":
+        split_wasm_dynamics_model_paths = export_split_wasm_dynamics_models(
+            dynamics_sample_append_context_slide_entry_path,
+            overwrite=args.overwrite,
+        )
     static_output_repairs = {
         name: {"enabled": False, "reason": "no static graph output repair needed"}
         for name in exported_paths
@@ -8165,6 +8200,9 @@ def main() -> None:
         print(f"Wrote {decoder_step_path}")
         print(f"Wrote {decoder_z_step_path}")
         print(f"Wrote {dynamics_sample_append_context_slide_entry_path}")
+        if split_wasm_dynamics_model_paths is not None:
+            print(f"Wrote {split_wasm_dynamics_model_paths[0]}")
+            print(f"Wrote {split_wasm_dynamics_model_paths[1]}")
     print(f"Wrote {manifest_path}")
 
 

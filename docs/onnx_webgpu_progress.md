@@ -28,6 +28,11 @@ uses:
   `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2.onnx`.
 - On the WASM path, the entry-slide graph selected from the WASM asset set:
   `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2.onnx`.
+- On Chrome/Chromium WASM, the demo now tries a split-dynamics schedule when the derived
+  `*_sample_only_final_z.onnx` and `*_context_entry_from_final_z.onnx` files are present. This
+  starts the decoder worker after `final_z` is ready, then computes the context-cache entry on the
+  main thread. Safari/WebKit keeps the unsplit graph by default because the split regressed its
+  longer validated windows.
 - A single-frame tokenizer decoder graph:
   `breakout_tokenizer_decoder_b1_t1.onnx`.
 
@@ -37,6 +42,8 @@ The maintained benchmark surface is latency plus graph capture:
 - Benchmark controls should be passed as wrapper flags after `--`, for example
   `--webgpu-benchmark-asset-base` or `--webgpu-benchmark-timed-runs`, instead of leading shell
   environment assignments.
+- WASM split-dynamics experiments can be toggled with
+  `--webgpu-benchmark-split-wasm-dynamics true|false`.
 - `provider=wasm` benchmark defaults now explicitly use the WASM asset set and
   `ort.wasm.min.mjs`, then let the demo choose the browser-specific WASM thread count
   (`4` in Chrome, `3` in Safari/WebKit). The decoder worker pipeline defaults to
@@ -7096,14 +7103,38 @@ Rejected / kept out:
   ~`7.0 ms`, and `Concat` ~`4.7 ms`. Decoder profiling was led by `Gemm` ~`2.7 ms`, then
   attention/pointwise/norm families around `0.4-1.2 ms` each. This matches the browser behavior:
   more single-pattern cleanup is unlikely to reach `60 fps`; a larger structural change is needed.
+- Accepted a Chrome/Chromium-only split-dynamics schedule for WASM:
+  - Used ONNX extraction to split the current entry-slide dynamics graph into
+    `*_sample_only_final_z.onnx` and `*_context_entry_from_final_z.onnx`.
+  - Native ORT comparison against the original full graph was exact for `final_z`,
+    `candidate_k_entry`, and `candidate_v_entry` (`max abs diff 0.0` for all three). Native CPU
+    timing was full graph `~14.0 ms`, sample-only `~9.6 ms`, and context-entry `~4.6 ms`.
+  - The demo can start the decoder worker after sample-only `final_z`, then run the context-entry
+    graph and cache update before advancing the next frame. This preserves `sample_steps=2` and the
+    original cache semantics.
+  - Export now generates the split models for WASM cached exports, and the static demo-site builder
+    copies the derived files when they exist. The runtime falls back to the original full graph if
+    the split files are absent or fail to compile.
+  - Chrome default WASM benchmark, actual demo, 64 timed frames: output and numerical validation
+    passed, `33.61 fps`, `29.76 ms/frame`, `split_wasm_dynamics=true`, `wasmNumThreads=4`,
+    dynamics split into sample `18.20 ms` and entry `9.20 ms`.
+  - Same-day Chrome split-disabled control, 16 timed frames: output and numerical validation passed
+    at `27.71 fps`; a same-window split-enabled 16-frame run was `31.23 fps`.
+  - WebKit/Safari-family split was rejected as a default. A 64-frame split-enabled run validated
+    but regressed to `29.15 fps`, while the split-disabled control validated at `32.33 fps`.
+    Safari/WebKit therefore keeps `split_wasm_dynamics=false` by default, with an override flag for
+    future experiments.
+  - WebKit/Safari-family default after the guard, 64 timed frames: output and numerical validation
+    passed, `32.92 fps`, `30.37 ms/frame`, `split_wasm_dynamics=false`, `wasmNumThreads=3`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
   MatMul attention for the remaining explicit attention islands, the extended static head-merge
   cleanup including ranked MHA query merges, the decoder singleton-key attention bypass, the decoder
   primitive RMSNorm rewrite, the worker-backed JavaScript cache updater for WASM, the decoder
-  worker pipeline with `decoderWorkerNumThreads=3`, `wasmNumThreads=4`, and ORT WASM
-  `graphOptimizationLevel=all`.
-- The pure-WASM generated-frame interval now has repeated validated windows around `27.4-28.6 ms`
-  (`34.9-35.2 fps`) in headed Chrome. The `30 fps` target is reached for the accepted WASM runtime
-  path without changing `sample_steps=2`.
+  worker pipeline with `decoderWorkerNumThreads=3`, browser-specific main WASM threads
+  (`4` for Chrome/Chromium and `3` for Safari/WebKit), ORT WASM `graphOptimizationLevel=all`, and
+  Chrome/Chromium-only split dynamics when the derived split files are present.
+- The current validated default windows are about `33.6 fps` in headed Chrome and `32.9 fps` in
+  WebKit/Safari-family, both preserving `sample_steps=2` and passing visual plus WASM latent
+  validation. The `30 fps` target is reached, but the requested `60 fps` target is not.
