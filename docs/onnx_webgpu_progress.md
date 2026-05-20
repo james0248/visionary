@@ -7089,6 +7089,13 @@ Rejected / kept out:
   demo `ortModule`. The page never reached Ready; `configureOrt` failed because the direct module
   does not expose the same `ort.env.wasm` surface as `ort.wasm.min.mjs`, and the browser also
   reported a missing resource. Keep the standard `ort.wasm.min.mjs` loader.
+- Fresh native ORT CPU profiling on the current accepted WASM artifacts still shows broad graph
+  cost rather than one isolated bottleneck. Over three dynamics runs with native ORT CPU profiling,
+  top op-family totals were `Gemm` ~`10.1 ms`, `Transpose` ~`9.5 ms`, `Gather` ~`7.9 ms`,
+  `MultiHeadAttention` ~`7.8 ms`, `SimplifiedLayerNormalization` ~`7.7 ms`, `Unsqueeze`
+  ~`7.0 ms`, and `Concat` ~`4.7 ms`. Decoder profiling was led by `Gemm` ~`2.7 ms`, then
+  attention/pointwise/norm families around `0.4-1.2 ms` each. This matches the browser behavior:
+  more single-pattern cleanup is unlikely to reach `60 fps`; a larger structural change is needed.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
