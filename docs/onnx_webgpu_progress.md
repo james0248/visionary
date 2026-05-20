@@ -119,6 +119,17 @@ Rejected or inactive paths:
     WASM artifact/runtime defaults.
   - Chrome WebGPU no-override: `36.59 fps`, output validation passed and still selected the WebGPU
     asset set under `dream_arcade_assets/breakout`.
+- Rejected immediate follow-up runtime/serialization trials on the restored WASM default:
+  - `ort.wasm.bundle.min.mjs` was slower than the standard WASM loader: `31.5 fps`.
+  - `graphOptimizationLevel=extended` was slower than `all`: `31.4 fps`.
+  - Disabling the decoder worker was slower: `27.0 fps`; the decoder itself is about `9.3 ms`
+    sequentially, but overlapping it still wins despite worker contention.
+  - Decoder worker thread counts `1`, `2`, and `4` did not beat the default `3`.
+  - Main/decoder thread splits `5/1`, `5/2`, `5/3`, `6/1`, `6/2`, and `3/2` did not beat the
+    default `4/3` split.
+  - Serializing the entry graph through ORT `ORT_ENABLE_ALL` was CPU-exact against the accepted
+    graph and reduced `3419 -> 3383` nodes, but browser validation was slower at `31.8 fps`.
+    The ignored trial artifact and manifest entry were removed.
 
 ## Iteration Log
 
