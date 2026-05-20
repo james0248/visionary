@@ -39,11 +39,17 @@ const ortDistDir = resolve('node_modules/onnxruntime-web/dist');
 const assetDir = resolve(args.get('--asset-dir') ?? 'dream_arcade_assets/breakout');
 const baseAssets = [
   'breakout_onnx_manifest.json',
-  'breakout_demo_context.json',
-  'breakout_demo_initial_cache.json',
-  'breakout_demo_initial_cache.cache_length.i32.bin',
-  'breakout_demo_initial_cache.k_cache.f32.bin',
-  'breakout_demo_initial_cache.v_cache.f32.bin',
+  'breakout_demo_context_noop60_fire4.json',
+  'breakout_demo_context_noop60_fire4.actions.i32.bin',
+  'breakout_demo_context_noop60_fire4.display_pixels.u8.bin',
+  'breakout_demo_context_noop60_fire4.display_z.f32.bin',
+  'breakout_demo_context_noop60_fire4.signal_levels.i32.bin',
+  'breakout_demo_context_noop60_fire4.step_levels.i32.bin',
+  'breakout_demo_context_noop60_fire4.z.f32.bin',
+  'breakout_demo_initial_cache_noop60_fire4.json',
+  'breakout_demo_initial_cache_noop60_fire4.cache_length.i32.bin',
+  'breakout_demo_initial_cache_noop60_fire4.k_cache.f32.bin',
+  'breakout_demo_initial_cache_noop60_fire4.v_cache.f32.bin',
   'breakout_tokenizer_decode_z_b1_t1.onnx',
 ];
 
@@ -52,8 +58,8 @@ function demoModelAssets() {
   if (!existsSync(manifestPath)) return [];
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   const preferredExports = [
-    manifest.demo_generation?.preferred_step_export,
     manifest.demo_generation?.preferred_full_cache_step_export,
+    manifest.demo_generation?.preferred_full_cache_step_export_wasm,
     'breakout_tokenizer_decoder_b1_t1',
     'breakout_tokenizer_decode_z_b1_t1',
   ].filter(Boolean);

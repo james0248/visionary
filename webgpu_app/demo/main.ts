@@ -2,7 +2,6 @@ import { NormalNoiseGenerator } from './jax_noise';
 import {
   findExport,
   findFirstExport,
-  findFirstOptionalExport,
   formatShape,
   sameShape,
 } from '../runtime/manifest';
@@ -45,8 +44,8 @@ function resolveBaseUrl(value) {
 
 const ASSET_DIR = resolveBaseUrl(configValue('assetBase', '/assets'));
 const MANIFEST_URL = `${ASSET_DIR}/${configValue('manifestName', 'breakout_onnx_manifest.json')}`;
-const CONTEXT_URL = `${ASSET_DIR}/${configValue('contextName', 'breakout_demo_context.json')}`;
-const INITIAL_CACHE_URL = `${ASSET_DIR}/${configValue('initialCacheName', 'breakout_demo_initial_cache.json')}`;
+const CONTEXT_URL = `${ASSET_DIR}/${configValue('contextName', 'breakout_demo_context_noop60_fire4.json')}`;
+const INITIAL_CACHE_URL = `${ASSET_DIR}/${configValue('initialCacheName', 'breakout_demo_initial_cache_noop60_fire4.json')}`;
 const requestedBrowserProfile = String(configValue('browserProfile', 'auto')).toLowerCase();
 const detectedBrowserProfile = detectBrowserProfile(navigator.userAgent);
 const browserProfile =
@@ -56,15 +55,9 @@ const DECODER_EXPORT_NAME = configValue('decoderExport', null);
 const FULL_CACHE_STEP_EXPORT_NAME = configValue('fullCacheStepExport', null);
 const SAFARI_SAFE_FULL_CACHE_STEP_EXPORT_NAME =
   'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2_final_z_add_zero_safari_trial';
-const PREFILL_EXPORT_FALLBACKS = parseConfigJson('prefillExportFallbacks', [
-  'breakout_dynamics_prefill_cached_b1_t64',
-]);
 const DECODER_EXPORT_FALLBACKS = parseConfigJson('decoderExportFallbacks', [
   'breakout_tokenizer_decoder_b1_t1',
   'breakout_tokenizer_decode_z_b1_t1',
-]);
-const STEP_EXPORT_FALLBACKS = parseConfigJson('stepExportFallbacks', [
-  'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2',
 ]);
 const FULL_CACHE_STEP_EXPORT_FALLBACKS = parseConfigJson('fullCacheStepExportFallbacks', [
   ...(requestedBackend === 'wasm'
@@ -79,7 +72,6 @@ const DEFAULT_TARGET_FPS = 0;
 const DEFAULT_DYNAMICS_GRAPH_CAPTURE = false;
 const DEFAULT_FULL_DYNAMICS_GRAPH_CAPTURE = browserProfile === 'safari';
 const DEFAULT_DECODER_GRAPH_CAPTURE = browserProfile === 'safari';
-const DEFAULT_PREFILL_INITIAL_CACHE = browserProfile === 'safari';
 const DEFAULT_GPU_PATCH_RENDERER = true;
 const DEFAULT_GRAPH_OPTIMIZATION_LEVEL = requestedBackend === 'wasm' ? 'all' : 'basic';
 const DEFAULT_WASM_NUM_THREADS = 4;
@@ -332,15 +324,6 @@ const rawFullDynamicsGraphCaptureRequested = parseBooleanConfig(
 const dynamicsGraphCaptureRequested =
   rawDynamicsGraphCaptureRequested && unsafeGraphCaptureAllowed;
 const fullDynamicsGraphCaptureRequested = rawFullDynamicsGraphCaptureRequested;
-const prefillInitialCacheDefault = DEFAULT_PREFILL_INITIAL_CACHE;
-const prefillInitialCacheRequested = parseBooleanConfig(
-  configValue('prefillInitialCache', prefillInitialCacheDefault),
-  prefillInitialCacheDefault,
-);
-const allowPaddedPrefillInitialCache = parseBooleanConfig(
-  configValue('allowPaddedPrefillInitialCache', false),
-  false,
-);
 const dynamicsGraphCaptureEnabled = dynamicsGraphCaptureRequested && !fullDynamicsGraphCaptureRequested;
 const decoderGraphCaptureRequested = parseBooleanConfig(
   configValue('decoderGraphCapture', graphCaptureRequested ?? DEFAULT_DECODER_GRAPH_CAPTURE),
@@ -354,10 +337,6 @@ const gpuPatchRendererEnabled = parseBooleanConfig(
   DEFAULT_GPU_PATCH_RENDERER,
 );
 const fullCacheStepEnabled = parseBooleanConfig(configValue('fullCacheStep', true), true);
-const skipShortCacheStepWhenFull = parseBooleanConfig(
-  configValue('skipShortCacheStepWhenFull', browserProfile === 'safari'),
-  browserProfile === 'safari',
-);
 const graphCaptureUploadFenceEnabled = parseBooleanConfig(
   configValue('graphCaptureUploadFence', false),
   false,
@@ -740,30 +719,6 @@ function stepNamesForSpec(stepSpec) {
   };
 }
 
-function prefillCacheOutputNames(prefillSpec) {
-  return {
-    k: requiredOutputName(prefillSpec, 'k_cache'),
-    v: requiredOutputName(prefillSpec, 'v_cache'),
-    length: requiredOutputName(prefillSpec, 'cache_length'),
-  };
-}
-
-function prefillFeedsFromContext(prefillSpec, loaded) {
-  const sources = {
-    z: loaded.contextZ,
-    actions: loaded.contextActions,
-    step_levels: loaded.contextStepLevels,
-    signal_levels: loaded.contextSignalLevels,
-  };
-  return Object.fromEntries(
-    Object.keys(prefillSpec.inputs ?? {}).map((name) => {
-      const tensor = sources[name];
-      if (!tensor) throw new Error(`Prefill cache input ${name} is missing from demo context.`);
-      return [name, tensor];
-    }),
-  );
-}
-
 function contextLengthFromManifest(contextManifest) {
   return (
     contextManifest.context_length ??
@@ -771,21 +726,6 @@ function contextLengthFromManifest(contextManifest) {
     contextManifest.arrays?.actions?.shape?.[1] ??
     null
   );
-}
-
-function paddedInitialPrefillSkipReason(contextManifest) {
-  if (allowPaddedPrefillInitialCache) return null;
-  const contextLength = contextLengthFromManifest(contextManifest);
-  const prefixFrames = contextManifest.prefix_frames ?? contextLength;
-  const zeroPadFrames = contextManifest.zero_pad_frames ?? 0;
-  const prefixSlotStart = contextManifest.prefix_slot_start ?? 0;
-  const hasPaddedPrefix =
-    zeroPadFrames > 0 ||
-    prefixSlotStart > 0 ||
-    (contextLength != null && prefixFrames != null && prefixFrames < contextLength);
-  return hasPaddedPrefix
-    ? 'prefillInitialCache skipped because the context artifact has padded prefix slots'
-    : null;
 }
 
 async function createSession(spec, label, modelBytes, backend, options = {}) {
@@ -2897,41 +2837,6 @@ async function releaseSession(session) {
   }
 }
 
-async function createPrefilledInitialCache(backend, loaded) {
-  if (!prefillInitialCacheRequested || !loaded.prefillSpec) return null;
-  const names = prefillCacheOutputNames(loaded.prefillSpec);
-  let prefillSession = null;
-  try {
-    prefillSession = await createSession(
-      loaded.prefillSpec,
-      'prefill cache',
-      loaded.prefillModelBytes,
-      backend,
-      backend === 'webgpu'
-        ? {
-            preferredOutputLocation: {
-              [names.k]: 'cpu',
-              [names.v]: 'cpu',
-              [names.length]: 'cpu',
-            },
-          }
-        : {},
-    );
-    setStatus(`Creating prefilled cache · ${backend}`);
-    const outputs = await prefillSession.run(
-      prefillFeedsFromContext(loaded.prefillSpec, loaded),
-      [names.k, names.v, names.length],
-    );
-    return {
-      k: outputs[names.k],
-      v: outputs[names.v],
-      length: outputs[names.length],
-    };
-  } finally {
-    await releaseSession(prefillSession);
-  }
-}
-
 function graphCaptureStepOutputLocations(stepSpec) {
   return Object.fromEntries(Object.keys(stepSpec.outputs ?? {}).map((name) => [name, 'gpu-buffer']));
 }
@@ -2987,8 +2892,6 @@ async function createStepSessionsForBackend(
 }
 
 async function createRuntimeForBackend(backend, loaded) {
-  let stepSession = null;
-  let stepGraphCaptureSession = null;
   let fullStepSession = null;
   let fullStepGraphCaptureSession = null;
   let decoderSession = null;
@@ -2996,49 +2899,30 @@ async function createRuntimeForBackend(backend, loaded) {
   let cacheUpdater = null;
   let decoderWorker = null;
   try {
-    const stepNames = stepNamesForSpec(loaded.stepSpec);
     const contextLength =
       loaded.manifest.cache_contract?.context_length ??
       loaded.initialCacheManifest.arrays.k_cache.shape[3];
-    const initialCacheLength = loaded.prefillSpec ? contextLength : loaded.initialLength.data[0];
-    const fullStepNames = loaded.fullStepSpec ? stepNamesForSpec(loaded.fullStepSpec) : null;
-    const skipStepRuntime =
-      skipShortCacheStepWhenFull &&
-      loaded.fullStepSpec &&
-      fullStepNames &&
-      initialCacheLength >= contextLength;
-    const stepRuntime = skipStepRuntime
-      ? {
-          session: null,
-          graphCaptureSession: null,
-          graphCaptureEnabled: false,
-          graphCaptureReason: 'skipped because initial cache is full',
-        }
-      : await createStepSessionsForBackend(
-          backend,
-          loaded.stepSpec,
-          loaded.stepModelBytes,
-          stepNames,
-        );
-    stepSession = stepRuntime.session;
-    stepGraphCaptureSession = stepRuntime.graphCaptureSession;
-    const fullStepRuntime = loaded.fullStepSpec
-      ? await createStepSessionsForBackend(
-          backend,
-          loaded.fullStepSpec,
-          loaded.fullStepModelBytes,
-          fullStepNames,
-          fullDynamicsGraphCaptureRequestedForSpec(loaded.manifest, loaded.fullStepSpec),
-        )
-      : null;
-    fullStepSession = fullStepRuntime?.session ?? null;
-    fullStepGraphCaptureSession = fullStepRuntime?.graphCaptureSession ?? null;
+    const initialCacheLength = loaded.initialLength.data[0];
+    if (initialCacheLength < contextLength) {
+      throw new Error(
+        `Initial cache must be full for the full-cache dynamics graph: got ${initialCacheLength} of ${contextLength}.`,
+      );
+    }
+    const fullStepNames = stepNamesForSpec(loaded.fullStepSpec);
+    const fullStepRuntime = await createStepSessionsForBackend(
+      backend,
+      loaded.fullStepSpec,
+      loaded.fullStepModelBytes,
+      fullStepNames,
+      fullDynamicsGraphCaptureRequestedForSpec(loaded.manifest, loaded.fullStepSpec),
+    );
+    fullStepSession = fullStepRuntime.session;
+    fullStepGraphCaptureSession = fullStepRuntime.graphCaptureSession;
     const device = backend === 'webgpu' ? ort.env.webgpu?.device : null;
     if (backend === 'webgpu' && !device) {
       throw new Error('WebGPU session was created but ORT did not expose a GPU device.');
     }
-    const prefilledInitialCache = await createPrefilledInitialCache(backend, loaded);
-    const initialCache = prefilledInitialCache ?? {
+    const initialCache = {
       k: loaded.initialK,
       v: loaded.initialV,
       length: loaded.initialLength,
@@ -3076,15 +2960,6 @@ async function createRuntimeForBackend(backend, loaded) {
             outputName(loaded.decoderSpec, 'patches'),
           ])
         : null;
-    const stepOutputFetches =
-      backend === 'webgpu' &&
-      device &&
-      preallocateStepOutputsEnabled &&
-      stepRuntime.session &&
-      !stepRuntime.graphCaptureEnabled &&
-      stepNames.cacheUpdate === 'entry'
-        ? createGpuOutputFetches(device, loaded.stepSpec, [stepNames.finalZ, stepNames.k, stepNames.v])
-        : null;
     const fullStepOutputFetches =
       backend === 'webgpu' &&
       device &&
@@ -3100,21 +2975,6 @@ async function createRuntimeForBackend(backend, loaded) {
           ])
         : null;
 
-    let graphCapture = null;
-    if (stepRuntime.graphCaptureEnabled) {
-      graphCapture = createGraphCaptureStepState(
-        device,
-        loaded.stepSpec,
-        loaded.manifest.cache_contract?.context_length ??
-          loaded.initialCacheManifest.arrays.k_cache.shape[3],
-        {
-          preallocateOutputs: preallocateStepOutputsEnabled,
-        },
-      );
-      if (!graphCapture) {
-        throw new Error('Graph capture was enabled, but fixed GPU inputs could not be created.');
-      }
-    }
     let fullGraphCapture = null;
     if (fullStepRuntime?.graphCaptureEnabled) {
       fullGraphCapture = createGraphCaptureStepState(
@@ -3131,16 +2991,15 @@ async function createRuntimeForBackend(backend, loaded) {
         throw new Error('Full-cache graph capture was enabled, but fixed GPU inputs could not be created.');
       }
     }
-    reuseFinalZOutputAsDecoderInput(graphCapture, loaded.stepSpec, stepNames, decoderInput);
     reuseFinalZOutputAsDecoderInput(fullGraphCapture, loaded.fullStepSpec, fullStepNames, decoderInput);
 
     cacheUpdater =
-      stepNames.cacheUpdate === 'entry'
+      fullStepNames.cacheUpdate === 'entry'
         ? backend === 'webgpu'
-          ? createEntryCacheUpdater(device, loaded.stepSpec, loaded.manifest)
+          ? createEntryCacheUpdater(device, loaded.fullStepSpec, loaded.manifest)
           : typeof Worker === 'function'
-            ? createWorkerEntryCacheUpdater(loaded.stepSpec, loaded.manifest)
-            : createCpuEntryCacheUpdater(loaded.stepSpec, loaded.manifest)
+            ? createWorkerEntryCacheUpdater(loaded.fullStepSpec, loaded.manifest)
+            : createCpuEntryCacheUpdater(loaded.fullStepSpec, loaded.manifest)
         : null;
     decoderWorker =
       backend === 'wasm' && decoderWorkerPipelineEnabled && typeof Worker === 'function'
@@ -3156,40 +3015,35 @@ async function createRuntimeForBackend(backend, loaded) {
       device,
       patchRenderer,
       sessions: {
-        step: stepSession,
-        stepGraphCapture: stepGraphCaptureSession,
+        step: null,
+        stepGraphCapture: null,
         fullStep: fullStepSession,
         fullStepGraphCapture: fullStepGraphCaptureSession,
         decoder: decoderSession,
         decoderGraphCapture: decoderGraphCaptureSession,
       },
       specs: {
-        step: loaded.stepSpec,
+        step: loaded.fullStepSpec,
         fullStep: loaded.fullStepSpec,
         decoder: loaded.decoderSpec,
       },
       names: {
-        step: stepNames,
+        step: fullStepNames,
         fullStep: fullStepNames,
         patches: outputName(loaded.decoderSpec, 'patches'),
       },
       dtypes: {
-        sampleNoise: loaded.stepSpec.inputs.sample_noise.dtype,
+        sampleNoise: loaded.fullStepSpec.inputs.sample_noise.dtype,
       },
       initialCache,
-      initialCacheSource: prefilledInitialCache
-        ? 'prefill'
-        : loaded.prefillSkipReason
-          ? 'artifact-prefill-skipped'
-          : 'artifact',
-      prefillSkipReason: loaded.prefillSkipReason,
+      initialCacheSource: 'artifact',
+      prefillSkipReason: null,
       contextLength,
-      contextZ: loaded.contextZ,
       displayZ: loaded.displayZ,
       displayPixels: loaded.displayPixels,
       patchRenderMap: createPatchRenderMap(loaded.contextManifest.preprocessor),
       cacheUpdater,
-      graphCapture,
+      graphCapture: null,
       fullGraphCapture,
       decoderGraphCapture: decoderRuntime.graphCaptureEnabled || decoderGraphCapturePending,
       decoderGraphCapturePending,
@@ -3199,14 +3053,12 @@ async function createRuntimeForBackend(backend, loaded) {
       decoderOutputFetches,
       decoderWorker,
       pendingDecoderFrame: null,
-      stepOutputFetches,
+      stepOutputFetches: null,
       fullStepOutputFetches,
       decoderModelBytes: loaded.decoderModelBytes,
       pinnedOutputTensors: [
-        ...Object.values(graphCapture?.outputFetches ?? {}),
         ...Object.values(fullGraphCapture?.outputFetches ?? {}),
         ...Object.values(decoderOutputFetches ?? {}),
-        ...Object.values(stepOutputFetches ?? {}),
         ...Object.values(fullStepOutputFetches ?? {}),
       ],
       cache: null,
@@ -3214,7 +3066,7 @@ async function createRuntimeForBackend(backend, loaded) {
 
     loadedRuntime.cache = cacheFromInitialArtifacts(device, loadedRuntime.initialCache, backend);
     const readyGraphCaptures = [];
-    if (graphCapture?.enabled || fullGraphCapture?.enabled) {
+    if (fullGraphCapture?.enabled) {
       readyGraphCaptures.push('dynamics graph capture');
     }
     if (decoderRuntime.graphCaptureEnabled) {
@@ -3229,8 +3081,6 @@ async function createRuntimeForBackend(backend, loaded) {
     cacheUpdater?.release?.();
     decoderWorker?.release?.();
     await Promise.all([
-      releaseSession(stepSession),
-      releaseSession(stepGraphCaptureSession),
       releaseSession(fullStepSession),
       releaseSession(fullStepGraphCaptureSession),
       releaseSession(decoderSession),
@@ -3248,36 +3098,21 @@ async function loadRuntime() {
     fetchJson(CONTEXT_URL, 'context manifest'),
     fetchJson(INITIAL_CACHE_URL, 'initial cache manifest'),
   ]);
-  const stepSpec = findFirstExport(manifest, [
-    manifest.demo_generation?.preferred_step_export,
-    ...STEP_EXPORT_FALLBACKS,
-  ]);
-  const fullStepSpec = fullCacheStepEnabled
-    ? findFirstOptionalExport(manifest, [
-        FULL_CACHE_STEP_EXPORT_NAME,
-        requestedBackend === 'wasm'
-          ? manifest.demo_generation?.preferred_full_cache_step_export_wasm
-          : null,
-        ...(requestedBackend === 'wasm' ? FULL_CACHE_STEP_EXPORT_FALLBACKS : []),
-        browserProfile === 'safari'
-          ? manifest.demo_generation?.preferred_full_cache_step_export_safari
-          : null,
-        manifest.demo_generation?.preferred_full_cache_step_export,
-        ...(requestedBackend === 'wasm' ? [] : FULL_CACHE_STEP_EXPORT_FALLBACKS),
-      ])
-    : null;
-  const prefillSkipReason = prefillInitialCacheRequested
-    ? paddedInitialPrefillSkipReason(contextManifest)
-    : null;
-  if (prefillSkipReason) {
-    recordLoadEvent(prefillSkipReason, 0);
+  if (!fullCacheStepEnabled) {
+    throw new Error('The demo now requires the full-cache dynamics graph.');
   }
-  const prefillSpec = prefillInitialCacheRequested && !prefillSkipReason
-    ? findFirstExport(manifest, [
-        manifest.demo_generation?.preferred_prefill_export,
-        ...PREFILL_EXPORT_FALLBACKS,
-      ])
-    : null;
+  const fullStepSpec = findFirstExport(manifest, [
+    FULL_CACHE_STEP_EXPORT_NAME,
+    requestedBackend === 'wasm'
+      ? manifest.demo_generation?.preferred_full_cache_step_export_wasm
+      : null,
+    ...(requestedBackend === 'wasm' ? FULL_CACHE_STEP_EXPORT_FALLBACKS : []),
+    browserProfile === 'safari'
+      ? manifest.demo_generation?.preferred_full_cache_step_export_safari
+      : null,
+    manifest.demo_generation?.preferred_full_cache_step_export,
+    ...(requestedBackend === 'wasm' ? [] : FULL_CACHE_STEP_EXPORT_FALLBACKS),
+  ]);
   const decoderSpec = DECODER_EXPORT_NAME
     ? findExport(manifest, DECODER_EXPORT_NAME)
     : findFirstExport(manifest, [
@@ -3295,41 +3130,29 @@ async function loadRuntime() {
     initialK,
     initialV,
     initialLength,
-    contextZ,
-    contextActions,
-    contextStepLevels,
-    contextSignalLevels,
   ] = await Promise.all([
     fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.display_z, 'context preview'),
     displayPixelsPromise,
     fetchTensorFromArtifact(ASSET_DIR, initialCacheManifest.arrays.k_cache, 'initial K cache'),
     fetchTensorFromArtifact(ASSET_DIR, initialCacheManifest.arrays.v_cache, 'initial V cache'),
     fetchTensorFromArtifact(ASSET_DIR, initialCacheManifest.arrays.cache_length, 'cache length'),
-    prefillSpec
-      ? fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.z, 'prefill context')
-      : Promise.resolve(null),
-    prefillSpec
-      ? fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.actions, 'prefill actions')
-      : Promise.resolve(null),
-    prefillSpec
-      ? fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.step_levels, 'prefill step levels')
-      : Promise.resolve(null),
-    prefillSpec
-      ? fetchTensorFromArtifact(ASSET_DIR, contextManifest.arrays.signal_levels, 'prefill signal levels')
-      : Promise.resolve(null),
   ]);
-  validateInitialCache(stepSpec, initialK, initialV, initialLength);
+  validateInitialCache(fullStepSpec, initialK, initialV, initialLength);
+  const contextLength =
+    manifest.cache_contract?.context_length ??
+    contextLengthFromManifest(contextManifest) ??
+    initialCacheManifest.context_length ??
+    initialCacheManifest.arrays.k_cache.shape[3];
+  if (initialLength.data[0] < contextLength) {
+    throw new Error(
+      `Initial cache must be full for the full-cache dynamics graph: got ${initialLength.data[0]} of ${contextLength}.`,
+    );
+  }
   elements.context.textContent = `${contextManifest.prefix_frames} frames @ ${contextManifest.episode_start}`;
 
   setStatus('Loading ONNX models');
-  const [stepModelBytes, fullStepModelBytes, prefillModelBytes, decoderModelBytes] = await Promise.all([
-    fetchBytes(`${ASSET_DIR}/${stepSpec.path}`, 'dynamics model'),
-    fullStepSpec
-      ? fetchBytes(`${ASSET_DIR}/${fullStepSpec.path}`, 'full-cache dynamics model')
-      : Promise.resolve(null),
-    prefillSpec
-      ? fetchBytes(`${ASSET_DIR}/${prefillSpec.path}`, 'prefill model')
-      : Promise.resolve(null),
+  const [fullStepModelBytes, decoderModelBytes] = await Promise.all([
+    fetchBytes(`${ASSET_DIR}/${fullStepSpec.path}`, 'full-cache dynamics model'),
     fetchBytes(`${ASSET_DIR}/${decoderSpec.path}`, 'decoder model'),
   ]);
 
@@ -3337,23 +3160,14 @@ async function loadRuntime() {
     manifest,
     contextManifest,
     initialCacheManifest,
-    stepSpec,
     decoderSpec,
     displayZ,
     displayPixels,
-    contextZ,
-    contextActions,
-    contextStepLevels,
-    contextSignalLevels,
     initialK,
     initialV,
     initialLength,
-    stepModelBytes,
     fullStepSpec,
     fullStepModelBytes,
-    prefillSpec,
-    prefillModelBytes,
-    prefillSkipReason,
     decoderModelBytes,
   };
   let lastError = null;

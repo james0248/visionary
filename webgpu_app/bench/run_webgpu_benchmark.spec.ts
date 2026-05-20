@@ -59,14 +59,14 @@ async function runBenchmark(
   if (process.env.WEBGPU_BENCHMARK_GRAPH_OPTIMIZATION_LEVEL) {
     params.set('graphOptimizationLevel', process.env.WEBGPU_BENCHMARK_GRAPH_OPTIMIZATION_LEVEL);
   }
-  if (process.env.WEBGPU_BENCHMARK_PREFILL_ARTIFACT) {
-    params.set('prefillArtifact', process.env.WEBGPU_BENCHMARK_PREFILL_ARTIFACT);
-  }
   if (process.env.WEBGPU_BENCHMARK_STEP_ARTIFACT) {
     params.set('stepArtifact', process.env.WEBGPU_BENCHMARK_STEP_ARTIFACT);
   }
   if (process.env.WEBGPU_BENCHMARK_DECODER_ARTIFACT) {
     params.set('decoderArtifact', process.env.WEBGPU_BENCHMARK_DECODER_ARTIFACT);
+  }
+  if (process.env.WEBGPU_BENCHMARK_INITIAL_CACHE_NAME) {
+    params.set('initialCacheName', process.env.WEBGPU_BENCHMARK_INITIAL_CACHE_NAME);
   }
   if (process.env.WEBGPU_BENCHMARK_ASSET_BASE) {
     params.set('assetBase', process.env.WEBGPU_BENCHMARK_ASSET_BASE);
@@ -130,7 +130,7 @@ test('webgpu benchmark smoke @smoke', async ({ page }) => {
   const result = await runBenchmark(page, 'streaming');
   await writeResult(result);
   expect(['passed', 'blocked'], result.message ?? '').toContain(result.status);
-  expect(result.benchmark_modes).toEqual(['cached_prefill', 'cached_step', 'streaming_frame']);
+  expect(result.benchmark_modes).toEqual(['initial_cache', 'cached_step', 'streaming_frame']);
   expect(result.results.map((entry) => entry.mode)).not.toContain('uncached_window');
 });
 
@@ -139,7 +139,7 @@ test('webgpu demo streaming benchmark @output_validation', async ({ page }) => {
   await writeResult(result);
   expect(['passed', 'blocked'], result.message ?? '').toContain(result.status);
   expect(result.schema_version).toBe(2);
-  expect(result.benchmark_modes).toEqual(['cached_prefill', 'cached_step', 'streaming_frame']);
+  expect(result.benchmark_modes).toEqual(['initial_cache', 'cached_step', 'streaming_frame']);
   expect(result.manifest.exports.map((entry) => entry.name)).not.toContain('breakout_dynamics_b1_t64');
   expect(result.manifest.exports.map((entry) => entry.name)).not.toContain(
     'breakout_tokenizer_decoder_b1_t64',
@@ -147,14 +147,14 @@ test('webgpu demo streaming benchmark @output_validation', async ({ page }) => {
 
   if (result.status === 'blocked') {
     expect(result.streaming_contract_status).toBe('blocked');
-    expect(result.blocked_reason).toContain('Cached dynamics prefill');
+    expect(result.blocked_reason).toContain('Full-cache dynamics step');
     expect(result.results).toEqual([]);
     return;
   }
 
   expect(result.streaming_contract_status).toBe('available');
   expect(result.results.map((entry) => entry.mode)).toEqual([
-    'cached_prefill',
+    'initial_cache',
     'cached_step',
     'streaming_frame',
   ]);

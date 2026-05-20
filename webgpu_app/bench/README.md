@@ -61,13 +61,12 @@ bun run benchmark:webgpu:headless-smoke
 The benchmark only runs when these cached demo artifacts are present in
 `webgpu_app/dream_arcade_assets/breakout/breakout_onnx_manifest.json`:
 
-- `breakout_dynamics_prefill_cached_b1_t64.onnx`
-- `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2.onnx`
+- `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2.onnx`
 - `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2.onnx`
 - `breakout_tokenizer_decoder_b1_t1.onnx` preferred, with
   `breakout_tokenizer_decode_z_b1_t1.onnx` as the fallback
-- `breakout_demo_context.*`
-- `breakout_demo_initial_cache.*`
+- `breakout_demo_context_noop60_fire4.*`
+- `breakout_demo_initial_cache_noop60_fire4.*`
 
 If those artifacts are missing, the benchmark writes a structured `blocked` result instead of running
 the old full-window graphs.
@@ -119,8 +118,8 @@ copy predicted z to the decoder input
 decode the accepted single frame
 ```
 
-The interactive demo still uses the cache-length entry artifact while filling a short prefix cache,
-then switches to the packed full-cache entry artifact once the logical cache length reaches 64.
+The interactive demo starts from a full offline cache and uses the full-cache entry artifact for
+every generated frame.
 
 Sampling constants are recorded in the result:
 
@@ -135,7 +134,7 @@ context_tau_effective = 29 / 32
 
 `results/latest.json` uses `schema_version: 2` and reports:
 
-- `cached_prefill`: context cache creation time
+- `initial_cache`: offline full-cache artifact load time and tensor metadata
 - `cached_step`: cached dynamics target-forward time and full dynamics frame time
 - `streaming_frame`: full steady-state generated-frame time and FPS
 - `streaming_frame.output_validation`: untimed hashes from generated decoder frames and the latent

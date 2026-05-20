@@ -108,9 +108,9 @@ const DEFAULT_CONFIG = {
   decoderGraphCapture: null,
   preferredLayout: null,
   graphOptimizationLevel: 'basic',
-  prefillArtifact: null,
   stepArtifact: 'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2',
   decoderArtifact: null,
+  initialCacheName: 'breakout_demo_initial_cache_noop60_fire4.json',
   assetBase: ASSET_DIR,
   browserProfile: 'auto',
   profiling: false,
@@ -135,11 +135,10 @@ const DEFAULT_CONFIG = {
   validationFrames: 6,
 };
 const REQUIRED_ARTIFACTS = {
-  prefill: ['breakout_dynamics_prefill_cached_b1_t64'],
   step: [
     'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2',
     'breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2',
-    'breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2',
+    'breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2',
   ],
   decoder: ['breakout_tokenizer_decoder_b1_t1', 'breakout_tokenizer_decode_z_b1_t1'],
 };
@@ -190,12 +189,12 @@ function parseConfig() {
       params.get('graphOptimizationLevel') ??
       browserDefaults.graphOptimizationLevel ??
       (provider === 'wasm' ? 'all' : DEFAULT_CONFIG.graphOptimizationLevel),
-    prefillArtifact: params.get('prefillArtifact') ?? DEFAULT_CONFIG.prefillArtifact,
     stepArtifact:
       params.get('stepArtifact') ??
       browserDefaults.stepArtifact ??
       (provider === 'wasm' ? null : DEFAULT_CONFIG.stepArtifact),
     decoderArtifact: params.get('decoderArtifact') ?? DEFAULT_CONFIG.decoderArtifact,
+    initialCacheName: params.get('initialCacheName') ?? DEFAULT_CONFIG.initialCacheName,
     assetBase: params.get('assetBase') ?? DEFAULT_CONFIG.assetBase,
     browserProfile,
     detectedBrowserProfile,
@@ -438,6 +437,14 @@ function tensorValue(tensor, index) {
     return float16BitsToFloat32(tensor.data[index]);
   }
   return tensor.data[index];
+}
+
+function dtypeArray(dtype) {
+  if (dtype === 'float32') return Float32Array;
+  if (dtype === 'float16') return Uint16Array;
+  if (dtype === 'int32') return Int32Array;
+  if (dtype === 'uint8') return Uint8Array;
+  throw new Error(`Unsupported artifact dtype ${dtype}`);
 }
 
 function makeFloatTensor(shape, seed, dtype = 'float32') {
@@ -699,6 +706,15 @@ async function fetchManifest() {
   return response.json();
 }
 
+async function fetchJson(url, label) {
+  setStatus(`fetching ${label}`);
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${url}: ${response.status}`);
+  }
+  return response.json();
+}
+
 async function fetchSize(url) {
   const start = performance.now();
   const response = await fetch(url, { method: 'HEAD' });
@@ -709,6 +725,52 @@ async function fetchSize(url) {
     bytes: Number(response.headers.get('content-length') ?? 0),
     elapsed_ms: performance.now() - start,
   };
+}
+
+async function fetchBytes(url, label) {
+  setStatus(`fetching ${label}`);
+  const start = performance.now();
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${url}: ${response.status}`);
+  }
+  const buffer = await response.arrayBuffer();
+  return {
+    bytes: new Uint8Array(buffer),
+    elapsed_ms: performance.now() - start,
+  };
+}
+
+async function fetchTensorFromArtifact(baseUrl, spec, label) {
+  const fetched = await fetchBytes(`${baseUrl}/${spec.path}`, label);
+  const ArrayType = dtypeArray(spec.dtype);
+  return {
+    tensor: new ort.Tensor(spec.dtype, new ArrayType(fetched.bytes.buffer), spec.shape),
+    bytes: fetched.bytes.byteLength,
+    elapsed_ms: fetched.elapsed_ms,
+  };
+}
+
+async function loadInitialCache(config, specs, manifest) {
+  const manifestUrl = `${ASSET_DIR}/${config.initialCacheName}`;
+  const manifestFetch = await timeAsync(() => fetchJson(manifestUrl, 'initial cache manifest'));
+  const cacheManifest = manifestFetch.value;
+  const [kFetch, vFetch, lengthFetch] = await Promise.all([
+    fetchTensorFromArtifact(ASSET_DIR, cacheManifest.arrays.k_cache, 'initial K cache'),
+    fetchTensorFromArtifact(ASSET_DIR, cacheManifest.arrays.v_cache, 'initial V cache'),
+    fetchTensorFromArtifact(ASSET_DIR, cacheManifest.arrays.cache_length, 'initial cache length'),
+  ]);
+  const initialCache = {
+    name: config.initialCacheName,
+    manifest: cacheManifest,
+    k: kFetch.tensor,
+    v: vFetch.tensor,
+    length: lengthFetch.tensor,
+    fetch_ms: manifestFetch.elapsedMs + kFetch.elapsed_ms + vFetch.elapsed_ms + lengthFetch.elapsed_ms,
+    bytes: kFetch.bytes + vFetch.bytes + lengthFetch.bytes,
+  };
+  validateInitialCache(specs, manifest, initialCache);
+  return initialCache;
 }
 
 async function createSession(modelUrl, externalData = [], sessionOptions = {}) {
@@ -780,14 +842,11 @@ function externalDataForSpec(spec) {
 
 function resolveDemoSpecs(manifest, config = DEFAULT_CONFIG) {
   const exportsByName = byExportName(manifest);
-  const prefillNames = config.prefillArtifact
-    ? [config.prefillArtifact, ...REQUIRED_ARTIFACTS.prefill]
-    : REQUIRED_ARTIFACTS.prefill;
   const manifestStepNames = [
     config.provider === 'wasm'
       ? manifest.demo_generation?.preferred_full_cache_step_export_wasm
       : null,
-    manifest.demo_generation?.preferred_step_export,
+    manifest.demo_generation?.preferred_full_cache_step_export,
   ].filter(Boolean);
   const manifestDecoderNames = [manifest.demo_generation?.preferred_decoder_export].filter(Boolean);
   const stepNames = config.stepArtifact
@@ -797,7 +856,6 @@ function resolveDemoSpecs(manifest, config = DEFAULT_CONFIG) {
     ? [config.decoderArtifact, ...REQUIRED_ARTIFACTS.decoder]
     : [...manifestDecoderNames, ...REQUIRED_ARTIFACTS.decoder];
   return {
-    prefill: findSpec(exportsByName, prefillNames),
     step: findSpec(exportsByName, stepNames),
     decoder: findSpec(exportsByName, decoderNames),
   };
@@ -831,7 +889,6 @@ function validateDemoSpecs(specs, manifest) {
   const cacheLengthShape = tensors.cache_length?.shape;
   const layerCacheShape = manifest.cache_contract?.tensors?.layer_cache?.shape;
   const layerCacheCount = manifest.cache_contract?.tensors?.layer_cache?.layers ?? 0;
-  const hasLayerPrefill = layerCacheCount > 0 && Boolean(specs.prefill.outputs?.k_cache_0);
   const hasLayerStep = layerCacheCount > 0 && Boolean(specs.step.inputs?.k_cache_0);
   const hasEntryStep = Boolean(specs.step.outputs?.candidate_k_entry);
   const entryShape =
@@ -840,11 +897,6 @@ function validateDemoSpecs(specs, manifest) {
       : cacheShape
         ? [...cacheShape.slice(0, 3), 1, ...cacheShape.slice(4)]
         : null;
-  if (!hasLayerPrefill) {
-    requireTensorSpec('prefill.outputs.k_cache', specs.prefill.outputs?.k_cache, cacheShape);
-    requireTensorSpec('prefill.outputs.v_cache', specs.prefill.outputs?.v_cache, cacheShape);
-  }
-  requireTensorSpec('prefill.outputs.cache_length', specs.prefill.outputs?.cache_length, cacheLengthShape);
   if (hasLayerStep) {
     for (let i = 0; i < layerCacheCount; i += 1) {
       requireTensorSpec(`step.inputs.k_cache_${i}`, specs.step.inputs?.[`k_cache_${i}`], layerCacheShape);
@@ -883,9 +935,6 @@ function validateDemoSpecs(specs, manifest) {
   } else {
     requireTensorSpec('decoder.inputs.latent', specs.decoder.inputs?.latent, [1, 1, 64, 16]);
   }
-  if (specs.prefill.name.includes('b1_t64') && !specs.prefill.name.includes('cached')) {
-    throw new Error(`Prefill artifact is not cached: ${specs.prefill.name}`);
-  }
   const stepHasCacheIo =
     (Boolean(specs.step.inputs?.k_cache) &&
       Boolean(specs.step.inputs?.v_cache) &&
@@ -904,6 +953,36 @@ function validateDemoSpecs(specs, manifest) {
   }
   if (specs.decoder.name.endsWith('b1_t64')) {
     throw new Error(`Decoder artifact is not single-frame: ${specs.decoder.name}`);
+  }
+}
+
+function requireTensorMatchesSpec(label, tensor, spec) {
+  if (!spec) {
+    throw new Error(`Missing tensor spec for ${label}`);
+  }
+  if (tensor.type !== spec.dtype || !sameShape(tensor.dims, spec.shape)) {
+    throw new Error(
+      `${label} mismatch: artifact has ${tensor.type} ${tensor.dims.join('x')}, ` +
+        `model expects ${spec.dtype} ${spec.shape.join('x')}`,
+    );
+  }
+}
+
+function validateInitialCache(specs, manifest, initialCache) {
+  const inputs = specs.step.inputs ?? {};
+  requireTensorMatchesSpec('initial k_cache', initialCache.k, inputs.k_cache);
+  requireTensorMatchesSpec('initial v_cache', initialCache.v, inputs.v_cache);
+  if (inputs.cache_length) {
+    requireTensorMatchesSpec('initial cache_length', initialCache.length, inputs.cache_length);
+  }
+  const contextLength =
+    manifest.cache_contract?.context_length ??
+    initialCache.manifest.context_length ??
+    contextLengthFromStepSpec(specs.step);
+  if (initialCache.length.data[0] < contextLength) {
+    throw new Error(
+      `Initial cache must be full for the full-cache benchmark: got ${initialCache.length.data[0]} of ${contextLength}.`,
+    );
   }
 }
 
@@ -962,9 +1041,9 @@ function blockedResult({ config, manifest, gpu, missing }) {
     status: 'blocked',
     streaming_contract_status: 'blocked',
     blocked_reason:
-      'Cached dynamics prefill, cached dynamics step, and single-frame decoder artifacts are not present; manifest cache support is contract_only.',
+      'Full-cache dynamics step and single-frame decoder artifacts are not present; manifest cache support is contract_only.',
     missing_artifacts: missing,
-    benchmark_modes: ['cached_prefill', 'cached_step', 'streaming_frame'],
+    benchmark_modes: ['initial_cache', 'cached_step', 'streaming_frame'],
     config,
     created_at: new Date().toISOString(),
     user_agent: navigator.userAgent,
@@ -1125,6 +1204,26 @@ function makeZeroTensorFromSpec(spec) {
     throw new Error('Missing tensor spec for fixed GPU tensor');
   }
   return makeScalarFillTensor(spec.dtype, spec.shape, 0);
+}
+
+function cloneCpuTensor(tensor) {
+  const ArrayType = dtypeArray(tensor.type);
+  return new ort.Tensor(tensor.type, new ArrayType(tensor.data), [...tensor.dims]);
+}
+
+function cacheFromInitialArtifacts(device, initialCache, config) {
+  if (config.provider !== 'webgpu' || !device) {
+    return {
+      k: cloneCpuTensor(initialCache.k),
+      v: cloneCpuTensor(initialCache.v),
+      length: cloneCpuTensor(initialCache.length),
+    };
+  }
+  return {
+    k: createGpuTensorFromCpu(device, initialCache.k),
+    v: createGpuTensorFromCpu(device, initialCache.v),
+    length: cloneCpuTensor(initialCache.length),
+  };
 }
 
 function createFixedGpuCache(device, spec) {
@@ -2174,13 +2273,6 @@ function preferredOutputLocationFor(role, spec, config) {
   if (config.provider !== 'webgpu') {
     return undefined;
   }
-  if (role === 'cached_prefill') {
-    const names = cacheOutputNames(spec);
-    const locations = {};
-    for (const name of [names.k, names.v].flat().filter(Boolean)) locations[name] = 'gpu-buffer';
-    if (names.length) locations[names.length] = 'cpu';
-    return locations;
-  }
   if (role === 'cached_step') {
     if (config.dynamicsGraphCapture) {
       return Object.fromEntries(Object.keys(spec.outputs ?? {}).map((name) => [name, 'gpu-buffer']));
@@ -2247,8 +2339,7 @@ async function createBenchSession(role, spec, config) {
   };
 }
 
-async function runDemoBenchmark({ config, specs, manifest }) {
-  const prefill = await createBenchSession('cached_prefill', specs.prefill, config);
+async function runDemoBenchmark({ config, specs, manifest, initialCache }) {
   const step = await createBenchSession('cached_step', specs.step, config);
   const decoder = await createBenchSession('single_frame_decoder', specs.decoder, config);
   const validationDecoder = config.validateOutput
@@ -2258,17 +2349,14 @@ async function runDemoBenchmark({ config, specs, manifest }) {
     config.provider === 'wasm' && config.decoderWorkerPipeline
       ? await createWorkerDecoderRunner(specs.decoder, config)
       : null;
-  const prefillFeeds = makeFeedsFromSpec(specs.prefill, 1000);
   const stepBaseFeeds = makeFeedsFromSpec(specs.step, 2000);
   const decoderBaseFeeds = makeFeedsFromSpec(specs.decoder, 3000);
-  const prefillCacheNames = cacheOutputNames(specs.prefill);
   const stepCacheNames = cacheOutputNames(specs.step);
   const usesEntryCacheStep = Boolean(stepCacheNames.entryK && stepCacheNames.entryV);
   const predName = stepPredOutputName(specs.step);
   const finalZName = stepFinalZOutputName(specs.step);
   const usesFusedSampleStep = stepUsesFusedSampleStep(specs.step, predName, finalZName);
   const decoderName = decoderOutputName(specs.decoder);
-  const prefillFetches = cacheFetches(prefillCacheNames);
   const stepCacheFetches =
     step.graph_capture && !usesEntryCacheStep
       ? [stepCacheNames.k, stepCacheNames.v].flat().filter(Boolean)
@@ -2370,14 +2458,18 @@ async function runDemoBenchmark({ config, specs, manifest }) {
   const needsSignalLevelInput = Object.keys(stepInputs).some((name) => name.includes('signal_level'));
   const needsPositionIndexInput = Object.keys(stepInputs).some((name) => name === 'position_index');
 
-  setStatus('demo benchmark: first prefill');
-  const prefillFirst = await timeAsync(() => prefill.session.run(prefillFeeds, prefillFetches));
-  let persistentCache = cacheFromOutputs(prefillFirst.value, prefillCacheNames);
-  if (graphCaptureFixedCache) {
-    const prefillCache = persistentCache;
-    persistentCache = copyCacheIntoFixedGpu(gpuDevice, prefillCache, graphCaptureFixedCache);
-    disposeCache(prefillCache, graphCapturePinnedTensors);
-  }
+  const makePersistentCacheFromInitial = () => {
+    let cache = cacheFromInitialArtifacts(gpuDevice, initialCache, config);
+    if (graphCaptureFixedCache) {
+      const sourceCache = cache;
+      cache = copyCacheIntoFixedGpu(gpuDevice, sourceCache, graphCaptureFixedCache);
+      disposeCache(sourceCache, graphCapturePinnedTensors);
+    }
+    return cache;
+  };
+
+  setStatus('demo benchmark: loading initial cache');
+  let persistentCache = makePersistentCacheFromInitial();
   let streamingZ = graphCaptureStepInputs?.z ?? streamingInputZ ?? null;
 
   for (let i = 0; i < config.warmupRuns; i += 1) {
@@ -2508,7 +2600,6 @@ async function runDemoBenchmark({ config, specs, manifest }) {
     }
   }
 
-  const prefillSamples = [];
   const dynamicsFrameSamples = [];
   const decoderFrameSamples = [];
   const cacheCommitSamples = [];
@@ -2564,16 +2655,9 @@ async function runDemoBenchmark({ config, specs, manifest }) {
     }
   };
 
-  setStatus('demo benchmark: timed prefill');
-  const timedPrefill = await timeAsync(() => prefill.session.run(prefillFeeds, prefillFetches));
-  prefillSamples.push(timedPrefill.elapsedMs);
+  setStatus('demo benchmark: resetting initial cache');
   disposeCache(persistentCache, graphCapturePinnedTensors);
-  persistentCache = cacheFromOutputs(timedPrefill.value, prefillCacheNames);
-  if (graphCaptureFixedCache) {
-    const prefillCache = persistentCache;
-    persistentCache = copyCacheIntoFixedGpu(gpuDevice, prefillCache, graphCaptureFixedCache);
-    disposeCache(prefillCache, graphCapturePinnedTensors);
-  }
+  persistentCache = makePersistentCacheFromInitial();
   if (usesSafariMaterializedGraphCapture && step.graph_capture && config.primeGraphCapture) {
     setStatus('demo benchmark: priming graph capture');
     let currentZ = makeFloatTensor([1, 1, 32, 32], 6000, zDtype);
@@ -2903,28 +2987,22 @@ async function runDemoBenchmark({ config, specs, manifest }) {
   const outputValidation = outputValidationSummary(validationFrameHashes, config, validationLatentHashes);
   return [
     {
-      mode: 'cached_prefill',
-      artifact_role: 'dynamics_prefill',
-      name: prefill.spec.name,
-      model_url: prefill.model_url,
-      model_fetch_ms: prefill.model_fetch_ms,
-      model_bytes: prefill.model_bytes,
-      session_create_ms: prefill.session_create_ms,
-      preferred_output_location: prefill.preferred_output_location,
-      inputs: prefill.spec.inputs,
-      outputs: prefill.spec.outputs,
+      mode: 'initial_cache',
+      artifact_role: 'initial_cache',
+      name: initialCache.name,
+      artifact_url: `${ASSET_DIR}/${initialCache.name}`,
+      artifact_fetch_ms: initialCache.fetch_ms,
+      artifact_bytes: initialCache.bytes,
+      source_onnx_manifest: initialCache.manifest.source_onnx_manifest ?? null,
+      source_context_manifest: initialCache.manifest.source_context_manifest ?? null,
+      source_cache_export: initialCache.manifest.source_cache_export ?? null,
       timing: {
-        prefill: summarize(prefillSamples),
+        artifact_load: summarize([initialCache.fetch_ms]),
       },
       cache: {
-        outputs: prefillCacheNames,
-        k_cache: Array.isArray(persistentCache.k)
-          ? persistentCache.k.map((tensor) => tensorSummary(tensor))
-          : tensorSummary(persistentCache.k),
-        v_cache: Array.isArray(persistentCache.v)
-          ? persistentCache.v.map((tensor) => tensorSummary(tensor))
-          : tensorSummary(persistentCache.v),
-        cache_length: tensorSummary(persistentCache.length),
+        k_cache: tensorSummary(initialCache.k),
+        v_cache: tensorSummary(initialCache.v),
+        cache_length: tensorSummary(initialCache.length),
       },
     },
     {
@@ -2964,7 +3042,7 @@ async function runDemoBenchmark({ config, specs, manifest }) {
       artifact_role: 'demo_frame',
       name: 'dreamer4_demo_streaming_frame',
       inputs: {
-        context: specs.prefill.inputs,
+        initial_cache: initialCache.manifest.arrays,
         step: specs.step.inputs,
         decoder: specs.decoder.inputs,
       },
@@ -2994,15 +3072,15 @@ async function runDemoBenchmark({ config, specs, manifest }) {
         cold_stream_ms_per_frame:
           steady == null
             ? null
-            : (prefillSamples[0] + streamingFrameSamples.reduce((total, value) => total + value, 0)) /
+            : (initialCache.fetch_ms + streamingFrameSamples.reduce((total, value) => total + value, 0)) /
               streamingFrameSamples.length,
       },
       cache: {
         commit_policy: usesFusedSampleStep
           ? usesEntryCacheStep
-            ? 'cache is updated in-place from per-frame K/V entry outputs; logical cache_length controls the attention mask and advances until full context'
-            : 'cache_length advances once per generated frame from fused final candidate cache'
-          : 'cache_length advances once per generated frame',
+            ? 'cache is updated in-place from per-frame K/V entry outputs; cache_length remains at the full context'
+            : 'full candidate cache is committed once per generated frame'
+          : 'candidate cache is committed once per generated frame',
       },
       output_validation: outputValidation,
       output: latestFrameStats,
@@ -3029,8 +3107,9 @@ async function runBenchmark() {
     return blockedResult({ config, manifest, gpu, missing });
   }
   validateDemoSpecs(specs, manifest);
+  const initialCache = await loadInitialCache(config, specs, manifest);
 
-  const results = await runDemoBenchmark({ config, specs, manifest });
+  const results = await runDemoBenchmark({ config, specs, manifest, initialCache });
   const outputValidation = results.find((entry) => entry.mode === 'streaming_frame')
     ?.output_validation ?? { status: 'skipped' };
   if (profiler.enabled && config.profilingDrainMs > 0) {
@@ -3048,7 +3127,7 @@ async function runBenchmark() {
     ...(outputValidation.status === 'failed'
       ? { message: 'Generated frame output validation failed: sampled frames were static.' }
       : {}),
-    benchmark_modes: ['cached_prefill', 'cached_step', 'streaming_frame'],
+    benchmark_modes: ['initial_cache', 'cached_step', 'streaming_frame'],
     config,
     created_at: new Date().toISOString(),
     user_agent: navigator.userAgent,
@@ -3088,7 +3167,7 @@ function graphCaptureBlockedResult(error) {
     schema_version: 2,
     status: 'blocked',
     streaming_contract_status: 'blocked',
-    benchmark_modes: ['cached_prefill', 'cached_step', 'streaming_frame'],
+    benchmark_modes: ['initial_cache', 'cached_step', 'streaming_frame'],
     created_at: new Date().toISOString(),
     user_agent: navigator.userAgent,
     platform: navigator.platform,
@@ -3107,7 +3186,7 @@ runBenchmark()
       schema_version: 2,
       status: 'failed',
       streaming_contract_status: 'failed',
-      benchmark_modes: ['cached_prefill', 'cached_step', 'streaming_frame'],
+      benchmark_modes: ['initial_cache', 'cached_step', 'streaming_frame'],
       created_at: new Date().toISOString(),
       user_agent: navigator.userAgent,
       platform: navigator.platform,

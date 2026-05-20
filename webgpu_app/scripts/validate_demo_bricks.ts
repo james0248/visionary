@@ -40,12 +40,8 @@ const DEFAULT_BASE_URL =
 
 function defaultCases() {
   return [
-    { label: 'cache-fill', url: DEFAULT_BASE_URL },
+    { label: 'full-cache', url: DEFAULT_BASE_URL },
     { label: 'safari-profile', url: `${DEFAULT_BASE_URL}&browserProfile=safari` },
-    {
-      label: 'full-prefill',
-      url: `${DEFAULT_BASE_URL}&prefillInitialCache=1&skipShortCacheStepWhenFull=1`,
-    },
   ];
 }
 
@@ -102,7 +98,7 @@ The script drives the visible UI by clicking Start, waiting for generated frames
 measuring the rendered game screenshot.
 
 Options:
-  --url <url>                 Check one URL instead of the default cache-fill + Safari/full-cache cases
+  --url <url>                 Check one URL instead of the default full-cache + Safari cases
   --label <name>              Label for --url output
   --frames <n>                UI-generated frame count to validate at (default: 1)
   --min-coverage <ratio>      Minimum band coverage (default: 0.95)
