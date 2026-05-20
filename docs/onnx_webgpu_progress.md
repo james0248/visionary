@@ -7384,6 +7384,10 @@ Rejected / kept out:
   nodes, `entry 1167 -> 1155` with `12` `FusedMatMul` nodes), but Chrome output and latent
   validation regressed to `37.39 fps` / `26.75 ms`. Keep the browser runtime optimizer on the
   accepted split graphs instead of serializing `ENABLE_ALL` output after the late split passes.
+- Retested the staged `onnxruntime-web@1.26.0` dist against the accepted head-time split cache
+  graphs by temporarily serving the ignored `node_modules/ort126/dist` files, then restoring the
+  pinned `1.24.3` dist. Chrome output and latent validation passed, but timing regressed to
+  `38.60 fps` / `25.91 ms`. Keep the pinned runtime.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
