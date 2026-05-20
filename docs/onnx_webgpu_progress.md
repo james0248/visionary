@@ -7175,6 +7175,15 @@ Rejected / kept out:
   MHA back to compact-K/V GQA was CPU-exact (`max abs diff 0.0`) but regressed native ORT timing:
   split sample `~10.0 ms -> ~13.0 ms`, split entry `~4.7 ms -> ~6.1 ms`. Keep the accepted MHA
   fusion for temporal dynamics.
+- Retested decoder-worker contention under split by disabling the decoder worker pipeline. Dynamics
+  got faster (`26.49 ms` mean, sample `17.87 ms`, entry `8.62 ms`) because the worker no longer
+  contended for CPU, but decode became sequential (`9.19 ms`) and full streaming regressed to
+  `27.15 fps` / `36.83 ms`. Keep the decoder worker pipeline; even a hypothetical non-contending
+  decoder would still leave the sequential dynamics/cache path well above the `16.7 ms` target.
+- Rejected a SharedArrayBuffer-backed WASM cache-updater prototype. Keeping the K/V cache tensors
+  stable and shared with the worker preserved output and latent validation, but did not reduce cache
+  wait and regressed the short Chromium window to `29.66 fps` / `33.72 ms` with cache wait
+  `1.52 ms`. Keep the transferable ArrayBuffer cache updater.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
