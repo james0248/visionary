@@ -7446,6 +7446,13 @@ Rejected / kept out:
   `candidate_v_entry`), but Chrome output and latent validation regressed to `34.37 fps` /
   `29.10 ms`, with dynamics `26.84 ms`. ORT WASM's `Gather` implementation is still cheaper than
   replacing it with many small split/concat copies for this shape.
+- Tightened the actual-demo benchmark's visual/latent validation window. The benchmark now samples
+  through `max(validationFrames, timedFrames)`, so the standard `--webgpu-benchmark-timed-runs 64`
+  invocation validates frames `1`, `2`, `4`, and `64` even when the CLI compatibility flag still
+  passes `--webgpu-benchmark-validation-frames 6`. This directly covers the prior failure mode
+  where the demo could look acceptable initially and break around frame 60. Verification passed in
+  both browser families with output and latent validation at frame 64: Chrome measured `39.59 fps`
+  and WebKit/Safari-family measured `37.46 fps`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
