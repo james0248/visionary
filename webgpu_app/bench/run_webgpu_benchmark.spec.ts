@@ -17,6 +17,7 @@ const DEFAULT_TIMED_FRAMES = 64;
 const DEFAULT_VALIDATION_FRAMES = 6;
 const MIN_BRICK_COVERAGE = 0.45;
 const MIN_UNIQUE_FRAME_HASHES = 2;
+const MIN_UNIQUE_LATENT_HASHES = 2;
 
 function envFlag(name: string) {
   const value = process.env[name];
@@ -241,6 +242,7 @@ async function measureBrickCoverage(page: Page, screenshotBase64: string) {
 }
 
 async function collectVisualValidation(page: Page, frames: number) {
+  await page.evaluate(() => (window as any).visionaryDemoDebug?.setRecordLatentSummaries?.(true));
   await resetDemo(page);
   const sampleFrames = [...new Set([1, 2, 4, frames].filter((frame) => frame <= frames))];
   const samples = [];
@@ -252,13 +254,23 @@ async function collectVisualValidation(page: Page, frames: number) {
     );
     await pauseDemo(page);
     const screenshot = await screenshotHash(page);
+    const numeric = await page.evaluate(() => {
+      const stats = (window as any).visionaryDemoDebug?.frameStats ?? [];
+      return stats.at(-1)?.latent ?? { status: 'skipped', reason: 'latent summary unavailable' };
+    });
     samples.push({
       frame,
       hash: screenshot.hash,
       visual: await measureBrickCoverage(page, screenshot.base64),
+      numeric,
     });
   }
+  await page.evaluate(() => (window as any).visionaryDemoDebug?.setRecordLatentSummaries?.(false));
   const hashes = samples.map((sample) => sample.hash);
+  const numericSamples = samples
+    .map((sample) => sample.numeric)
+    .filter((numeric: any) => numeric?.status === 'measured');
+  const latentHashes = numericSamples.map((numeric: any) => numeric.hash);
   const measuredCoverage = samples
     .map((sample) => sample.visual)
     .filter((visual: any) => visual.status === 'measured');
@@ -268,7 +280,10 @@ async function collectVisualValidation(page: Page, frames: number) {
   const status =
     new Set(hashes).size >= MIN_UNIQUE_FRAME_HASHES &&
     measuredCoverage.length > 0 &&
-    minBrickCoverage >= MIN_BRICK_COVERAGE
+    minBrickCoverage >= MIN_BRICK_COVERAGE &&
+    (numericSamples.length === 0 ||
+      (new Set(latentHashes).size >= MIN_UNIQUE_LATENT_HASHES &&
+        numericSamples.every((numeric: any) => numeric.finite)))
       ? 'passed'
       : 'failed';
   return {
@@ -278,6 +293,20 @@ async function collectVisualValidation(page: Page, frames: number) {
     hashes,
     min_brick_coverage: Number.isFinite(minBrickCoverage) ? minBrickCoverage : null,
     minimum_required_brick_coverage: MIN_BRICK_COVERAGE,
+    numerical: {
+      status:
+        numericSamples.length === 0
+          ? 'skipped'
+          : new Set(latentHashes).size >= MIN_UNIQUE_LATENT_HASHES &&
+              numericSamples.every((numeric: any) => numeric.finite)
+            ? 'passed'
+            : 'failed',
+      sample_count: numericSamples.length,
+      unique_hashes: new Set(latentHashes).size,
+      hashes: latentHashes,
+      minimum_required_unique_hashes: MIN_UNIQUE_LATENT_HASHES,
+      all_finite: numericSamples.every((numeric: any) => numeric.finite),
+    },
     samples,
   };
 }
@@ -451,6 +480,12 @@ function expectPassedBenchmark(result: BenchmarkResult) {
   const streaming = result.results.find((entry) => entry.mode === 'streaming_frame');
   expect(streaming?.output_validation).toMatchObject({ status: 'passed' });
   expect(streaming?.output_validation.unique_hashes).toBeGreaterThanOrEqual(MIN_UNIQUE_FRAME_HASHES);
+  if (result.demo.final.backend === 'wasm') {
+    expect(streaming?.output_validation.numerical).toMatchObject({ status: 'passed' });
+    expect(streaming?.output_validation.numerical.unique_hashes).toBeGreaterThanOrEqual(
+      MIN_UNIQUE_LATENT_HASHES,
+    );
+  }
   expect(streaming?.timing.steady_state_fps).toBeGreaterThan(0);
   expect(result.demo.final.cache_length).toBe(result.demo.final.context_length);
 }

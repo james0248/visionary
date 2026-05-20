@@ -322,6 +322,7 @@ let noiseGenerator = new NormalNoiseGenerator(0);
 let targetFps = parseTargetFps(configValue('fps', DEFAULT_TARGET_FPS));
 let frameStats = [];
 let frameWaiters = [];
+let recordLatentSummaries = false;
 const graphCaptureConfig = configValue('graphCapture', null);
 const graphCaptureRequested =
   graphCaptureConfig == null ? null : parseBooleanConfig(graphCaptureConfig, true);
@@ -2748,6 +2749,47 @@ function renderDecoderOutputs(runtime, decoderOutputs) {
   disposeGpuTensorUnlessPinnedAfterSubmittedWork(runtime.device, patches, runtime.pinnedOutputTensors);
 }
 
+function fnvHashBytes(bytes) {
+  let value = 2166136261 >>> 0;
+  for (const byte of bytes) {
+    value ^= byte;
+    value = Math.imul(value, 16777619) >>> 0;
+  }
+  return value.toString(16).padStart(8, '0');
+}
+
+function tensorSummaryForValidation(tensor) {
+  if (!recordLatentSummaries) return null;
+  if (tensor?.location === 'gpu-buffer') {
+    return { status: 'skipped', reason: 'gpu tensor readback disabled' };
+  }
+  const data = tensor?.data;
+  if (!data?.buffer) return { status: 'skipped', reason: 'tensor has no CPU data' };
+  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  let finite = true;
+  let maxAbs = 0;
+  let meanAbs = 0;
+  if (tensor.type === 'float32' || tensor.type === 'float16') {
+    for (let index = 0; index < data.length; index += 1) {
+      const value = tensor.type === 'float16' ? floatTensorValue(tensor, index) : data[index];
+      if (!Number.isFinite(value)) finite = false;
+      const abs = Math.abs(value);
+      if (abs > maxAbs) maxAbs = abs;
+      meanAbs += abs;
+    }
+    meanAbs = data.length ? meanAbs / data.length : 0;
+  }
+  return {
+    status: 'measured',
+    dtype: tensor.type,
+    dims: [...tensor.dims],
+    hash: fnvHashBytes(bytes),
+    finite,
+    max_abs: maxAbs,
+    mean_abs: meanAbs,
+  };
+}
+
 async function renderPendingDecoderFrame(runtime) {
   if (!runtime.pendingDecoderFrame) return null;
   const pending = runtime.pendingDecoderFrame;
@@ -2764,6 +2806,7 @@ async function renderPendingDecoderFrame(runtime) {
     decoderTotalMs:
       pending.decoderStarted == null ? null : decoderCompleted - pending.decoderStarted,
     renderMs: renderCompleted - renderStarted,
+    latent: pending.latent,
   };
 }
 
@@ -3302,12 +3345,12 @@ function waitForFrameCount(targetFrame, timeoutMs = 240_000) {
   });
 }
 
-function recordGeneratedFrame(started, stages = {}) {
+function recordGeneratedFrame(started, stages = {}, validation = {}) {
   frameCount += 1;
   statsFramesSinceUpdate += 1;
   const now = performance.now();
   const elapsed = now - started;
-  frameStats.push({ frame: frameCount, started, completed: now, elapsedMs: elapsed, stages });
+  frameStats.push({ frame: frameCount, started, completed: now, elapsedMs: elapsed, stages, ...validation });
   if (frameStats.length > 512) frameStats = frameStats.slice(-512);
   resolveFrameWaiters();
   const statsWindowStart = lastStatsUpdateTime || lastFrameTime;
@@ -3443,6 +3486,7 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
     (usedGraphCaptureStep && activeStep.graphCapture?.outputFetches) || activeStep.outputFetches,
   );
   const zOutput = outputs[activeStep.names.finalZ];
+  const latent = tensorSummaryForValidation(zOutput);
   const debugEntryOutputs =
     debugCacheBefore && activeStep.names.cacheUpdate === 'entry'
       ? {
@@ -3535,12 +3579,16 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
       decoderStarted: pipelinedDecoderStarted,
       zOutput,
       preserveStepOutputs,
+      latent,
     };
-    if (rendered) recordGeneratedFrame(started, { ...stages, ...rendered });
+    if (rendered) {
+      const { latent: renderedLatent, ...renderedStages } = rendered;
+      recordGeneratedFrame(started, { ...stages, ...renderedStages }, { latent: renderedLatent });
+    }
     return debugCacheUpdate;
   }
 
-  recordGeneratedFrame(started, stages);
+  recordGeneratedFrame(started, stages, { latent });
   return debugCacheUpdate;
 }
 
@@ -3638,6 +3686,9 @@ window.visionaryDemoDebug = {
   },
   get frameStats() {
     return frameStats.slice();
+  },
+  setRecordLatentSummaries(enabled) {
+    recordLatentSummaries = Boolean(enabled);
   },
   async generateFrame(options = {}) {
     return generateFrame(options);

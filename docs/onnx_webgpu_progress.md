@@ -10,7 +10,8 @@ Demo benchmark contract:
 - Decode only the newly predicted frame.
 - Benchmark the real demo stream loop, not a parallel benchmark-only runtime.
 - Validate visible generated frames with screenshot hashes and a loose Breakout brick-band coverage
-  check before treating the FPS as valid.
+  check, and validate WASM generated latents with finite changing `final_z` hashes before treating
+  the FPS as valid.
 
 ## Current State
 
@@ -65,6 +66,10 @@ Rejected or inactive paths:
   `demo.initial`/`demo.final` runtime snapshots, and `streaming_frame.output_validation` based on
   visible screenshot hashes plus a loose brick-band coverage check. Validation fails if generated
   frames are static or the visible Breakout brick band catastrophically disappears.
+- Added an on-demand numerical validation hook for the actual demo benchmark. During the validation
+  window only, the demo records CPU `final_z` summaries for WASM frames; the benchmark now requires
+  at least two unique finite latent hashes for `provider=wasm`. The timed window turns the hook off,
+  so the reported FPS remains the normal demo stream path.
 - Removed the benchmark-only browser entry from the build. `bun run build:webgpu:browser` now builds
   only `demo/main.ts`; the benchmark uses the built demo bundle directly.
 - Added a Playwright `webkit` project so the same WASM actual-demo benchmark can run under a
@@ -7071,6 +7076,15 @@ Rejected / kept out:
     `35.01 ms/frame`, dynamics `31.10 ms`, cache wait `1.19 ms`.
   - The adjacent no-override WebKit sanity run with the current default `wasmNumThreads=3`
     remained faster at `31.22 fps`; keep the Safari/WebKit default at `3`.
+- Strengthened the benchmark validation contract with WASM numerical latent checks:
+  - The demo now exposes an on-demand debug toggle that records CPU `final_z` hash/finite summaries
+    when validation asks for them. It is disabled during warmup/timed windows.
+  - The actual-demo benchmark now fails `provider=wasm` if the sampled generated latents are static
+    or non-finite, in addition to the existing visible screenshot hash and brick-band checks.
+  - Chrome WASM validation passed with `3` measured latent samples, `3` unique finite hashes,
+    `30.13 fps`, `33.19 ms/frame`.
+  - WebKit/Safari-family WASM validation passed with `3` measured latent samples, `3` unique finite
+    hashes, `31.96 fps`, `31.29 ms/frame`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
