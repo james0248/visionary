@@ -50,6 +50,9 @@ Rejected or inactive paths:
   disagree with the real demo.
 - Added `visionaryDemoDebug.frameStats` from `recordGeneratedFrame()` so the benchmark can report
   per-frame latency and frame intervals from the actual demo loop.
+- Replaced benchmark-side `setTimeout(0)` frame polling with a `visionaryDemoDebug.waitForFrameCount`
+  promise that resolves directly from `recordGeneratedFrame()`. This avoids the benchmark observer
+  competing with the demo's main-thread stream loop.
 - The benchmark now writes `schema_version: 3` with `benchmark_kind: actual_demo_stream`,
   `demo.initial`/`demo.final` runtime snapshots, and `streaming_frame.output_validation` based on
   visible screenshot hashes plus a loose brick-band coverage check. Validation fails if generated
@@ -59,11 +62,14 @@ Rejected or inactive paths:
 - Added a Playwright `webkit` project so the same WASM actual-demo benchmark can run under a
   Safari-family engine in addition to Chrome.
 - Baseline after the proxy fix:
-  - Chrome WebGPU default actual demo: `36.3 fps`, visible validation passed.
-  - Chrome WebGPU graph-capture actual demo: `40.0 fps`, visible validation passed.
-  - Chrome WASM actual demo: `22.5 fps`, visible validation passed, decoder worker enabled.
-  - WebKit/Safari-family WASM actual demo: `21.8 fps`, visible validation passed, decoder worker
-    enabled.
+  - Chrome WebGPU default actual demo after removing benchmark polling: `37.7 fps`, visible
+    validation passed.
+  - Chrome WebGPU graph-capture actual demo after removing benchmark polling: `39.7 fps`, visible
+    validation passed.
+  - Chrome WASM actual demo after removing benchmark polling: `23.3 fps`, visible validation
+    passed, decoder worker enabled.
+  - WebKit/Safari-family WASM actual demo after removing benchmark polling: `21.5 fps`, visible
+    validation passed, decoder worker enabled.
 - Conclusion: the old standalone WASM benchmark was optimistic. The real demo path is currently
   about `22 fps` for WASM, so the remaining optimization target is roughly a `2.7x` speedup to reach
   `60 fps` without changing `sample_steps=2`.

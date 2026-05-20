@@ -301,6 +301,7 @@ let statsFramesSinceUpdate = 0;
 let noiseGenerator = new NormalNoiseGenerator(0);
 let targetFps = parseTargetFps(configValue('fps', DEFAULT_TARGET_FPS));
 let frameStats = [];
+let frameWaiters = [];
 const graphCaptureConfig = configValue('graphCapture', null);
 const graphCaptureRequested =
   graphCaptureConfig == null ? null : parseBooleanConfig(graphCaptureConfig, true);
@@ -3238,6 +3239,35 @@ async function resetDemo() {
   );
 }
 
+function resolveFrameWaiters() {
+  const ready = [];
+  const pending = [];
+  for (const waiter of frameWaiters) {
+    if (frameCount >= waiter.targetFrame) ready.push(waiter);
+    else pending.push(waiter);
+  }
+  frameWaiters = pending;
+  for (const waiter of ready) {
+    window.clearTimeout(waiter.timeout);
+    waiter.resolve(frameCount);
+  }
+}
+
+function waitForFrameCount(targetFrame, timeoutMs = 240_000) {
+  if (frameCount >= targetFrame) return Promise.resolve(frameCount);
+  return new Promise((resolve, reject) => {
+    const waiter = {
+      targetFrame,
+      resolve,
+      timeout: window.setTimeout(() => {
+        frameWaiters = frameWaiters.filter((entry) => entry !== waiter);
+        reject(new Error(`Timed out waiting for generated frame ${targetFrame}`));
+      }, timeoutMs),
+    };
+    frameWaiters.push(waiter);
+  });
+}
+
 function recordGeneratedFrame(started) {
   frameCount += 1;
   statsFramesSinceUpdate += 1;
@@ -3245,6 +3275,7 @@ function recordGeneratedFrame(started) {
   const elapsed = now - started;
   frameStats.push({ frame: frameCount, started, completed: now, elapsedMs: elapsed });
   if (frameStats.length > 512) frameStats = frameStats.slice(-512);
+  resolveFrameWaiters();
   const statsWindowStart = lastStatsUpdateTime || lastFrameTime;
   const shouldUpdateStats =
     frameCount === 1 || now - statsWindowStart >= STATS_UPDATE_INTERVAL_MS;
@@ -3561,6 +3592,9 @@ window.visionaryDemoDebug = {
   },
   async generateFrame(options = {}) {
     return generateFrame(options);
+  },
+  async waitForFrameCount(targetFrame, timeoutMs) {
+    return waitForFrameCount(targetFrame, timeoutMs);
   },
   async cacheSlotStats() {
     return cacheSlotStatsForDebug();

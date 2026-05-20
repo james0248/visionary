@@ -142,23 +142,9 @@ async function runDemoStreamWindow(page: Page, frames: number) {
     const startFrame = debug.frameCount;
     const targetFrame = startFrame + targetFrames;
     const startMs = performance.now();
+    const done = debug.waitForFrameCount(targetFrame, 300_000);
     if (!button.textContent?.includes('Pause')) button.click();
-
-    await new Promise<void>((resolve, reject) => {
-      const timeout = window.setTimeout(
-        () => reject(new Error(`Timed out waiting for ${targetFrames} demo frames`)),
-        300_000,
-      );
-      const tick = () => {
-        if (debug.frameCount >= targetFrame) {
-          window.clearTimeout(timeout);
-          resolve();
-          return;
-        }
-        window.setTimeout(tick, 0);
-      };
-      tick();
-    });
+    await done;
 
     const endMs = performance.now();
     if (button.textContent?.includes('Pause')) button.click();
@@ -252,11 +238,10 @@ async function collectVisualValidation(page: Page, frames: number) {
   const samples = [];
   for (const frame of sampleFrames) {
     await page.locator('#start').click();
-    await expect
-      .poll(() => page.evaluate(() => (window as any).visionaryDemoDebug?.frameCount ?? 0), {
-        timeout: 240_000,
-      })
-      .toBeGreaterThanOrEqual(frame);
+    await page.evaluate(
+      (targetFrame) => (window as any).visionaryDemoDebug.waitForFrameCount(targetFrame, 240_000),
+      frame,
+    );
     await pauseDemo(page);
     const screenshot = await screenshotHash(page);
     samples.push({
