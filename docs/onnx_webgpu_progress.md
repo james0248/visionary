@@ -7362,6 +7362,12 @@ Rejected / kept out:
   dynamics `22.90 ms` (`sample 15.27 ms`, `entry 7.59 ms`), and WebKit measured `37.68 fps` /
   `26.54 ms`, with dynamics `24.04 ms` (`sample 16.06 ms`, `entry 7.94 ms`). Keep this as the new
   split WASM default.
+- Rejected rank-2 SwiGLU islands on top of the accepted head-time split cache graphs. The copied
+  generated-asset trial was native-ORT bit-exact against the accepted head-time split files
+  (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and `candidate_v_entry`) and reduced graph
+  sizes further (`sample 2236 -> 2090`, `entry 1167 -> 1098`), but Chrome output and latent
+  validation regressed to `37.76 fps` / `26.49 ms` with large frame spikes. Keep the head-time split
+  cache rewrite without rank-2 SwiGLU.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
