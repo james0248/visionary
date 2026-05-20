@@ -7202,6 +7202,12 @@ Rejected / kept out:
   latent validation at `34.23 fps` / `29.21 ms`; re-optimized split files also validated but
   regressed to `32.46 fps` / `30.81 ms` despite reducing the sample graph `2308 -> 2284` nodes and
   the entry graph `1178 -> 1166` nodes. Keep the plain extracted split files.
+- Rejected a rank-preserving `Squeeze -> Gemm -> Unsqueeze` rewrite for split WASM dynamics.
+  Replacing matching Gemm projections with `MatMul + Add` removed 76 squeeze/Gemm/unsqueeze
+  patterns from the sample graph and 35 from the entry graph, and native ORT stayed exact
+  (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and `candidate_v_entry`). The actual Chrome
+  demo benchmark still regressed to `33.37 fps` / `29.97 ms` while passing output and latent
+  validation, so keep the existing Gemm shape around those projections.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
