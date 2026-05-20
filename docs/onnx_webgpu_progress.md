@@ -7317,7 +7317,9 @@ Rejected / kept out:
   `graphOptimizationLevel=basic` passed but regressed to `34.87 fps`. A temporary runtime change
   that skipped creation of the unused unsplit full-step session when split WASM dynamics were
   available also passed and removed the unsplit-session cleanup warnings, but the hot path measured
-  only `37.60 fps`. Keep `graphOptimizationLevel=all` and the current session creation order.
+  only `37.60 fps`. Setting WASM session `executionMode: "parallel"` also passed validation but
+  regressed to `35.98 fps`. Keep `graphOptimizationLevel=all`, default sequential session
+  execution, and the current session creation order.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
