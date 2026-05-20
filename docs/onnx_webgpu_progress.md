@@ -7243,6 +7243,14 @@ Rejected / kept out:
   (`29.81 ms`, decoder total `68.03 ms`), and depth `2` with the normal three decoder threads
   measured `31.13 fps` (`32.12 ms`, decoder total `73.60 ms`). Keep the current one-frame decoder
   pipeline; deeper buffering increases decoder backlog and does not reduce dynamics contention.
+- Rejected replacing singleton-axis-only `Transpose` nodes with static `Reshape` nodes in the WASM
+  generated models. A generated-asset probe rewrote 96 split-sample transposes, 46 split-entry
+  transposes, and 8 decoder transposes where the non-singleton dimension order was unchanged. Native
+  ORT stayed bit-exact against the restored plain generated files (`max_abs 0.0` for split
+  `final_z`, split entry K/V outputs, and decoder pixels), but the actual Chrome demo benchmark
+  regressed while still passing output and latent validation: `32.19 fps` / `31.07 ms`, dynamics
+  `28.65 ms` (`sample 19.13 ms`, `entry 9.48 ms`) and decoder total `41.63 ms`. The restored plain
+  generated files remain the faster path.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
