@@ -7251,6 +7251,13 @@ Rejected / kept out:
   regressed while still passing output and latent validation: `32.19 fps` / `31.07 ms`, dynamics
   `28.65 ms` (`sample 19.13 ms`, `entry 9.48 ms`) and decoder total `41.63 ms`. The restored plain
   generated files remain the faster path.
+- Rejected offline native ORT `ORT_ENABLE_ALL` optimized generated assets for the split graphs plus
+  decoder. The saved models were native ORT bit-exact and removed the same small transpose set as
+  the earlier split-only reoptimization (`sample 2308 -> 2284` nodes, `entry 1178 -> 1166`, decoder
+  `429 -> 419`), but the actual Chrome demo window stayed neutral/slightly slower than the restored
+  plain split control: `34.21 fps` / `29.23 ms`, dynamics `26.97 ms` (`sample 18.09 ms`,
+  `entry 8.85 ms`) and decoder total `39.08 ms`. Keep the plain extracted split files and plain
+  decoder asset.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
