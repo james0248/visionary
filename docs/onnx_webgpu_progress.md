@@ -7320,6 +7320,11 @@ Rejected / kept out:
   only `37.60 fps`. Setting WASM session `executionMode: "parallel"` also passed validation but
   regressed to `35.98 fps`. Keep `graphOptimizationLevel=all`, default sequential session
   execution, and the current session creation order.
+- Retested `ort.env.wasm.proxy=true` on the current split path because the split sample/entry runs
+  avoid the old duplicate sample/context input buffer that broke the unsplit proxy trial. It still
+  failed before timing: proxy session creation detached the shared model `ArrayBuffer`, and decoder
+  worker setup then failed with `Cannot perform ArrayBuffer.prototype.slice on a detached
+  ArrayBuffer`. Keep ORT WASM proxy disabled.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
