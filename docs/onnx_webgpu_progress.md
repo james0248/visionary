@@ -7208,6 +7208,10 @@ Rejected / kept out:
   (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and `candidate_v_entry`). The actual Chrome
   demo benchmark still regressed to `33.37 fps` / `29.97 ms` while passing output and latent
   validation, so keep the existing Gemm shape around those projections.
+- Rejected ORT Web runtime-variant retunes. Passing `ort.jspi.min.mjs` validated but measured only
+  `31.56 fps` / `31.69 ms`; `ort.wasm.bundle.min.mjs` validated but regressed to `28.29 fps` /
+  `35.35 ms`. A temporary query-plumbed `env.wasm.simd='relaxed'` trial also validated but measured
+  `32.12 fps` / `31.13 ms`. Keep the default `ort.wasm.min.mjs` module and default SIMD setting.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
