@@ -7192,6 +7192,10 @@ Rejected / kept out:
   to overlap random tensor filling with the worker cache update, but the short Chromium validation
   regressed to `29.49 fps` / `33.91 ms` and cache timing did not improve (`cache wait 1.56 ms`,
   `cache total 1.66 ms`). Keep the previous ordering.
+- Rejected replacing the zero-delay `MessageChannel` stream-loop scheduler with `queueMicrotask`.
+  Chrome and WebKit both passed output/latent validation, but the short windows stayed in the
+  normal noise band (Chrome `30.63 fps`, WebKit `31.30 fps`) and the microtask loop risks starving
+  browser paints in the live demo. Keep the `MessageChannel` scheduler for zero-delay streaming.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
