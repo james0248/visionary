@@ -7373,6 +7373,11 @@ Rejected / kept out:
   at `39.92 fps`. Tested alternatives also passed output and latent validation but did not improve:
   `3/3` measured `39.61 fps`, and `4/2` regressed to `37.40 fps`. Keep the current Chrome thread
   split.
+- Rejected post-head-time WebKit thread retunes. With the accepted head-time split cache graphs,
+  the default `wasmNumThreads=3` / `decoderWorkerNumThreads=3` remains best in the validated window
+  at `37.68 fps`. Tested alternatives also passed output and latent validation but regressed:
+  `2/3` measured `36.19 fps`, and `4/3` measured `33.55 fps`. Keep the current Safari/WebKit
+  thread split.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
