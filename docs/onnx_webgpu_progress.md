@@ -7158,6 +7158,10 @@ Rejected / kept out:
   into runtime setup. This removes an unnecessary DOM write from measured generation. Short
   validation windows passed afterward: Chromium WASM `31.01 fps` with split enabled; WebKit/Safari
   family `31.26 fps` with split disabled.
+- Retested decoder start ordering under split. Delaying the decoder worker until after the
+  context-entry graph reduced decoder contention but lost overlap; a 64-frame Chromium validation
+  measured `32.90 fps`, effectively the same as the adjacent immediate-start control at
+  `32.93 fps`. Keep immediate decoder start after sample `final_z`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
