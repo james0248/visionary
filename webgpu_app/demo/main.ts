@@ -3268,7 +3268,13 @@ async function createRuntimeForBackend(backend, loaded) {
     const graphCaptureLabel = readyGraphCaptures.length
       ? ` + ${readyGraphCaptures.join(' + ')} ready`
       : '';
-    elements.backend.textContent = `${backend}${graphCaptureLabel}`;
+    const wasmRuntimeLabels = [];
+    if (loadedRuntime.splitWasmDynamics) wasmRuntimeLabels.push('split dynamics');
+    if (decoderWorker) wasmRuntimeLabels.push('decoder worker');
+    const wasmRuntimeLabel = wasmRuntimeLabels.length
+      ? ` + ${wasmRuntimeLabels.join(' + ')}`
+      : '';
+    elements.backend.textContent = `${backend}${wasmRuntimeLabel}${graphCaptureLabel}`;
     return loadedRuntime;
   } catch (error) {
     cacheUpdater?.release?.();
@@ -3592,9 +3598,6 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
       activeStep.names.cacheUpdate === 'entry',
   );
   if (useSplitWasmDynamics) {
-    elements.backend.textContent = runtime.decoderWorker
-      ? `${runtime.backend} + split dynamics + decoder worker`
-      : `${runtime.backend} + split dynamics`;
     const splitNames = runtime.names.split;
     const sampleStarted = performance.now();
     const sampleOutputs = await runtime.sessions.splitSample.run(

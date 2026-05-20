@@ -7154,6 +7154,10 @@ Rejected / kept out:
 - After adding automatic wrapper rebuilds, short default validation windows still passed:
   Chromium WASM `30.24 fps` with `split_wasm_dynamics=true`; WebKit/Safari-family WASM
   `31.78 fps` with `split_wasm_dynamics=false`.
+- Moved the WASM split/decoder-worker backend label update out of the per-frame split hot loop and
+  into runtime setup. This removes an unnecessary DOM write from measured generation. Short
+  validation windows passed afterward: Chromium WASM `31.01 fps` with split enabled; WebKit/Safari
+  family `31.26 fps` with split disabled.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
