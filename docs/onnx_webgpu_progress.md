@@ -7275,6 +7275,10 @@ Rejected / kept out:
   the current split window stayed neutral/slightly slower than the pinned control at `33.91 fps` /
   `29.49 ms`, dynamics `27.18 ms` (`sample 18.16 ms`, `entry 8.98 ms`) and decoder total
   `39.49 ms`. Keep the pinned runtime.
+- Retested the npm dev `onnxruntime-web@1.27.0-dev.20260506-673c3320fc` dist the same way against
+  the current split-dynamics WASM path. Chrome output and latent validation passed, but performance
+  regressed to `32.98 fps` / `30.32 ms`, dynamics `27.96 ms` (`sample 18.47 ms`, `entry 9.46 ms`)
+  and decoder total `40.78 ms`. Keep the pinned runtime.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
