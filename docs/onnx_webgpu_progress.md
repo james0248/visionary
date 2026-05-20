@@ -7312,6 +7312,12 @@ Rejected / kept out:
   `38.45 fps`. Tested alternatives all passed output and latent validation but regressed:
   `3/3` measured `37.85 fps`, `4/2` measured `37.39 fps`, and `5/2` measured only `31.10 fps`.
   Keep the current Chrome split of four main WASM threads and three decoder-worker threads.
+- Rejected post-pretranspose runtime controls that did not improve the validated Chrome split path:
+  `graphOptimizationLevel=extended` passed at `38.00 fps`, below the default `all` window, and
+  `graphOptimizationLevel=basic` passed but regressed to `34.87 fps`. A temporary runtime change
+  that skipped creation of the unused unsplit full-step session when split WASM dynamics were
+  available also passed and removed the unsplit-session cleanup warnings, but the hot path measured
+  only `37.60 fps`. Keep `graphOptimizationLevel=all` and the current session creation order.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
