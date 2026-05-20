@@ -7339,6 +7339,15 @@ Rejected / kept out:
   versus an adjacent accepted control at `37.41 fps`, both below the earlier accepted `38.45 fps`
   window) and not a reliable WebKit win (`35.49 fps` in the final trial window). Keep primitive
   RMSNorm limited to the decoder artifacts.
+- Retested the existing rank-2 SwiGLU island rewrite on the current split sample/entry WASM
+  dynamics artifacts after the accepted split MHA GQA pretranspose pass. The copied generated-asset
+  trial rewrote `48` sample islands and `23` entry islands, reducing split graph sizes
+  `2308 -> 2162` and `1178 -> 1109`. Native ORT stayed bit-exact against the accepted split files
+  on random feeds (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and `candidate_v_entry`).
+  Browser output and latent validation passed, but Chrome was only noise-level (`38.32 fps` versus
+  an adjacent accepted control at `38.07 fps`, below the earlier accepted `38.45 fps` window) and
+  WebKit regressed to `34.48 fps`. Reject; removing the singleton layout nodes does not reliably
+  improve ORT WASM's steady-state execution on the current split graphs.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
