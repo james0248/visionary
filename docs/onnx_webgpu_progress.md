@@ -7461,6 +7461,12 @@ Rejected / kept out:
   Chrome run looked slightly positive at `40.02 fps`, but the repeat fell to `39.56 fps`, matching
   the stricter default control at `39.59 fps`. Reject as noise; this narrow squeeze cleanup is not
   a reliable browser win.
+- Added a benchmark speed gate so output-changing but very slow demos can no longer pass the
+  actual-demo validation test. The default minimum is `30 fps`, with
+  `--webgpu-benchmark-min-fps` available for stricter local gates. Verification with the stricter
+  frame-64 visual/latent sampling passed in both browser families: Chrome measured `40.17 fps`, and
+  WebKit/Safari-family measured `38.46 fps`, both above the `30 fps` gate. This is not the 60fps
+  target, but it prevents a broken `~10 fps` path from being reported as benchmark-green.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

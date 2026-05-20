@@ -15,6 +15,7 @@ type BenchmarkResult = any;
 const DEFAULT_WARMUP_FRAMES = 8;
 const DEFAULT_TIMED_FRAMES = 64;
 const DEFAULT_VALIDATION_FRAMES = 6;
+const DEFAULT_MIN_FPS = 30;
 const MIN_BRICK_COVERAGE = 0.45;
 const MIN_UNIQUE_FRAME_HASHES = 2;
 const MIN_UNIQUE_LATENT_HASHES = 2;
@@ -68,6 +69,7 @@ function benchmarkConfig(options: BenchmarkOptions) {
     warmupFrames: numberEnv('WEBGPU_BENCHMARK_WARMUP_RUNS', DEFAULT_WARMUP_FRAMES),
     timedFrames: numberEnv('WEBGPU_BENCHMARK_TIMED_RUNS', DEFAULT_TIMED_FRAMES),
     validationFrames: numberEnv('WEBGPU_BENCHMARK_VALIDATION_FRAMES', DEFAULT_VALIDATION_FRAMES),
+    minFps: numberEnv('WEBGPU_BENCHMARK_MIN_FPS', DEFAULT_MIN_FPS),
     graphCapture,
     dynamicsGraphCapture: process.env.WEBGPU_BENCHMARK_DYNAMICS_GRAPH_CAPTURE ?? (graphCapture ? 'true' : null),
     decoderGraphCapture: process.env.WEBGPU_BENCHMARK_DECODER_GRAPH_CAPTURE ?? (graphCapture ? 'true' : null),
@@ -416,7 +418,18 @@ async function runBenchmark(
     await pauseDemo(page);
 
     const timing = timingFromWindow(timed);
-    const status = outputValidation.status === 'passed' && pageErrors.length === 0 ? 'passed' : 'failed';
+    const steadyStateFps = timing.window_fps ?? 0;
+    const speedValidation = {
+      status: steadyStateFps >= config.minFps ? 'passed' : 'failed',
+      steady_state_fps: steadyStateFps,
+      minimum_required_fps: config.minFps,
+    };
+    const status =
+      outputValidation.status === 'passed' &&
+      speedValidation.status === 'passed' &&
+      pageErrors.length === 0
+        ? 'passed'
+        : 'failed';
     return {
       schema_version: 3,
       status,
@@ -458,6 +471,7 @@ async function runBenchmark(
             steady_state_fps: timing.window_fps,
           },
           output_validation: outputValidation,
+          speed_validation: speedValidation,
         },
       ],
     };
@@ -487,13 +501,14 @@ function expectPassedBenchmark(result: BenchmarkResult) {
   const streaming = result.results.find((entry) => entry.mode === 'streaming_frame');
   expect(streaming?.output_validation).toMatchObject({ status: 'passed' });
   expect(streaming?.output_validation.unique_hashes).toBeGreaterThanOrEqual(MIN_UNIQUE_FRAME_HASHES);
+  expect(streaming?.speed_validation).toMatchObject({ status: 'passed' });
   if (result.demo.final.backend === 'wasm') {
     expect(streaming?.output_validation.numerical).toMatchObject({ status: 'passed' });
     expect(streaming?.output_validation.numerical.unique_hashes).toBeGreaterThanOrEqual(
       MIN_UNIQUE_LATENT_HASHES,
     );
   }
-  expect(streaming?.timing.steady_state_fps).toBeGreaterThan(0);
+  expect(streaming?.timing.steady_state_fps).toBeGreaterThanOrEqual(result.config.minFps);
   expect(result.demo.final.cache_length).toBe(result.demo.final.context_length);
 }
 
