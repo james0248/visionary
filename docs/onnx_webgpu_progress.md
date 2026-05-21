@@ -7899,6 +7899,9 @@ Rejected / kept out:
   extra WebKit content processes behind. This is benchmark hygiene, not a runtime speedup: the
   explicit Safari `--min-fps 45` run still failed at `44.08 fps`, while default Safari validation
   passed at `44.95 fps`; Chrome validation passed at `45.27 fps`.
+- Rejected the remaining generic ORT ESM loader family on the current full-head-time path. Native
+  Safari output and latent validation passed with `/ort.min.mjs` and `/ort.mjs`, but they measured
+  only `30.87 fps` and `31.73 fps`. Keep `/ort.wasm.bundle.min.mjs`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
