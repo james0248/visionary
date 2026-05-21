@@ -7523,6 +7523,12 @@ Rejected / kept out:
   files measured Chrome `40.12 fps` but WebKit/Safari-family `37.33 fps`; sample-only measured
   Chrome `39.52 fps`, and entry-only measured Chrome `39.67 fps`. Restored the accepted split files.
   The restored control passed at Chrome `40.10 fps` and WebKit/Safari-family `37.51 fps`.
+- Rejected zero-copy transfer of the small WASM entry K/V output buffers into the cache-update
+  worker. The temporary runtime fallback tried to transfer full-buffer ORT entry outputs directly
+  and copied only if `postMessage` rejected the transfer. Typecheck and both browser benchmarks
+  passed, but cache wait did not improve: Chrome measured `40.05 fps` with cache wait `1.52 ms`,
+  and WebKit/Safari-family measured `37.72 fps` with cache wait `1.11 ms`. The adjacent restored
+  control was effectively the same, so keep the simpler explicit entry-buffer copy.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
