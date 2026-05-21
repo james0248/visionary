@@ -7541,6 +7541,10 @@ Rejected / kept out:
   adjacent spinning-enabled controls were mixed (`39.28 fps` Chrome, `38.29 fps` WebKit). Treat this
   as scheduler noise rather than a reliable cross-browser improvement; keep the default ORT
   spinning behavior.
+- Rejected the narrower decoder-worker-only version of `session.intra_op.allow_spinning=0`. It left
+  the main split sample/entry sessions on default ORT spinning and disabled spinning only in the
+  decoder worker session. Chrome visual/latent/stability validation passed, but timing regressed to
+  `39.81 fps` with decoder total `33.84 ms`; do not carry a decoder-worker-specific session option.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
