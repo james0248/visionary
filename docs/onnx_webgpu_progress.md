@@ -7850,6 +7850,11 @@ Rejected / kept out:
   measured only `40.84 fps` while the restored adjacent control measured `41.63 fps`. Keep the
   existing `Slice -> Squeeze` cache extraction; the earlier `GatherND` rejection and this scalar
   gather rejection point the same way for ORT WASM.
+- Rejected gating latent-summary helper calls and omitting `{ latent: null }` from timed frame stats.
+  Output and numerical validation still passed because validation explicitly enables latent
+  summaries, but WebKit measured only `40.25 fps` in the same loaded window. Keep the existing frame
+  stats object shape; the function's early return is cheaper for this runtime than the conditional
+  object-shape change.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
