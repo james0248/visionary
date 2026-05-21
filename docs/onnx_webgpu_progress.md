@@ -7548,6 +7548,12 @@ Rejected / kept out:
 - Rejected WASM `graphOptimizationLevel=layout`. Chrome visual/latent/stability validation passed,
   but the actual demo benchmark measured `39.61 fps` with sample `15.40 ms`, entry `7.60 ms`, and
   decoder total `33.93 ms`, below the accepted `all` controls. Keep `graphOptimizationLevel=all`.
+- Rejected a hybrid WASM-dynamics/WebGPU-decoder prototype. With the accepted
+  `/ort.wasm.min.mjs` loader, decoder session creation failed before ready with
+  `no available backend found. ERR: [webgpu] backend not found`. Retesting with the WebGPU bundle
+  loader that includes both backends stalled the actual demo benchmark for several minutes without
+  producing frames and had to be terminated. Keep the pure WASM decoder worker; do not mix a WebGPU
+  decoder into the WASM demo path.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
