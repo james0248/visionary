@@ -7844,6 +7844,12 @@ Rejected / kept out:
   dynamics, `0.84 ms` cache update, `24.01 ms` decoder total), while an adjacent Chrome run passed
   at `46.00 fps`. This is benchmark coverage, not a new runtime speedup; the Safari window remains
   variable around the revised `45 fps` target.
+- Rejected a scalar `Gather(axis=0)` cache-layer extract trial on the full-head-time dynamics graph.
+  Replacing the `24` `Slice` layer extracts with scalar gathers and changing the following squeeze
+  axes was CPU bit-exact for `final_z`, `candidate_k_entry`, and `candidate_v_entry`, but WebKit
+  measured only `40.84 fps` while the restored adjacent control measured `41.63 fps`. Keep the
+  existing `Slice -> Squeeze` cache extraction; the earlier `GatherND` rejection and this scalar
+  gather rejection point the same way for ORT WASM.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
