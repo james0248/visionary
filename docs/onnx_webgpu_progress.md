@@ -7801,6 +7801,26 @@ Rejected / kept out:
     worker output in a main-thread ORT `Tensor`. Rendering only needs `type`, `dims`, and `data`, and
     validation passed, but timing stayed noise-level: WebKit/Safari-family `41.12 fps` and Chrome
     `46.26 fps`. Keep the ORT tensor wrapper for the worker output.
+  - Tried moving the dynamics action embedding lookup out of ORT by replacing the action `Gather`
+    with an `action_embedding` float input and feeding the selected 128-float row from the manifest.
+    CPU ORT was bit-exact against the accepted graph for `final_z`, `candidate_k_entry`, and
+    `candidate_v_entry`, but WebKit/Safari-family regressed to `39.25 fps`. Keep the small action
+    gather inside ORT.
+  - Tried specializing the full-head-time dynamics graph to the benchmark's default no-op action so
+    ORT could constant-fold the action embedding. The no-op-specialized graph was CPU bit-exact
+    against the accepted graph for action `0`, but WebKit/Safari-family still regressed to
+    `40.56 fps`. Keep the dynamic action input.
+  - Tried eliminating the unlimited-FPS microtask hop by recursively starting the next stream frame
+    directly after the previous frame resolved. Output and latent validation passed, but
+    WebKit/Safari-family stayed neutral/slightly slower at `41.48 fps`. Keep the accepted
+    microtask/MessageChannel scheduler.
+  - Tried adding CSS layout/paint containment around the frame and sidebar to reduce visible WebKit
+    paint cost. Validation passed, but WebKit/Safari-family regressed to `39.18 fps`. Keep the
+    existing simple layout CSS.
+  - Tried a query-gated precomputed deterministic noise ring to remove synchronous per-frame
+    Box-Muller noise fills from the hot path. After fixing the trial to initialize/reset the ring
+    correctly, validation passed with `noiseRingSize=256`, but WebKit/Safari-family measured only
+    `40.89 fps`. Keep the existing two-slot synchronous noise fill.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
