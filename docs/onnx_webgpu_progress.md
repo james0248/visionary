@@ -7585,6 +7585,10 @@ Rejected / kept out:
   `39.16 fps` with visual/latent/stability validation passed. The final same-code Chrome default
   run passed at `40.75 fps`; this window had a dynamics spike, but it still stays above the old
   split baseline and keeps Chromium on the better `3`-thread decoder worker.
+- Rejected revisiting WASM `graphOptimizationLevel=extended` on the full head-time dynamics path.
+  Chrome was output/latent/stability valid at `41.72 fps`, which is within the default `all` noise
+  window, while WebKit/Safari-family regressed to `38.34 fps` and showed a large dynamics/decoder
+  spike. Keep `graphOptimizationLevel=all`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
