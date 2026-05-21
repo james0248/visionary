@@ -7720,6 +7720,15 @@ Rejected / kept out:
     `candidate_k_entry`, and `candidate_v_entry`, but the adjacent WebKit result was neutral/slower
     (`41.76 fps` versus `41.77 fps` for the restored control under the same system load). Keep the
     current `Gather` form; ORT WASM does not benefit from broadcast expansion here.
+  - Replacing the dynamics graph's `71` `com.microsoft::QuickGelu(alpha=1)` nodes with equivalent
+    stock `Sigmoid -> Mul` primitives was CPU-exact for all public outputs, but the adjacent WebKit
+    control was slightly faster (`43.55 fps` restored control versus `43.50 fps` primitive trial).
+    Keep the fused `QuickGelu` nodes for ORT WASM.
+  - Replacing the Safari/WebKit decoder's `8` `QuickGelu` nodes with `Sigmoid -> Mul` primitives
+    was CPU-exact for random latent inputs, but the actual-demo benchmark regressed to `42.37 fps`
+    with higher decoder total time. Keep decoder `QuickGelu` fused.
+  - Checked the `71` MLP residual `Gemm -> Add` sites for bias folding. None are initializer-backed;
+    each adds a dynamic residual from a `Squeeze`, so there is no safe Gemm-bias fold to apply.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
