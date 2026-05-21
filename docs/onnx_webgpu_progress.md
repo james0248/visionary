@@ -7777,6 +7777,10 @@ Rejected / kept out:
     WebKit/Safari-family to `39.53 fps` with decoder total about `26.16 ms`. `enableCpuMemArena`
     validated at `41.56 fps`, only noise-level against an adjacent default `41.13 fps` and still
     below the accepted WebKit/Safari-family envelope. Keep the decoder worker session options plain.
+  - Tried replacing the two Safari/WebKit decoder `Split([32,32,256,32,32])` nodes with unused first
+    three outputs by two consumed `Slice` nodes. CPU ORT comparison against the accepted decoder was
+    bit-exact for zero and random latent inputs, but WebKit/Safari-family measured only `41.24 fps`,
+    noise-level against the adjacent default. Restore the accepted split form.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
