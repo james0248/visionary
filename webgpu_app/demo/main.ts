@@ -102,7 +102,7 @@ const DEFAULT_ORT_MODULE =
     : `/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs`;
 const DEFAULT_ORT_WASM_BASE = `/node_modules/onnxruntime-web/dist/`;
 const DEFAULT_DECODER_WORKER_PIPELINE = requestedBackend === 'wasm';
-const DEFAULT_DECODER_WORKER_NUM_THREADS = 3;
+const DEFAULT_DECODER_WORKER_NUM_THREADS = browserProfile === 'chromium' ? 3 : 2;
 const DEFAULT_SPLIT_WASM_DYNAMICS =
   requestedBackend === 'wasm' && (browserProfile === 'chromium' || browserProfile === 'safari');
 const SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT = 'layer_batch_token_head_time_dim';

@@ -96,8 +96,7 @@ function benchmarkConfig(options: BenchmarkOptions) {
     wasmNumThreads: process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS ?? null,
     decoderWorkerPipeline:
       process.env.WEBGPU_BENCHMARK_DECODER_WORKER_PIPELINE ?? (wasmDefaults ? 'true' : null),
-    decoderWorkerNumThreads:
-      process.env.WEBGPU_BENCHMARK_DECODER_WORKER_NUM_THREADS ?? (wasmDefaults ? '3' : null),
+    decoderWorkerNumThreads: process.env.WEBGPU_BENCHMARK_DECODER_WORKER_NUM_THREADS ?? null,
     splitWasmDynamics: process.env.WEBGPU_BENCHMARK_SPLIT_WASM_DYNAMICS ?? null,
   };
 }
