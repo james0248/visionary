@@ -7668,6 +7668,17 @@ Rejected / kept out:
 - Rejected nearby native Safari thread retunes after the feed-map cleanup. The default `3/2`
   main/decoder split repeated at `44.33 fps`; `4/2` regressed to `41.22 fps`, `3/3` regressed to
   `43.26 fps`, and `2/2` regressed to `40.03 fps`. Keep the current Safari/WebKit thread defaults.
+- Rejected follow-up JavaScript bridge micro-trials after the feed-map cleanup:
+  - Precomputing the full-step output-name array passed validation but regressed WebKit/Safari-family
+    to `42.40 fps`; keep constructing the small fetch-name list in the hot function because the
+    current JIT shape is faster.
+  - Precomputing the full-step active-step descriptor object passed validation but regressed to
+    `42.89 fps`; keep the local descriptor construction.
+  - Replacing the decoder worker's transferred 4 KiB input copy with a 4-slot
+    `SharedArrayBuffer` input ring passed visual/latent validation but regressed sharply to
+    `41.11 fps`; keep the current copied transferable decoder input. This is separate from the
+    earlier rejected decoder-output SAB ring and points the same way: SAB-backed decoder plumbing is
+    not a Safari/WebKit win for ORT WASM here.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
