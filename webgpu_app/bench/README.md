@@ -22,6 +22,7 @@ bunx playwright install chrome
 bun run benchmark:webgpu:smoke
 bun run benchmark:webgpu
 bun run benchmark:webgpu:ci
+bun run benchmark:wasm:all
 ```
 
 The default scripts launch headed Google Chrome and require a hardware WebGPU adapter. On Apple
@@ -43,6 +44,8 @@ For a Safari-family automation check of the WASM path, run the same benchmark un
 project:
 
 ```bash
+bun run benchmark:wasm:chrome
+bun run benchmark:wasm:webkit
 bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=webkit --grep @output_validation --webgpu-benchmark-provider wasm
 ```
 

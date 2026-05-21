@@ -7493,6 +7493,10 @@ Rejected / kept out:
   ~`2.7 ms`, gather ~`2.5 ms`, MHA ~`2.0 ms`. This matches the browser bottleneck: more narrow
   node-count cleanup is unlikely to recover the missing `~8 ms`; reaching 60fps probably needs a
   larger runtime/kernel change.
+- Added explicit WASM benchmark scripts so the required browser-family validation has shorter,
+  repeatable commands: `bun run benchmark:wasm:chrome`, `bun run benchmark:wasm:webkit`, and
+  `bun run benchmark:wasm:all`. They route through the same actual-demo benchmark and wrapper flag
+  plumbing as the long-form Playwright commands.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
