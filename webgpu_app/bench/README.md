@@ -164,9 +164,9 @@ The pure WASM path can be selected with `provider=wasm`; the demo then defaults 
 `wasmNumThreads` (`4` in Chrome, `3` in Safari/WebKit), and the decoder worker pipeline with
 `decoderWorkerNumThreads=3`.
 The current actual-demo WASM baseline remains below the 60 fps target but is materially faster than
-the generic WebGPU asset set: about `33.5 fps` in Chrome and `27.4 fps` in WebKit on the local
-machine with the WASM entry-slide artifact. Keep validating `wasmNumThreads` and decoder worker
-settings per browser and machine.
+the generic WebGPU asset set: about `40 fps` in Chrome and `36-38 fps` in WebKit/Safari-family on
+the local machine with the split WASM entry-slide artifacts. Keep validating `wasmNumThreads` and
+decoder worker settings per browser and machine.
 
 ## Graph Capture
 
