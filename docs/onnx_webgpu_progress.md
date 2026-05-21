@@ -7742,6 +7742,11 @@ Rejected / kept out:
     `candidate_k_entry`, and `candidate_v_entry`, but WebKit regressed to `41.25 fps`. Keep the
     existing `Slice -> Squeeze` cache extraction; ORT WASM handles it better than `GatherND` for
     this shape.
+  - Tried replacing the `35` temporal MHA cache appends with `MultiHeadAttention` past-key and
+    past-value inputs. The rewrite removed `140` `Concat/Gather` nodes but added separate current
+    and past K/V gathers. It failed CPU exactness before browser timing (`final_z` max abs about
+    `3.69`), so the ORT contrib MHA past-input semantics/layout are not a drop-in replacement for
+    the accepted explicit cache append graph.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
