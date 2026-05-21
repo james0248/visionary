@@ -7920,6 +7920,18 @@ Rejected / kept out:
   the next sample passed at `45.40 fps`, `96` warmup frames looked promising (`46.29 fps`, then
   `45.17 fps`), but the no-flag default still failed at `44.86 fps` and `192` warmup frames failed
   at `44.62 fps`. Keep the default warmup unchanged; longer warmup does not solve Safari variance.
+- Rejected decomposing the `71` dynamics `SkipSimplifiedLayerNormalization` nodes back into
+  `Add + SimplifiedLayerNormalization` for ORT WASM. The local ignored-asset trial remained valid in
+  native Safari but measured `45.21 fps` with dynamics `20.91 ms`, below the adjacent restored
+  control at `45.50 fps`.
+- Rejected flattening the full-head-time `candidate_k_entry` output by removing `23` final
+  singleton-dimension `Unsqueeze` nodes and changing the final concat to lower-rank flat output
+  metadata. The cache updater reads the same flat order, but native Safari timed out during the
+  benchmark execute call. The original ONNX asset was restored.
+- Rejected a continuous warmup/timed benchmark window that avoided pausing between the excluded
+  warmup frames and measured frames. It was a plausible proxy fix for Safari variance, but the native
+  Safari accepted-path run still missed the 45 fps gate at `44.63 fps`. Keep the simpler existing
+  warmup/timed windows.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
