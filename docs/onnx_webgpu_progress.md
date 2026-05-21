@@ -7947,6 +7947,13 @@ Rejected / kept out:
   ORT-allocated. The trial appeared fast at `45.54 fps`, but validation caught static zero latents
   and repeated frame hashes. Keep all WASM dynamics outputs ORT-allocated; the benchmark's latent
   uniqueness gate is covering this failure mode correctly.
+- Refreshed native ORT CPU profiling on the current full-head-time dynamics artifact after the
+  rejected tail probes. Over the profiled window the largest op-family totals were still broad:
+  `SimplifiedLayerNormalization` ~`45 ms`, `Gemm` ~`44 ms`, `MultiHeadAttention` ~`30 ms`,
+  `Transpose`/`Gather`/`RotaryEmbedding`/`Reshape`/`Split` each around `14-16 ms`, then
+  `Squeeze`/`Concat`/`Unsqueeze`/`QuickGelu`. The remaining high-count `Gather` sites are mostly
+  GQA head repeats, a class already covered by the rejected GQA/MHA variants. This reinforces that
+  another narrow node-count cleanup is unlikely to close the gap to `60 fps`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
