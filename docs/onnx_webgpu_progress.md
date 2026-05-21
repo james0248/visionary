@@ -7737,6 +7737,11 @@ Rejected / kept out:
   - Serializing the Safari/WebKit MHA decoder through native ORT `ORT_ENABLE_ALL` was exact and
     reduced only `423 -> 419` nodes, but WebKit measured `43.72 fps`, below the restored adjacent
     control. Keep the plain decoder asset.
+  - Replacing the `24` repeated cache-layer `Slice -> Squeeze` extracts with
+    `GatherND([layer,0])` removed `24` nodes and was CPU-exact for `final_z`,
+    `candidate_k_entry`, and `candidate_v_entry`, but WebKit regressed to `41.25 fps`. Keep the
+    existing `Slice -> Squeeze` cache extraction; ORT WASM handles it better than `GatherND` for
+    this shape.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
