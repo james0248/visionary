@@ -7534,6 +7534,13 @@ Rejected / kept out:
   cache wait worsened to `1.62 ms` and the run measured `39.88 fps`, below the restored control.
   Keep the accepted loop order; JavaScriptCore/V8 optimize that smaller strided inner loop better
   for this shape.
+- Rejected disabling ORT WASM intra-op thread spinning with the session config entry
+  `session.intra_op.allow_spinning=0` on both main WASM sessions and the decoder worker. Early
+  windows were promising (`40.38`/`40.30 fps` in Chrome and `38.08`/`38.00 fps` in WebKit), but the
+  cleaned repeat fell back to control-range results (`39.97 fps` Chrome, `37.01 fps` WebKit), and
+  adjacent spinning-enabled controls were mixed (`39.28 fps` Chrome, `38.29 fps` WebKit). Treat this
+  as scheduler noise rather than a reliable cross-browser improvement; keep the default ORT
+  spinning behavior.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
