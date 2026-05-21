@@ -41,11 +41,13 @@ bun run benchmark:webgpu -- --webgpu-benchmark-provider wasm
 ```
 
 For a Safari-family automation check of the WASM path, run the same benchmark under the WebKit
-project:
+project. For real Safari, enable WebDriver automation once with `safaridriver --enable`, then run
+the native Safari benchmark:
 
 ```bash
 bun run benchmark:wasm:chrome
 bun run benchmark:wasm:webkit
+bun run benchmark:wasm:safari
 bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=webkit --grep @output_validation --webgpu-benchmark-provider wasm
 ```
 
@@ -160,6 +162,8 @@ checks can be compared after running both commands.
 Safari-profile and WebKit runs are valid only when `streaming_frame.output_validation.status` is
 `passed`. The benchmark records the selected graph-capture state in `demo.final`, so a fast number
 without visible-frame validation should be treated as invalid.
+The native Safari benchmark writes `bench/results/latest_safari.json` and also updates
+`bench/results/latest.json` with the same schema as the Playwright actual-demo benchmark.
 
 The pure WASM path can be selected with `provider=wasm`; the demo then defaults to
 `assetBase=/dream_arcade_assets/breakout_wasm_default_mha`,
