@@ -7772,6 +7772,11 @@ Rejected / kept out:
     decoder wait about `2.93 ms` and decoder total about `30.06 ms`; two two-thread decoder workers
     measured `41.15 fps` with decoder total about `25.17 ms`. Keep the single Safari/WebKit
     decoder worker with two threads.
+  - Tried decoder-worker-only ORT memory session options so the main dynamics session would not
+    inherit the earlier rejected runtime memory settings. `enableMemPattern` validated but regressed
+    WebKit/Safari-family to `39.53 fps` with decoder total about `26.16 ms`. `enableCpuMemArena`
+    validated at `41.56 fps`, only noise-level against an adjacent default `41.13 fps` and still
+    below the accepted WebKit/Safari-family envelope. Keep the decoder worker session options plain.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
