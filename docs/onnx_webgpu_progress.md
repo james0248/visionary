@@ -2,7 +2,9 @@
 
 ## Goal
 
-Make the Dreamer4 ONNX export fast enough for a live browser demo using ONNX Runtime WebGPU.
+Make the Dreamer4 ONNX export fast enough for browser-side model performance checks using ONNX
+Runtime. The revised local target is `45 fps` or better for the actual demo stream in headed Chrome
+and native Safari, without reducing `sample_steps=2` or accepting broken/static output frames.
 
 Demo benchmark contract:
 - Start from an offline full 64-frame K/V cache artifact.
@@ -15,7 +17,7 @@ Demo benchmark contract:
 
 ## Current State
 
-The branch now keeps the fp32 WebGPU path as the maintained demo/export target. The current demo
+The branch now keeps the fp32 browser path as the maintained demo/export target. The current demo
 uses:
 - `sample_steps=2`.
 - Curated Breakout assets under `webgpu_app/dream_arcade_assets/breakout`.
@@ -23,22 +25,14 @@ uses:
   `webgpu_app/dream_arcade_assets/breakout_wasm_default_mha` when `backend=wasm`.
 - Offline full-cache context/cache artifacts:
   `breakout_demo_context_noop60_fire4.*` and `breakout_demo_initial_cache_noop60_fire4.*`.
-- A packed and partial-head-split-rewritten full-cache entry dynamics step graph for every generated
-  frame:
-  `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2.onnx`.
-- On the WASM path, the entry-slide graph selected from the WASM asset set:
-  `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2.onnx`.
-- On Chrome/Chromium WASM, the demo now tries a split-dynamics schedule when the derived
-  `*_sample_only_final_z.onnx` and `*_context_entry_from_final_z.onnx` files are present. This
-  starts the decoder worker after `final_z` is ready, then computes the context-cache entry on the
-  main thread. Safari/WebKit uses the same split path after the split-only MHA GQA pretranspose
-  rewrite made it faster than the unsplit default.
-- The derived split WASM dynamics files are post-processed by a split-only MHA GQA layout pass that
-  moves K/V head-repeat `Gather` after the compact K/V `Transpose` feeding fused MHA. This preserves
-  the fused `B,N,S,D` MHA input shape while transposing the 2-head compact K/V tensor instead of the
-  8-head repeated tensor.
+- On the WASM path, the full head-time entry-slide graph selected from the WASM asset set:
+  `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2_full_headtime.onnx`.
+- A full 64-frame initial cache, synchronous JavaScript head-time cache update, and decoder worker
+  pipeline. Chrome uses `decoderWorkerNumThreads=3`; Safari/WebKit uses `decoderWorkerNumThreads=2`.
+  Both browser profiles use `wasmNumThreads=3`.
 - A single-frame tokenizer decoder graph:
-  `breakout_tokenizer_decoder_b1_t1.onnx`.
+  `breakout_tokenizer_decoder_b1_t1.onnx` on Chrome and
+  `breakout_tokenizer_decoder_b1_t1_wasm_mha.onnx` on Safari/WebKit when available.
 
 The maintained benchmark surface is latency plus graph capture:
 - `bun run benchmark:webgpu` runs the actual demo streaming benchmark and graph-capture check.
@@ -46,12 +40,11 @@ The maintained benchmark surface is latency plus graph capture:
 - Benchmark controls should be passed as wrapper flags after `--`, for example
   `--webgpu-benchmark-asset-base` or `--webgpu-benchmark-timed-runs`, instead of leading shell
   environment assignments.
-- WASM split-dynamics experiments can be toggled with
-  `--webgpu-benchmark-split-wasm-dynamics true|false`.
 - `provider=wasm` benchmark defaults now explicitly use the WASM asset set and
-  `ort.wasm.min.mjs`, then let the demo choose the browser-specific WASM thread count
-  (`4` in Chrome, `3` in Safari/WebKit). The decoder worker pipeline defaults to
-  `decoderWorkerNumThreads=3`.
+  `ort.wasm.bundle.min.mjs`, then let the demo choose the browser-specific decoder worker count.
+- WASM split-dynamics experiments can still be toggled with
+  `--webgpu-benchmark-split-wasm-dynamics true|false`, but the accepted default is the full
+  head-time dynamics path (`split_wasm_dynamics=false`).
 - Generated results stay under `webgpu_app/bench/results/` and should not be committed.
 
 Rejected or inactive paths:
@@ -7760,11 +7753,11 @@ Current WASM conclusion:
   head-time cache inputs for the derived full-step WASM graph, the full-head-time layout cleanup
   stack, consecutive axis-0 squeeze cleanup, and the full-step head-time dynamics path unless split
   dynamics is explicitly requested.
-- The current validated default windows are about `46 fps` in headed Chrome, about `44 fps` in
-  cleaner Playwright WebKit windows, and just over `45 fps` in native Safari. The latest clean
-  checks after rejected-probe restore were Chrome `46.05 fps` with visual and latent validation
-  passing, and native Safari `45.13 fps` over `128` timed frames (`20.95 ms` dynamics,
-  `0.85 ms` cache update, `23.24 ms` decoder total). All accepted measurements preserve
-  `sample_steps=2` and pass the actual-demo visual plus WASM latent validation. Chrome and native
-  Safari reach the revised `45 fps` target, while Playwright WebKit remains noisier and below the
-  native Safari timing in loaded windows.
+- The current validated default windows are about `46 fps` in headed Chrome, about `41-44 fps` in
+  Playwright WebKit windows, and just over `45 fps` in native Safari. The latest clean checks were
+  Chrome `46.16 fps` with visual and latent validation passing, native Safari `45.23 fps` over `128`
+  timed frames (`20.90 ms` dynamics, `0.85 ms` cache update, `23.30 ms` decoder total), and
+  Playwright WebKit `40.92 fps` with visual and latent validation passing in a loaded local window.
+  All accepted measurements preserve `sample_steps=2`. Chrome and native Safari reach the revised
+  `45 fps` target; Playwright WebKit remains useful for validation but is noisier/slower than native
+  Safari on this machine.

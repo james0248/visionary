@@ -163,13 +163,15 @@ without visible-frame validation should be treated as invalid.
 
 The pure WASM path can be selected with `provider=wasm`; the demo then defaults to
 `assetBase=/dream_arcade_assets/breakout_wasm_default_mha`,
-`ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`, browser-selected
-`wasmNumThreads` (`4` in Chrome, `3` in Safari/WebKit), and the decoder worker pipeline with
-`decoderWorkerNumThreads=3`.
-The current actual-demo WASM baseline remains below the 60 fps target but is materially faster than
-the generic WebGPU asset set: about `40 fps` in Chrome and `36-38 fps` in WebKit/Safari-family on
-the local machine with the split WASM entry-slide artifacts. Keep validating `wasmNumThreads` and
-decoder worker settings per browser and machine.
+`ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs`, `wasmNumThreads=3`, and the
+decoder worker pipeline. Chrome defaults to `decoderWorkerNumThreads=3`; Safari/WebKit defaults to
+`decoderWorkerNumThreads=2`.
+
+The current accepted actual-demo WASM path is the full head-time dynamics artifact with a full
+64-frame initial cache. On the local machine it reaches the revised `45 fps` target in headed Chrome
+and native Safari, while Playwright WebKit is still noisier/slower and should be treated primarily as
+a Safari-family validation harness. Keep validating `wasmNumThreads` and decoder worker settings per
+browser and machine.
 
 ## Graph Capture
 
