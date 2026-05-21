@@ -34,17 +34,21 @@ Use wrapper flags after `--` for benchmark and demo controls. Do not prefix `bun
 cd webgpu_app
 bun run typecheck
 bun run build:webgpu:browser
-bun run demo:webgpu:smoke -- --playwright-benchmark-attempts 3
-bun run benchmark:webgpu -- --grep @smoke --playwright-benchmark-attempts 3
-bun run benchmark:webgpu -- --grep @output_validation --playwright-benchmark-attempts 3
+bun run demo:webgpu:smoke
+bun run benchmark:webgpu -- --grep @smoke
+bun run benchmark:webgpu -- --grep @output_validation
 ```
 
 For graph-capture changes, also run:
 
 ```sh
 cd webgpu_app
-bun run benchmark:webgpu -- --grep @graph-capture --playwright-benchmark-attempts 3
+bun run benchmark:webgpu -- --grep @graph-capture
 ```
+
+The Playwright wrapper defaults to one attempt so speed and output-validation failures are not
+hidden by a later faster retry. `--playwright-benchmark-attempts N` is still available for launch
+failures; completed actual-demo benchmark failures are not retried.
 
 Export-script syntax and import checks:
 

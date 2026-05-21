@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
@@ -42,11 +42,16 @@ const benchmarkFlagEnv = new Map([
   ['--demo-query', 'DEMO_QUERY'],
   ['--allow-software-webgpu', 'ALLOW_SOFTWARE_WEBGPU'],
 ]);
+const DEFAULT_BENCHMARK_ATTEMPTS = 1;
+const BENCHMARK_RESULT_PATH = 'bench/results/latest.json';
 
 function parseArgs(args: string[]) {
   const passthrough: string[] = [];
   const env: Record<string, string> = {};
-  let attempts = Number.parseInt(process.env.PLAYWRIGHT_BENCHMARK_ATTEMPTS ?? '3', 10);
+  let attempts = Number.parseInt(
+    process.env.PLAYWRIGHT_BENCHMARK_ATTEMPTS ?? String(DEFAULT_BENCHMARK_ATTEMPTS),
+    10,
+  );
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -88,7 +93,11 @@ function parseArgs(args: string[]) {
     passthrough.push(arg);
   }
 
-  return { passthrough, env, attempts: Number.isFinite(attempts) ? attempts : 3 };
+  return {
+    passthrough,
+    env,
+    attempts: Number.isFinite(attempts) ? attempts : DEFAULT_BENCHMARK_ATTEMPTS,
+  };
 }
 
 const rawArgs = process.argv.slice(2);
@@ -103,6 +112,26 @@ function shouldBuildBrowserEntryPoints(args: string[]) {
       arg.endsWith('/bench/run_webgpu_benchmark.spec.ts') ||
       arg.endsWith('/demo/run_demo_smoke.spec.ts'),
   );
+}
+
+function hasActualBenchmarkSpec(args: string[]) {
+  return args.some(
+    (arg) =>
+      arg === 'bench/run_webgpu_benchmark.spec.ts' ||
+      arg.endsWith('/bench/run_webgpu_benchmark.spec.ts'),
+  );
+}
+
+function completedBenchmarkFailedSince(startedAtMs: number) {
+  if (!hasActualBenchmarkSpec(parsedArgs.passthrough)) return false;
+  try {
+    const stats = statSync(BENCHMARK_RESULT_PATH);
+    if (stats.mtimeMs + 1000 < startedAtMs) return false;
+    const result = JSON.parse(readFileSync(BENCHMARK_RESULT_PATH, 'utf8'));
+    return result?.benchmark_kind === 'actual_demo_stream' && result?.status === 'failed';
+  } catch {
+    return false;
+  }
 }
 
 function buildBrowserEntryPoints() {
@@ -134,8 +163,9 @@ function defaultBrowsersPath() {
 
 function runAttempt(attempt) {
   if (attempt > 1) {
-    console.warn(`Retrying Playwright benchmark after startup failure (${attempt}/${maxAttempts})...`);
+    console.warn(`Retrying Playwright after launch failure (${attempt}/${maxAttempts})...`);
   }
+  const attemptStartedAtMs = Date.now();
 
   const childEnv: Record<string, string | undefined> = {
     ...process.env,
@@ -164,7 +194,7 @@ function runAttempt(attempt) {
       return;
     }
 
-    if (code !== 0 && attempt < maxAttempts) {
+    if (code !== 0 && attempt < maxAttempts && !completedBenchmarkFailedSince(attemptStartedAtMs)) {
       runAttempt(attempt + 1);
       return;
     }

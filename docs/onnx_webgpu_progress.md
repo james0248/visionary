@@ -7832,6 +7832,10 @@ Rejected / kept out:
   be slower than the benchmark unless the URL overrode `ortModule`. The WASM demo smoke now runs
   without an explicit `ortModule` override, and the smoke assertion now checks for the accepted
   full-head-time cache updater instead of requiring the older async updater shape.
+- Tightened benchmark retry behavior. The Playwright wrapper now defaults to one attempt, and even
+  when `--playwright-benchmark-attempts` is supplied it does not retry a completed actual-demo
+  benchmark that wrote a failed result JSON. Retries remain available for launch/startup failures,
+  but speed-gate or visual/latent validation failures are no longer masked by a later faster pass.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
