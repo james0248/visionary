@@ -7679,6 +7679,27 @@ Rejected / kept out:
     `41.11 fps`; keep the current copied transferable decoder input. This is separate from the
     earlier rejected decoder-output SAB ring and points the same way: SAB-backed decoder plumbing is
     not a Safari/WebKit win for ORT WASM here.
+- Accepted a narrow WASM full-head-time dynamics ONNX cleanup: collapse each single-consumer
+  `Squeeze(axis=0) -> Squeeze(axis=0)` chain into one `Squeeze(axis=[0,1])`. The pass removes `24`
+  nodes from the generated full-head-time dynamics graph (`2585 -> 2561`) and is exact against the
+  previous graph on CPU ORT (`max_abs 0.0` for `final_z`, `candidate_k_entry`, and
+  `candidate_v_entry`). Browser validation stayed green. In the current noisy local window, Chrome
+  measured `46.05 fps`; WebKit/Safari-family measured `43.82 fps` on a short run and `43.89 fps` on
+  a 128-frame run; native Safari measured `45.29 fps` over 128 frames.
+- Rejected follow-ups after the squeeze cleanup:
+  - Extracting split sample/entry models from the optimized full-head-time graph validated but
+    measured only `40.04 fps` in WebKit/Safari-family; the extra session boundary still costs more
+    than it overlaps.
+  - A constant-position RotaryEmbedding transpose cleanup was exact/valid but regressed
+    WebKit/Safari-family to `43.15 fps`; keep the current rotary layout.
+  - Serializing ORT `ENABLE_EXTENDED` output on top of the squeeze-cleaned graph validated but
+    measured `43.56 fps`; keep the plain exported graph plus custom cleanup passes.
+  - Replacing no-bias `Squeeze(axis=1) -> Gemm -> Unsqueeze(axis=1)` projections with rank-3
+    `MatMul` was CPU-exact and browser-valid but measured `43.32 fps`; ORT WASM still prefers the
+    existing Gemm path.
+  - Disabling per-stage timing was neutral at `43.82 fps` while removing diagnostics; increasing the
+    UI stats interval to `500 ms` regressed the WebKit window. Keep the existing timing and UI
+    update behavior.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
@@ -7690,7 +7711,9 @@ Current WASM conclusion:
   Chromium and `2` on non-Chromium browser profiles, `3` main WASM threads in both browser families,
   ORT WASM `graphOptimizationLevel=all`, the bundled ORT WASM entrypoint, MHA GQA pretranspose plus
   head-time cache inputs for the derived full-step WASM graph, the full-head-time layout cleanup
-  stack, and the full-step head-time dynamics path unless split dynamics is explicitly requested.
-- The current validated default windows are about `46.3 fps` in headed Chrome and up to `44.2 fps` in
-  WebKit/Safari-family, both preserving `sample_steps=2` and passing visual plus WASM latent
-  validation. The `45 fps` target is reached in Chrome but still not in Safari/WebKit.
+  stack, consecutive axis-0 squeeze cleanup, and the full-step head-time dynamics path unless split
+  dynamics is explicitly requested.
+- The current validated default windows are about `46 fps` in headed Chrome, about `44 fps` in
+  Playwright WebKit, and `45.29 fps` in native Safari, all preserving `sample_steps=2` and passing
+  visual plus WASM latent validation. Chrome and native Safari reach the revised `45 fps` target,
+  while Playwright WebKit remains below it.

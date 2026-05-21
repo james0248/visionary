@@ -119,6 +119,7 @@ def export_full_wasm_headtime_dynamics_model(
         "identity_head_gather": rewrite_identity_head_gathers_for_wasm(output_path),
         "packed_qkv_head_groups": rewrite_packed_qkv_head_groups_for_wasm(output_path),
         "swiglu_rank2": rewrite_swiglu_rank2_islands_for_webgpu(output_path),
+        "consecutive_axis0_squeeze": rewrite_consecutive_axis0_squeezes_for_wasm(output_path),
     }
     return output_path, rewrites
 
@@ -8544,6 +8545,120 @@ def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
         "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
         "rewrites": rewrite_count,
         "rewrite_examples": rewrites,
+    }
+
+
+def rewrite_consecutive_axis0_squeezes_for_wasm(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = ("Squeeze",)
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    def axes_initializer_value(name: str) -> tuple[int, ...] | None:
+        value = initializer_arrays.get(name)
+        if value is None or not np.issubdtype(value.dtype, np.integer):
+            return None
+        return tuple(int(item) for item in np.asarray(value).reshape(-1))
+
+    remove_nodes: set[str] = set()
+    stale_value_info: set[str] = set()
+    new_initializers: list[onnx.TensorProto] = []
+    examples: list[dict[str, Any]] = []
+    rewrites = 0
+
+    for first in model.graph.node:
+        if (
+            first.op_type != "Squeeze"
+            or len(first.input) < 2
+            or len(first.output) != 1
+            or axes_initializer_value(first.input[1]) != (0,)
+        ):
+            continue
+        first_consumers = consumers.get(first.output[0], [])
+        if len(first_consumers) != 1:
+            continue
+        second = first_consumers[0]
+        if (
+            second.op_type != "Squeeze"
+            or len(second.input) < 2
+            or len(second.output) != 1
+            or axes_initializer_value(second.input[1]) != (0,)
+        ):
+            continue
+
+        axes_name = f"{node_key(first)}__squeeze00_axes"
+        new_initializers.append(
+            onnx.numpy_helper.from_array(np.asarray([0, 1], dtype=np.int64), axes_name)
+        )
+        first.input[1] = axes_name
+        first.output[0] = second.output[0]
+        remove_nodes.add(node_key(second))
+        stale_value_info.add(second.input[0])
+        rewrites += 1
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "first": first.name,
+                    "second": second.name,
+                    "output": second.output[0],
+                }
+            )
+
+    if not rewrites:
+        return {
+            "enabled": True,
+            "tool": "custom_consecutive_axis0_squeeze_wasm_rewrite",
+            "reason": "no eligible Squeeze(axis=0) -> Squeeze(axis=0) chains found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": 0,
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    rewritten_nodes = [node for node in model.graph.node if node_key(node) not in remove_nodes]
+    used_inputs = {
+        input_name for node in rewritten_nodes for input_name in node.input if input_name
+    }
+    kept_initializers = [
+        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
+    ]
+    kept_value_info = [
+        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.initializer[:]
+    model.graph.initializer.extend(kept_initializers)
+    model.graph.initializer.extend(new_initializers)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_consecutive_axis0_squeeze_wasm_rewrite",
+        "reason": (
+            "Collapse two single-consumer Squeeze(axis=0) nodes into one "
+            "Squeeze(axis=[0,1]). Both removed dimensions are singleton by "
+            "construction of the original valid graph."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "rewrites": rewrites,
+        "rewrite_examples": examples,
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
     }
 
 
