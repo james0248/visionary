@@ -74,7 +74,11 @@ const DECODER_EXPORT_NAME = configValue('decoderExport', null);
 const FULL_CACHE_STEP_EXPORT_NAME = configValue('fullCacheStepExport', null);
 const SAFARI_SAFE_FULL_CACHE_STEP_EXPORT_NAME =
   'breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2_final_z_add_zero_safari_trial';
+const SAFARI_WASM_DECODER_EXPORT_NAME = 'breakout_tokenizer_decoder_b1_t1_wasm_mha';
 const DECODER_EXPORT_FALLBACKS = parseConfigJson('decoderExportFallbacks', [
+  ...(requestedBackend === 'wasm' && browserProfile === 'safari'
+    ? [SAFARI_WASM_DECODER_EXPORT_NAME]
+    : []),
   'breakout_tokenizer_decoder_b1_t1',
   'breakout_tokenizer_decode_z_b1_t1',
 ]);
@@ -3465,6 +3469,9 @@ async function loadRuntime() {
   const decoderSpec = DECODER_EXPORT_NAME
     ? findExport(manifest, DECODER_EXPORT_NAME)
     : findFirstExport(manifest, [
+        requestedBackend === 'wasm' && browserProfile === 'safari'
+          ? manifest.demo_generation?.preferred_decoder_export_wasm_safari
+          : null,
         manifest.demo_generation?.preferred_decoder_export,
         ...DECODER_EXPORT_FALLBACKS,
       ]);

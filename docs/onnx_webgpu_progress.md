@@ -7589,16 +7589,32 @@ Rejected / kept out:
   Chrome was output/latent/stability valid at `41.72 fps`, which is within the default `all` noise
   window, while WebKit/Safari-family regressed to `38.34 fps` and showed a large dynamics/decoder
   spike. Keep `graphOptimizationLevel=all`.
+- Accepted switching the WASM runtime entrypoint from `/ort.wasm.min.mjs` to
+  `/ort.wasm.bundle.min.mjs`. The bundled entrypoint gave the best repeatable WebKit/Safari-family
+  timing without hurting Chrome: default full actual-demo validation passed in Chrome at
+  `42.30 fps` and in WebKit/Safari-family at `39.19 fps`. Rejected adjacent controls:
+  `/ort.jspi.min.mjs`, `/ort.all.bundle.min.mjs`, `/ort.min.mjs`, ORT `1.26`, and non-`all`
+  optimization levels were slower or noisy regressions.
+- Accepted an optional Safari/WebKit WASM decoder MHA artifact when the generated manifest provides
+  `breakout_tokenizer_decoder_b1_t1_wasm_mha`. The trial replaces the decoder's six
+  MatMul/Softmax attention islands with `com.microsoft::MultiHeadAttention` and directly reshapes
+  the fused output into the existing merged-head output. Direct CPU ORT comparison against the base
+  decoder was exact for zero and random latent inputs. It regressed Chrome when forced
+  (`40.30 fps`), so the demo selects it only for Safari/WebKit WASM and keeps Chromium on the base
+  decoder. Default full actual-demo validation then passed at `40.26 fps` in WebKit/Safari-family
+  with the fused decoder selected and `42.20 fps` in Chrome with the base decoder selected.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
   MatMul attention for the remaining explicit attention islands, the extended static head-merge
-  cleanup including ranked MHA query merges, the decoder singleton-key attention bypass, the decoder
+  cleanup including ranked MHA query merges, the optional Safari/WebKit decoder MHA artifact when
+  available, the decoder singleton-key attention bypass, the decoder
   primitive RMSNorm rewrite, the worker-backed JavaScript cache updater for WASM, the decoder
   worker pipeline with `decoderWorkerNumThreads=3` on Chromium and `2` on non-Chromium browser
   profiles, `3` main WASM threads in both browser families, ORT WASM `graphOptimizationLevel=all`,
+  the bundled ORT WASM entrypoint,
   MHA GQA pretranspose plus head-time cache inputs for the derived full-step WASM graph, and the
   full-step head-time dynamics path unless split dynamics is explicitly requested.
-- The current validated default windows are about `40.8 fps` in headed Chrome and `39.2 fps` in
+- The current validated default windows are about `42.2 fps` in headed Chrome and `40.3 fps` in
   WebKit/Safari-family, both preserving `sample_steps=2` and passing visual plus WASM latent
-  validation. The `30 fps` target is reached, but the requested `60 fps` target is not.
+  validation. The `30 fps` target is reached, but the requested `45 fps`/`60 fps` targets are not.
