@@ -7660,6 +7660,11 @@ Rejected / kept out:
   dynamics) on a short run and `44.21 fps` (`22.62 ms/frame`, `21.10 ms` dynamics) on the
   128-frame validation window; Chrome measured `46.35 fps` (`21.57 ms/frame`, `19.64 ms`
   dynamics).
+- Native Safari automation after the same feed-map cleanup measured `44.36 fps`
+  (`22.54 ms/frame`, `20.90 ms` dynamics, `0.85 ms` cache, `23.28 ms` decoder total) with the same
+  selected full-head-time dynamics graph, Safari MHA decoder, `3` main WASM threads, and `2`
+  decoder-worker threads. This is slightly better than Playwright WebKit in the same round, but
+  still below the `45 fps` Safari/WebKit target.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
