@@ -7855,6 +7855,11 @@ Rejected / kept out:
   summaries, but WebKit measured only `40.25 fps` in the same loaded window. Keep the existing frame
   stats object shape; the function's early return is cheaper for this runtime than the conditional
   object-shape change.
+- Rejected ORT-format deployment for the full-head-time dynamics graph. The `.ort` file converted
+  successfully with fixed `ORT_ENABLE_ALL` optimization and was CPU-exact against the accepted ONNX
+  file for `final_z`, `candidate_k_entry`, and `candidate_v_entry`. ORT Web loaded it and output
+  validation passed, but WebKit measured only `41.34 fps`, slightly below the adjacent accepted ONNX
+  control. Keep the ONNX artifact; ORT format does not improve steady-state browser inference here.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
