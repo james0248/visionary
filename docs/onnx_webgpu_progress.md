@@ -7545,6 +7545,9 @@ Rejected / kept out:
   the main split sample/entry sessions on default ORT spinning and disabled spinning only in the
   decoder worker session. Chrome visual/latent/stability validation passed, but timing regressed to
   `39.81 fps` with decoder total `33.84 ms`; do not carry a decoder-worker-specific session option.
+- Rejected WASM `graphOptimizationLevel=layout`. Chrome visual/latent/stability validation passed,
+  but the actual demo benchmark measured `39.61 fps` with sample `15.40 ms`, entry `7.60 ms`, and
+  decoder total `33.93 ms`, below the accepted `all` controls. Keep `graphOptimizationLevel=all`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
