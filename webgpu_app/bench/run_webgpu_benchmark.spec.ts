@@ -16,6 +16,8 @@ const DEFAULT_WARMUP_FRAMES = 8;
 const DEFAULT_TIMED_FRAMES = 64;
 const DEFAULT_VALIDATION_FRAMES = 6;
 const DEFAULT_MIN_FPS = 30;
+const DEFAULT_MAX_FRAME_P95_MS = 50;
+const DEFAULT_MAX_FRAME_INTERVAL_MS = 100;
 const MIN_BRICK_COVERAGE = 0.45;
 const MIN_UNIQUE_FRAME_HASHES = 2;
 const MIN_UNIQUE_LATENT_HASHES = 2;
@@ -70,6 +72,11 @@ function benchmarkConfig(options: BenchmarkOptions) {
     timedFrames: numberEnv('WEBGPU_BENCHMARK_TIMED_RUNS', DEFAULT_TIMED_FRAMES),
     validationFrames: numberEnv('WEBGPU_BENCHMARK_VALIDATION_FRAMES', DEFAULT_VALIDATION_FRAMES),
     minFps: numberEnv('WEBGPU_BENCHMARK_MIN_FPS', DEFAULT_MIN_FPS),
+    maxFrameP95Ms: numberEnv('WEBGPU_BENCHMARK_MAX_FRAME_P95_MS', DEFAULT_MAX_FRAME_P95_MS),
+    maxFrameIntervalMs: numberEnv(
+      'WEBGPU_BENCHMARK_MAX_FRAME_INTERVAL_MS',
+      DEFAULT_MAX_FRAME_INTERVAL_MS,
+    ),
     graphCapture,
     dynamicsGraphCapture: process.env.WEBGPU_BENCHMARK_DYNAMICS_GRAPH_CAPTURE ?? (graphCapture ? 'true' : null),
     decoderGraphCapture: process.env.WEBGPU_BENCHMARK_DECODER_GRAPH_CAPTURE ?? (graphCapture ? 'true' : null),
@@ -419,14 +426,30 @@ async function runBenchmark(
 
     const timing = timingFromWindow(timed);
     const steadyStateFps = timing.window_fps ?? 0;
+    const p95FrameMs = timing.frame_interval?.p95_ms ?? timing.frame_latency?.p95_ms ?? null;
+    const maxFrameMs = timing.frame_interval?.max_ms ?? timing.frame_latency?.max_ms ?? null;
     const speedValidation = {
       status: steadyStateFps >= config.minFps ? 'passed' : 'failed',
       steady_state_fps: steadyStateFps,
       minimum_required_fps: config.minFps,
     };
+    const frameStabilityValidation = {
+      status:
+        Number.isFinite(p95FrameMs) &&
+        Number.isFinite(maxFrameMs) &&
+        p95FrameMs <= config.maxFrameP95Ms &&
+        maxFrameMs <= config.maxFrameIntervalMs
+          ? 'passed'
+          : 'failed',
+      p95_frame_ms: p95FrameMs,
+      max_frame_ms: maxFrameMs,
+      maximum_allowed_p95_ms: config.maxFrameP95Ms,
+      maximum_allowed_frame_ms: config.maxFrameIntervalMs,
+    };
     const status =
       outputValidation.status === 'passed' &&
       speedValidation.status === 'passed' &&
+      frameStabilityValidation.status === 'passed' &&
       pageErrors.length === 0
         ? 'passed'
         : 'failed';
@@ -472,6 +495,7 @@ async function runBenchmark(
           },
           output_validation: outputValidation,
           speed_validation: speedValidation,
+          frame_stability_validation: frameStabilityValidation,
         },
       ],
     };
@@ -516,6 +540,7 @@ function expectPassedBenchmark(result: BenchmarkResult) {
   expect(streaming?.output_validation).toMatchObject({ status: 'passed' });
   expect(streaming?.output_validation.unique_hashes).toBeGreaterThanOrEqual(MIN_UNIQUE_FRAME_HASHES);
   expect(streaming?.speed_validation).toMatchObject({ status: 'passed' });
+  expect(streaming?.frame_stability_validation).toMatchObject({ status: 'passed' });
   if (result.demo.final.backend === 'wasm') {
     expect(streaming?.output_validation.numerical).toMatchObject({ status: 'passed' });
     expect(streaming?.output_validation.numerical.unique_hashes).toBeGreaterThanOrEqual(

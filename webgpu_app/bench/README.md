@@ -143,6 +143,9 @@ context_tau_effective = 29 / 32
 - `streaming_frame.output_validation`: screenshot hashes from visible generated frames plus a loose
   Breakout brick-band coverage check; `status: failed` means the measured FPS is not a valid demo
   result
+- `streaming_frame.frame_stability_validation`: p95 and max generated-frame intervals. By default
+  the benchmark fails if p95 exceeds `50 ms` or any interval exceeds `100 ms`, so average FPS cannot
+  hide visible stalls.
 - `demo.initial` and `demo.final`: backend, graph-capture state, decoder-worker state, cache length,
   selected ONNX exports, and sample-step metadata observed from the demo runtime
 

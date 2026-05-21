@@ -7505,6 +7505,12 @@ Rejected / kept out:
   benchmark regressed to `37.29 fps` with large dynamics and decoder spikes. Treat this as noise or
   JIT-shape instability rather than a useful optimization; keep the simpler accepted hot-loop
   structure.
+- Added a frame-stability gate to the actual-demo benchmark. In addition to visual/latent
+  validation and average FPS, the benchmark now fails if the timed generated-frame interval p95 is
+  above `50 ms` or any interval is above `100 ms` by default. This keeps visible stalls from being
+  hidden by an acceptable average FPS. The wrapper exposes
+  `--webgpu-benchmark-max-frame-p95-ms` and `--webgpu-benchmark-max-frame-interval-ms` for local
+  tuning.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

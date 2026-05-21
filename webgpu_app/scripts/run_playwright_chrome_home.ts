@@ -15,6 +15,8 @@ const benchmarkFlagEnv = new Map([
   ['--webgpu-benchmark-warmup-runs', 'WEBGPU_BENCHMARK_WARMUP_RUNS'],
   ['--webgpu-benchmark-timed-runs', 'WEBGPU_BENCHMARK_TIMED_RUNS'],
   ['--webgpu-benchmark-min-fps', 'WEBGPU_BENCHMARK_MIN_FPS'],
+  ['--webgpu-benchmark-max-frame-p95-ms', 'WEBGPU_BENCHMARK_MAX_FRAME_P95_MS'],
+  ['--webgpu-benchmark-max-frame-interval-ms', 'WEBGPU_BENCHMARK_MAX_FRAME_INTERVAL_MS'],
   ['--webgpu-benchmark-graph-capture', 'WEBGPU_BENCHMARK_GRAPH_CAPTURE'],
   ['--webgpu-benchmark-dynamics-graph-capture', 'WEBGPU_BENCHMARK_DYNAMICS_GRAPH_CAPTURE'],
   ['--webgpu-benchmark-decoder-graph-capture', 'WEBGPU_BENCHMARK_DECODER_GRAPH_CAPTURE'],
