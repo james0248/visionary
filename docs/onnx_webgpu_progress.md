@@ -7791,6 +7791,12 @@ Rejected / kept out:
     was noise-level: WebKit/Safari-family measured `41.09 fps` with decoder total about `25.23 ms`,
     and Chrome measured `46.28 fps` with decoder total about `22.80 ms`. Keep the simpler per-run
     input tensor construction.
+  - Tried merging the Safari/WebKit decoder's two-head GQA compact K/V branches by changing each
+    `Split([32,32,256,32,32])` to `Split([32,32,256,64])` and replacing the two
+    `Unsqueeze -> Concat` branch with a `Reshape`. CPU ORT comparison was bit-exact for zero and
+    random latent inputs and the decoder shrank from `423 -> 407` nodes, but WebKit/Safari-family
+    regressed sharply to `36.43 fps` with decoder total about `28.31 ms`. Restore the accepted
+    two-head split/unsqueeze/concat branch.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
