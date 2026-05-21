@@ -7947,6 +7947,10 @@ Rejected / kept out:
   ORT-allocated. The trial appeared fast at `45.54 fps`, but validation caught static zero latents
   and repeated frame hashes. Keep all WASM dynamics outputs ORT-allocated; the benchmark's latent
   uniqueness gate is covering this failure mode correctly.
+- Rejected mutating the pipelined decoder stage object in place to avoid the remaining per-frame
+  stage object spreads. After fixing the trial's null-latent sentinel so timed frames were recorded
+  correctly, native Safari validated but measured only `44.64 fps`, below the accepted path's
+  adjacent restored controls (`44.99 fps`, then `45.28 fps`). Keep the clearer accepted stage merge.
 - Refreshed native ORT CPU profiling on the current full-head-time dynamics artifact after the
   rejected tail probes. Over the profiled window the largest op-family totals were still broad:
   `SimplifiedLayerNormalization` ~`45 ms`, `Gemm` ~`44 ms`, `MultiHeadAttention` ~`30 ms`,
@@ -7969,7 +7973,7 @@ Current WASM conclusion:
   and the full-step head-time dynamics path unless split dynamics is explicitly requested.
 - The current validated default windows are about `46-47 fps` in headed Chrome, about `39-44 fps`
   in Playwright WebKit windows, and about `45 fps` in native Safari depending on warmup/load. The
-  latest clean checks were Chrome `47.13 fps` and native Safari `45.42 fps`, with visual and latent
+  latest clean checks were Chrome `46.86 fps` and native Safari `45.28 fps`, with visual and latent
   validation passing in both browsers. Native Safari remains variable around the revised target, with
   recent accepted-path samples from `43.80 fps` to `46.29 fps` while visual and latent validation
   continued to pass.
