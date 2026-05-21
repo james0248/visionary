@@ -98,6 +98,7 @@ function benchmarkConfig(options: BenchmarkOptions) {
       process.env.WEBGPU_BENCHMARK_DECODER_WORKER_PIPELINE ?? (wasmDefaults ? 'true' : null),
     decoderWorkerNumThreads: process.env.WEBGPU_BENCHMARK_DECODER_WORKER_NUM_THREADS ?? null,
     splitWasmDynamics: process.env.WEBGPU_BENCHMARK_SPLIT_WASM_DYNAMICS ?? null,
+    demoQuery: process.env.DEMO_QUERY ?? null,
   };
 }
 
@@ -118,6 +119,12 @@ function demoUrl(config: ReturnType<typeof benchmarkConfig>) {
   if (config.decoderWorkerPipeline) params.set('decoderWorkerPipeline', config.decoderWorkerPipeline);
   if (config.decoderWorkerNumThreads) params.set('decoderWorkerNumThreads', config.decoderWorkerNumThreads);
   if (config.splitWasmDynamics) params.set('splitWasmDynamics', config.splitWasmDynamics);
+  if (config.demoQuery) {
+    const extra = new URLSearchParams(config.demoQuery.replace(/^[?&]/, ''));
+    for (const [key, value] of extra) {
+      params.set(key, value);
+    }
+  }
   if (config.graphCapture) {
     params.set('graphCapture', 'true');
     params.set('allowUnsafeGraphCapture', 'true');

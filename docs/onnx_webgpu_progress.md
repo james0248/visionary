@@ -7641,6 +7641,16 @@ Rejected / kept out:
   (`22.99 ms/frame`, `21.48 ms` dynamics, `0.86 ms` cache, `24.02 ms` decoder total). Chrome
   validation repeated cleanly at `45.97 fps` (`21.75 ms/frame`, `19.83 ms` dynamics, `1.29 ms`
   cache, `22.94 ms` decoder total) after one noisy Chrome window with a single long frame.
+- Accepted a small timing-overhead cleanup in the actual demo stream loop. The unlimited-FPS path
+  no longer samples `performance.now()` twice just to compute a zero delay. The wrapper's existing
+  `--demo-query` flag now actually appends query parameters to the demo URL, making ad hoc demo
+  controls explicit and reproducible during benchmark probes. Validation after the timing cleanup
+  passed in both browser families; the adjacent short WebKit window measured `43.91 fps` and Chrome
+  remained above target at `46.24 fps`.
+- Rejected making detailed per-stage timings opt-in by default. It kept visual/latent validation
+  green, but the same-code comparison was neutral (`43.16 fps` default versus `43.14 fps` with
+  instrumentation forced on), while removing useful dynamics/cache/decoder diagnostics from normal
+  benchmark output. Keep the detailed stage timers enabled.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

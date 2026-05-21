@@ -3968,7 +3968,7 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
 
 async function streamLoop() {
   if (!running) return;
-  const frameStarted = performance.now();
+  const frameStarted = targetFps > 0 ? performance.now() : 0;
   try {
     await generateFrame({ pipelineDecoder: Boolean(runtime.decoderWorker) });
   } catch (error) {
@@ -3977,8 +3977,8 @@ async function streamLoop() {
     setStatus(error instanceof Error ? error.message : String(error));
     throw error;
   }
-  const frameElapsed = performance.now() - frameStarted;
-  const delayMs = targetFps > 0 ? Math.max(0, 1000 / targetFps - frameElapsed) : 0;
+  const delayMs =
+    targetFps > 0 ? Math.max(0, 1000 / targetFps - (performance.now() - frameStarted)) : 0;
   scheduleStreamLoop(delayMs);
 }
 
