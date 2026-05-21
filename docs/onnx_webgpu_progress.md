@@ -7781,6 +7781,11 @@ Rejected / kept out:
     three outputs by two consumed `Slice` nodes. CPU ORT comparison against the accepted decoder was
     bit-exact for zero and random latent inputs, but WebKit/Safari-family measured only `41.24 fps`,
     noise-level against the adjacent default. Restore the accepted split form.
+  - Tried a decoder-only static 8-head layout cleanup that replaces six
+    `Split -> eight Unsqueeze -> Concat` islands with `Reshape([1,256,8,32]) -> Transpose`. The
+    Safari/WebKit decoder graph shrank from `423 -> 375` nodes and CPU ORT comparison was bit-exact
+    for zero and random latent inputs, but WebKit/Safari-family measured only `40.69 fps` with
+    decoder total about `25.48 ms`. Keep the accepted split/unsqueeze/concat form for this decoder.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
