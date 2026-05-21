@@ -7700,6 +7700,26 @@ Rejected / kept out:
   - Disabling per-stage timing was neutral at `43.82 fps` while removing diagnostics; increasing the
     UI stats interval to `500 ms` regressed the WebKit window. Keep the existing timing and UI
     update behavior.
+  - Moving patch-to-RGBA conversion into the decoder worker was output-valid and reduced render
+    time to about `0.03 ms`, but it made the decoder worker critical path slower and measured only
+    `40.39 fps` in WebKit/Safari-family. Keep transferring the decoder patch tensor and rendering
+    on the main thread.
+  - Re-fusing the Safari/WebKit decoder primitive RMSNorm islands back into
+    `SimplifiedLayerNormalization` was numerically close (`patches` max abs about `4.2e-6`) and
+    output-valid, but measured only `40.71 fps` in the loaded WebKit window. Keep the WASM decoder
+    primitive RMSNorm artifact.
+  - Retesting `/ort.jspi.bundle.min.mjs` on the current graph was output-valid but measured only
+    `39.02 fps`; keep `/ort.wasm.bundle.min.mjs`.
+  - Decoder-worker `1` thread was output-valid but regressed sharply to `33.67 fps` because decoder
+    wait rose to about `5.81 ms`. Disabling the decoder worker did not complete the short WebKit
+    benchmark window and was terminated. Keep the `3` main / `2` decoder thread split for Safari.
+  - Scheduling Safari/WebKit unlimited-FPS frames with `setTimeout(0)` instead of the accepted
+    microtask loop was output-valid but measured only `41.21 fps`; keep the microtask loop.
+  - Replacing the repeated GQA `Gather([0,0,0,0,1,1,1,1])` KV-head duplication with
+    `Unsqueeze -> Expand -> Reshape` across `142` sites was CPU-exact for `final_z`,
+    `candidate_k_entry`, and `candidate_v_entry`, but the adjacent WebKit result was neutral/slower
+    (`41.76 fps` versus `41.77 fps` for the restored control under the same system load). Keep the
+    current `Gather` form; ORT WASM does not benefit from broadcast expansion here.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
@@ -7714,6 +7734,10 @@ Current WASM conclusion:
   stack, consecutive axis-0 squeeze cleanup, and the full-step head-time dynamics path unless split
   dynamics is explicitly requested.
 - The current validated default windows are about `46 fps` in headed Chrome, about `44 fps` in
-  Playwright WebKit, and `45.29 fps` in native Safari, all preserving `sample_steps=2` and passing
-  visual plus WASM latent validation. Chrome and native Safari reach the revised `45 fps` target,
-  while Playwright WebKit remains below it.
+  cleaner Playwright WebKit windows, and just over `45 fps` in native Safari. The latest clean
+  checks after rejected-probe restore were Chrome `46.05 fps` with visual and latent validation
+  passing, and native Safari `45.13 fps` over `128` timed frames (`20.95 ms` dynamics,
+  `0.85 ms` cache update, `23.24 ms` decoder total). All accepted measurements preserve
+  `sample_steps=2` and pass the actual-demo visual plus WASM latent validation. Chrome and native
+  Safari reach the revised `45 fps` target, while Playwright WebKit remains noisier and below the
+  native Safari timing in loaded windows.
