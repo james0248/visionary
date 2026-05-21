@@ -7879,6 +7879,16 @@ Rejected / kept out:
   latent validation passing in both browsers. Rejected adjacent knobs: `decoderWorkerNumThreads=1`
   dropped native Safari to `33.44 fps`, and an in-place frame-waiter compaction trial regressed the
   next Safari window to `44.73 fps`.
+- Aligned the checked-in Chrome WASM benchmark gate with the revised `45 fps` target. The Chrome
+  WASM script now runs the same `16` warmup / `96` timed / `64` validation-frame gate used for
+  accepted measurements. Native Safari remains too variable around `45 fps` to make that the
+  no-flag default; its runner keeps the lower default speed gate but supports `--min-fps 45` for
+  explicit hard-gate checks, and it now closes the WebDriver window before deleting the session so
+  repeated runs do not accumulate automation windows. Rejected in the same round: cache-before-noise
+  ordering regressed native Safari to `43.22 fps`, and a copyWithin-based K-cache slide passed
+  visual/latent validation but missed the 96-frame Safari target at `44.70 fps`. A
+  `wasmNumThreads=4&decoderWorkerNumThreads=1` native Safari thread split also validated but
+  regressed sharply to `33.66 fps`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

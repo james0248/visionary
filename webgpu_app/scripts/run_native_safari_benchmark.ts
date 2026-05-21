@@ -475,6 +475,7 @@ async function runNativeSafariBenchmark(options: CliOptions) {
     }
     return { value, url };
   } finally {
+    await fetch(`${driverUrl}/session/${sessionId}/window`, { method: 'DELETE' }).catch(() => null);
     await fetch(`${driverUrl}/session/${sessionId}`, { method: 'DELETE' }).catch(() => null);
   }
 }

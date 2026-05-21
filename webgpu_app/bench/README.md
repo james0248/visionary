@@ -51,6 +51,11 @@ bun run benchmark:wasm:safari
 bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=webkit --grep @output_validation --webgpu-benchmark-provider wasm
 ```
 
+`benchmark:wasm:chrome` enforces the revised `45 fps` Chrome gate by default. Native Safari remains
+variable around the target on this machine; use `bun run benchmark:wasm:safari -- --min-fps 45` when
+you want a hard Safari speed gate. The Playwright WebKit command remains a Safari-family validation
+harness because it is noisier than native Safari.
+
 For a functional-only check in headless Chromium/SwiftShader:
 
 ```bash
