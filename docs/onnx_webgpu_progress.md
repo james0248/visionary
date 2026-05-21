@@ -7665,6 +7665,9 @@ Rejected / kept out:
   selected full-head-time dynamics graph, Safari MHA decoder, `3` main WASM threads, and `2`
   decoder-worker threads. This is slightly better than Playwright WebKit in the same round, but
   still below the `45 fps` Safari/WebKit target.
+- Rejected nearby native Safari thread retunes after the feed-map cleanup. The default `3/2`
+  main/decoder split repeated at `44.33 fps`; `4/2` regressed to `41.22 fps`, `3/3` regressed to
+  `43.26 fps`, and `2/2` regressed to `40.03 fps`. Keep the current Safari/WebKit thread defaults.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
