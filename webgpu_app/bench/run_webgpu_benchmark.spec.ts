@@ -341,6 +341,8 @@ async function runtimeSnapshot(page: Page) {
       decoder_worker: Boolean(runtime.decoderWorker),
       split_wasm_dynamics: Boolean(runtime.splitWasmDynamics),
       split_wasm_cache_layout: runtime.splitWasmCacheLayout ?? null,
+      full_wasm_head_time_dynamics: Boolean(runtime.fullWasmHeadTimeDynamics),
+      full_step_cache_layout: runtime.fullStepCacheLayout ?? null,
       step_export: runtime.specs.fullStep?.name ?? runtime.specs.step?.name ?? null,
       decoder_export: runtime.specs.decoder?.name ?? null,
       sample_steps:

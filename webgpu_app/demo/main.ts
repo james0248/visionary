@@ -25,6 +25,14 @@ function configValue(name, fallback) {
   return params.get(name) ?? scriptElement?.dataset?.[name] ?? globalConfig[name] ?? fallback;
 }
 
+function hasConfigValue(name) {
+  return (
+    params.has(name) ||
+    scriptElement?.dataset?.[name] != null ||
+    Object.prototype.hasOwnProperty.call(globalConfig, name)
+  );
+}
+
 function explicitConfigValue(name) {
   return params.get(name) ?? globalConfig[name] ?? null;
 }
@@ -386,6 +394,7 @@ const decoderWorkerPipelineEnabled = parseBooleanConfig(
   configValue('decoderWorkerPipeline', DEFAULT_DECODER_WORKER_PIPELINE),
   DEFAULT_DECODER_WORKER_PIPELINE,
 );
+const splitWasmDynamicsConfigured = hasConfigValue('splitWasmDynamics');
 const splitWasmDynamicsEnabled = parseBooleanConfig(
   configValue('splitWasmDynamics', DEFAULT_SPLIT_WASM_DYNAMICS),
   DEFAULT_SPLIT_WASM_DYNAMICS,
@@ -721,9 +730,24 @@ function optionalOutputName(spec, preferred) {
   return spec.outputs?.[preferred] ? preferred : null;
 }
 
-function assertTensorMatchesSpec(tensor, spec, label, name) {
+function canTransposeToHeadTimeCache(tensor, spec, cacheLayout) {
+  if (cacheLayout !== SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT || tensor.type !== spec?.dtype) {
+    return false;
+  }
+  const targetShape = spec?.shape;
+  if (!Array.isArray(targetShape) || targetShape.length !== 6 || tensor.dims.length !== 6) {
+    return false;
+  }
+  const [layers, batch, tokens, heads, contextLength, headDim] = targetShape;
+  return sameShape(tensor.dims, [layers, batch, tokens, contextLength, heads, headDim]);
+}
+
+function assertTensorMatchesSpec(tensor, spec, label, name, cacheLayout = null) {
   if (!spec) return;
-  if (tensor.type !== spec.dtype || !sameShape(tensor.dims, spec.shape)) {
+  if (
+    (tensor.type !== spec.dtype || !sameShape(tensor.dims, spec.shape)) &&
+    !canTransposeToHeadTimeCache(tensor, spec, cacheLayout)
+  ) {
     throw new Error(
       `${label} does not match the exported ${name} input. ` +
         `Artifact has ${tensor.type} ${formatShape(tensor.dims)}, ` +
@@ -735,8 +759,20 @@ function assertTensorMatchesSpec(tensor, spec, label, name) {
 
 function validateInitialCache(stepSpec, initialK, initialV, initialLength) {
   const inputs = stepSpec.inputs ?? {};
-  assertTensorMatchesSpec(initialK, inputs.k_cache, 'Initial K cache', 'k_cache');
-  assertTensorMatchesSpec(initialV, inputs.v_cache, 'Initial V cache', 'v_cache');
+  assertTensorMatchesSpec(
+    initialK,
+    inputs.k_cache,
+    'Initial K cache',
+    'k_cache',
+    stepSpec.cache_layout,
+  );
+  assertTensorMatchesSpec(
+    initialV,
+    inputs.v_cache,
+    'Initial V cache',
+    'v_cache',
+    stepSpec.cache_layout,
+  );
   assertTensorMatchesSpec(initialLength, inputs.cache_length, 'Initial cache length', 'cache_length');
 }
 
@@ -792,10 +828,16 @@ function splitWasmDynamicsSpecsForSpec(stepSpec, manifest) {
       : null;
   const splitCacheInputSpec = (spec) =>
     cacheInputShape ? { ...spec, shape: cacheInputShape } : spec;
+  const samplePath =
+    splitMetadata.sample_only_final_z?.path ?? splitDynamicsPath(stepSpec.path, '_sample_only_final_z');
+  const entryPath =
+    splitMetadata.context_entry_from_final_z?.path ??
+    splitDynamicsPath(stepSpec.path, '_context_entry_from_final_z');
+  const exportNameFromPath = (path) => path.replace(/\.onnx$/i, '');
   const sampleSpec = {
     ...stepSpec,
-    name: `${stepSpec.name}_sample_only_final_z`,
-    path: splitDynamicsPath(stepSpec.path, '_sample_only_final_z'),
+    name: exportNameFromPath(samplePath),
+    path: samplePath,
     cache_layout: cacheLayout,
     external_data: [],
     inputs: {
@@ -810,8 +852,8 @@ function splitWasmDynamicsSpecsForSpec(stepSpec, manifest) {
   };
   const entrySpec = {
     ...stepSpec,
-    name: `${stepSpec.name}_context_entry_from_final_z`,
-    path: splitDynamicsPath(stepSpec.path, '_context_entry_from_final_z'),
+    name: exportNameFromPath(entryPath),
+    path: entryPath,
     cache_layout: cacheLayout,
     external_data: [],
     inputs: {
@@ -2798,9 +2840,8 @@ function transposeTimeHeadCacheTensor(tensor, targetShape) {
   return new ort.Tensor('float32', transposed, targetShape);
 }
 
-function initialCacheForSplitLayout(initialCache, splitWasmDynamics) {
-  const targetShape = splitWasmDynamics?.sampleSpec?.inputs?.k_cache?.shape ?? null;
-  if (splitWasmDynamics?.cacheLayout !== SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT || !targetShape) {
+function initialCacheForHeadTimeLayout(initialCache, targetShape, cacheLayout) {
+  if (cacheLayout !== SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT || !targetShape) {
     return initialCache;
   }
   if (sameShape(initialCache.k.dims, targetShape) && sameShape(initialCache.v.dims, targetShape)) {
@@ -2811,6 +2852,22 @@ function initialCacheForSplitLayout(initialCache, splitWasmDynamics) {
     v: transposeTimeHeadCacheTensor(initialCache.v, targetShape),
     length: initialCache.length,
   };
+}
+
+function initialCacheForRuntimeLayout(initialCache, fullStepSpec, splitWasmDynamics) {
+  const splitTargetShape = splitWasmDynamics?.sampleSpec?.inputs?.k_cache?.shape ?? null;
+  if (splitWasmDynamics?.cacheLayout === SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT && splitTargetShape) {
+    return initialCacheForHeadTimeLayout(
+      initialCache,
+      splitTargetShape,
+      splitWasmDynamics.cacheLayout,
+    );
+  }
+  return initialCacheForHeadTimeLayout(
+    initialCache,
+    fullStepSpec?.inputs?.k_cache?.shape ?? null,
+    fullStepSpec?.cache_layout ?? null,
+  );
 }
 
 function cacheFromInitialArtifacts(device, initialCache, backend) {
@@ -3151,7 +3208,11 @@ async function createRuntimeForBackend(backend, loaded) {
     );
     fullStepSession = fullStepRuntime.session;
     fullStepGraphCaptureSession = fullStepRuntime.graphCaptureSession;
-    if (backend === 'wasm' && loaded.splitWasmDynamics) {
+    const preferFullHeadTimeWasmDynamics =
+      backend === 'wasm' &&
+      !splitWasmDynamicsConfigured &&
+      loaded.fullStepSpec?.cache_layout === SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT;
+    if (backend === 'wasm' && loaded.splitWasmDynamics && !preferFullHeadTimeWasmDynamics) {
       try {
         splitSampleSession = await createSession(
           loaded.splitWasmDynamics.sampleSpec,
@@ -3181,12 +3242,13 @@ async function createRuntimeForBackend(backend, loaded) {
     }
     const activeSplitWasmDynamics =
       backend === 'wasm' && splitSampleSession && splitEntrySession ? loaded.splitWasmDynamics : null;
-    const initialCache = initialCacheForSplitLayout(
+    const initialCache = initialCacheForRuntimeLayout(
       {
         k: loaded.initialK,
         v: loaded.initialV,
         length: loaded.initialLength,
       },
+      loaded.fullStepSpec,
       activeSplitWasmDynamics,
     );
     const patchRenderer =
@@ -3318,6 +3380,8 @@ async function createRuntimeForBackend(backend, loaded) {
       cacheUpdater,
       splitWasmDynamics: Boolean(backend === 'wasm' && splitSampleSession && splitEntrySession),
       splitWasmCacheLayout: activeSplitWasmDynamics?.cacheLayout ?? null,
+      fullWasmHeadTimeDynamics: Boolean(preferFullHeadTimeWasmDynamics),
+      fullStepCacheLayout: loaded.fullStepSpec?.cache_layout ?? null,
       graphCapture: null,
       fullGraphCapture,
       decoderGraphCapture: decoderRuntime.graphCaptureEnabled || decoderGraphCapturePending,
@@ -3351,7 +3415,11 @@ async function createRuntimeForBackend(backend, loaded) {
       ? ` + ${readyGraphCaptures.join(' + ')} ready`
       : '';
     const wasmRuntimeLabels = [];
-    if (loadedRuntime.splitWasmDynamics) wasmRuntimeLabels.push('split dynamics');
+    if (loadedRuntime.fullWasmHeadTimeDynamics) {
+      wasmRuntimeLabels.push('full head-time dynamics');
+    } else if (loadedRuntime.splitWasmDynamics) {
+      wasmRuntimeLabels.push('split dynamics');
+    }
     if (decoderWorker) wasmRuntimeLabels.push('decoder worker');
     const wasmRuntimeLabel = wasmRuntimeLabels.length
       ? ` + ${wasmRuntimeLabels.join(' + ')}`

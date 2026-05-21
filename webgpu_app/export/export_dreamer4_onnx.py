@@ -2,6 +2,7 @@ import argparse
 import copy
 import itertools
 import json
+import shutil
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -82,6 +83,38 @@ def split_wasm_dynamics_paths(source_path: Path) -> tuple[Path, Path]:
         source_path.with_name(f"{stem.name}_sample_only_final_z.onnx"),
         source_path.with_name(f"{stem.name}_context_entry_from_final_z.onnx"),
     )
+
+
+def full_wasm_headtime_dynamics_name(source_name: str) -> str:
+    return f"{source_name}_full_headtime"
+
+
+def full_wasm_headtime_dynamics_path(source_path: Path) -> Path:
+    stem = source_path.with_suffix("")
+    return source_path.with_name(f"{stem.name}_full_headtime.onnx")
+
+
+def export_full_wasm_headtime_dynamics_model(
+    source_path: Path,
+    *,
+    overwrite: bool,
+) -> tuple[Path, dict[str, Any]]:
+    output_path = full_wasm_headtime_dynamics_path(source_path)
+    ensure_output(output_path, overwrite=overwrite)
+    external_output = external_data_path(output_path)
+    ensure_output(external_output, overwrite=overwrite)
+    if overwrite:
+        output_path.unlink(missing_ok=True)
+        external_output.unlink(missing_ok=True)
+    shutil.copy2(source_path, output_path)
+    source_external = external_data_path(source_path)
+    if source_external.exists():
+        shutil.copy2(source_external, external_output)
+    rewrites = {
+        "mha_gqa_pretranspose": rewrite_split_mha_gqa_pretranspose_for_wasm(output_path),
+        "cache_bhntd": rewrite_split_cache_bhntd_for_wasm(output_path),
+    }
+    return output_path, rewrites
 
 
 def export_split_wasm_dynamics_models(
@@ -8220,9 +8253,22 @@ def main() -> None:
     spatial_qk_head_layout_rewrite = pass_results["spatial_qk_head_layout_rewrite"]
     temporal_attention_bhsd_rewrite = pass_results["temporal_attention_bhsd_rewrite"]
     final_z_only_rewrite = pass_results["final_z_only_rewrite"]
+    full_wasm_headtime_dynamics_model_path = None
+    full_wasm_headtime_dynamics_export_name = None
+    full_wasm_headtime_dynamics_rewrites = None
     split_wasm_dynamics_model_paths = None
     split_wasm_dynamics_rewrites = None
     if args.export_cached and args.export_target == "wasm":
+        full_wasm_headtime_dynamics_export_name = full_wasm_headtime_dynamics_name(
+            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+        )
+        (
+            full_wasm_headtime_dynamics_model_path,
+            full_wasm_headtime_dynamics_rewrites,
+        ) = export_full_wasm_headtime_dynamics_model(
+            dynamics_sample_append_context_slide_entry_path,
+            overwrite=args.overwrite,
+        )
         (
             split_wasm_dynamics_model_paths,
             split_wasm_dynamics_rewrites,
@@ -8243,6 +8289,10 @@ def main() -> None:
             "skipped": not (args.validate and args.export_cached)
         },
     }
+    if full_wasm_headtime_dynamics_export_name is not None:
+        validation[full_wasm_headtime_dynamics_export_name] = {
+            "skipped": not (args.validate and args.export_cached)
+        }
     if args.validate and not args.export_cached:
         validation[TOKENIZER_DECODER_NAME] = validate_single_output(
             path=decoder_path,
@@ -8326,6 +8376,20 @@ def main() -> None:
                 atol=args.atol,
                 rtol=args.rtol,
             )
+            if full_wasm_headtime_dynamics_model_path is not None:
+                validation[full_wasm_headtime_dynamics_export_name] = validate_outputs(
+                    path=full_wasm_headtime_dynamics_model_path,
+                    feeds={
+                        "sample_noise": cached_inputs["z_step"],
+                        "context_noise": cached_inputs["z_step"],
+                        "actions": cached_inputs["actions_step"],
+                        "k_cache": np.transpose(cached_inputs["k_cache"], (0, 1, 2, 4, 3, 5)),
+                        "v_cache": np.transpose(cached_inputs["v_cache"], (0, 1, 2, 4, 3, 5)),
+                    },
+                    expected=entry_expected,
+                    atol=args.atol,
+                    rtol=args.rtol,
+                )
 
         failed = [
             name
@@ -8587,6 +8651,45 @@ def main() -> None:
         entry["final_z_only_rewrite"] = final_z_only_rewrite[entry["name"]]
         entry["static_output_repair"] = static_output_repairs[entry["name"]]
 
+    full_wasm_headtime_dynamics = None
+    if full_wasm_headtime_dynamics_model_path is not None:
+        source_entry = next(
+            entry
+            for entry in exports
+            if entry["name"] == DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+        )
+        cache_bhntd_rewrite = full_wasm_headtime_dynamics_rewrites.get("cache_bhntd", {})
+        headtime_cache_shape = tuple(
+            cache_bhntd_rewrite.get("cache_input_shape") or dyn_shapes.cache
+        )
+        headtime_entry = copy.deepcopy(source_entry)
+        headtime_entry.update(
+            {
+                "name": full_wasm_headtime_dynamics_export_name,
+                **export_file_metadata(full_wasm_headtime_dynamics_model_path),
+                "cache_layout": cache_bhntd_rewrite.get("cache_layout"),
+                "validation": validation[full_wasm_headtime_dynamics_export_name],
+                "inputs": {
+                    **copy.deepcopy(source_entry["inputs"]),
+                    "k_cache": tensor_spec("float32", headtime_cache_shape),
+                    "v_cache": tensor_spec("float32", headtime_cache_shape),
+                },
+                "full_wasm_headtime_dynamics_rewrite": full_wasm_headtime_dynamics_rewrites,
+            }
+        )
+        exports.append(headtime_entry)
+        full_wasm_headtime_dynamics = {
+            "available": True,
+            "export": full_wasm_headtime_dynamics_export_name,
+            **export_file_metadata(full_wasm_headtime_dynamics_model_path),
+            "mha_gqa_pretranspose_rewrite": full_wasm_headtime_dynamics_rewrites.get(
+                "mha_gqa_pretranspose", {}
+            ),
+            "cache_bhntd_rewrite": cache_bhntd_rewrite,
+            "cache_layout": cache_bhntd_rewrite.get("cache_layout"),
+            "cache_input_shape": cache_bhntd_rewrite.get("cache_input_shape"),
+        }
+
     split_wasm_dynamics = None
     if split_wasm_dynamics_model_paths is not None:
         split_sample_path, split_entry_path = split_wasm_dynamics_model_paths
@@ -8615,7 +8718,8 @@ def main() -> None:
                 DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
             ),
             "preferred_full_cache_step_export_wasm": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                full_wasm_headtime_dynamics_export_name
+                or DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
             ),
             "decode_z": {
                 "source": "final_z_after_velocity_update",
@@ -8627,6 +8731,7 @@ def main() -> None:
                     tok_shapes.channel_dim,
                 ],
             },
+            "full_wasm_headtime_dynamics": full_wasm_headtime_dynamics,
             "split_wasm_dynamics": split_wasm_dynamics,
         }
 
