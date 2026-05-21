@@ -7889,6 +7889,11 @@ Rejected / kept out:
   visual/latent validation but missed the 96-frame Safari target at `44.70 fps`. A
   `wasmNumThreads=4&decoderWorkerNumThreads=1` native Safari thread split also validated but
   regressed sharply to `33.66 fps`.
+- Rejected a narrow WASM output preallocation retry that preallocated only
+  `candidate_k_entry`/`candidate_v_entry` while leaving `final_z` allocated normally. This avoided
+  the earlier static-zero-latent failure from preallocating all outputs, and Chrome stayed valid at
+  `46.60 fps`, but native Safari was inconsistent across adjacent runs (`45.06`, `44.92`, then
+  `44.17 fps`). Keep the default ORT-allocated WASM outputs.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
