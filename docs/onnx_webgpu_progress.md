@@ -7511,6 +7511,11 @@ Rejected / kept out:
   hidden by an acceptable average FPS. The wrapper exposes
   `--webgpu-benchmark-max-frame-p95-ms` and `--webgpu-benchmark-max-frame-interval-ms` for local
   tuning.
+- Rejected releasing the unused main-thread WASM decoder session after the decoder worker is ready.
+  The demo can preview from cached display pixels and stream with the decoder worker, so this was
+  output-valid, but it did not improve the benchmark: Chrome measured `40.05 fps` and
+  WebKit/Safari-family measured `37.42 fps`, effectively the same/noisier than the adjacent clean
+  controls. Keep the main decoder session available as a fallback.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
