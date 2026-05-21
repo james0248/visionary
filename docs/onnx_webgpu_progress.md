@@ -7797,6 +7797,10 @@ Rejected / kept out:
     random latent inputs and the decoder shrank from `423 -> 407` nodes, but WebKit/Safari-family
     regressed sharply to `36.43 fps` with decoder total about `28.31 ms`. Restore the accepted
     two-head split/unsqueeze/concat branch.
+  - Tried returning a lightweight tensor-shaped object from the decoder worker instead of wrapping
+    worker output in a main-thread ORT `Tensor`. Rendering only needs `type`, `dims`, and `data`, and
+    validation passed, but timing stayed noise-level: WebKit/Safari-family `41.12 fps` and Chrome
+    `46.26 fps`. Keep the ORT tensor wrapper for the worker output.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
