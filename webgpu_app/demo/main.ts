@@ -969,14 +969,34 @@ function createFrameInputState(stepSpec) {
   const inputs = stepSpec.inputs ?? {};
   const actionShape = inputs.actions?.shape ?? [1, 1];
   const noiseSlots = [createNoiseInputSlot(inputs), createNoiseInputSlot(inputs)];
+  const action = new ort.Tensor('int32', new Int32Array(mul(actionShape)), actionShape);
   return {
     spec: stepSpec,
     noiseSlots,
     noiseSlotReady: [false, false],
     noiseSlotIndex: 0,
-    action: new ort.Tensor('int32', new Int32Array(mul(actionShape)), actionShape),
+    action,
     actionValue: null,
     positionInputs: createPositionInputState(stepSpec),
+    stepFeeds:
+      inputs.sample_noise &&
+      inputs.context_noise &&
+      inputs.actions &&
+      inputs.k_cache &&
+      inputs.v_cache &&
+      !inputs.cache_length &&
+      !inputs.sample_position_index &&
+      !inputs.context_position_index &&
+      !inputs.attention_mask &&
+      !inputs.position_index
+        ? {
+            sample_noise: null,
+            context_noise: null,
+            actions: action,
+            k_cache: null,
+            v_cache: null,
+          }
+        : null,
   };
 }
 
@@ -3735,7 +3755,7 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
   const contextNoise = noiseInputs.contextNoise;
   const fetchNames = [activeStep.names.finalZ, activeStep.names.k, activeStep.names.v];
   if (activeStep.names.length) fetchNames.push(activeStep.names.length);
-  const normalStepFeeds = {
+  const normalStepFeeds = frameInputs.stepFeeds ?? {
     sample_noise: sampleNoise,
     context_noise: contextNoise,
     actions: action,
@@ -3749,6 +3769,12 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
       frameInputs.positionInputs,
     ),
   };
+  if (frameInputs.stepFeeds) {
+    frameInputs.stepFeeds.sample_noise = sampleNoise;
+    frameInputs.stepFeeds.context_noise = contextNoise;
+    frameInputs.stepFeeds.k_cache = runtime.cache.k;
+    frameInputs.stepFeeds.v_cache = runtime.cache.v;
+  }
   const pipelineDecoder = Boolean(options.pipelineDecoder && runtime.decoderWorker);
   let pipelinedDecoderStarted = null;
   let pipelinedDecoderOutputs = null;

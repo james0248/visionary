@@ -7651,6 +7651,15 @@ Rejected / kept out:
   green, but the same-code comparison was neutral (`43.16 fps` default versus `43.14 fps` with
   instrumentation forced on), while removing useful dynamics/cache/decoder diagnostics from normal
   benchmark output. Keep the detailed stage timers enabled.
+- Accepted a narrow reusable feed-map cleanup for the current full-head-time WASM step. This path
+  has only `sample_noise`, `context_noise`, `actions`, `k_cache`, and `v_cache` inputs, so the demo
+  now reuses a stable feed object for that exact input contract instead of rebuilding a fresh object
+  and empty position-feed spread every frame. Broader feed-map reuse had been rejected on older
+  paths, so this remains gated to the no-position full-step contract. Validation passed in both
+  browser families: WebKit/Safari-family measured `43.87 fps` (`22.79 ms/frame`, `21.14 ms`
+  dynamics) on a short run and `44.21 fps` (`22.62 ms/frame`, `21.10 ms` dynamics) on the
+  128-frame validation window; Chrome measured `46.35 fps` (`21.57 ms/frame`, `19.64 ms`
+  dynamics).
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
@@ -7663,6 +7672,6 @@ Current WASM conclusion:
   ORT WASM `graphOptimizationLevel=all`, the bundled ORT WASM entrypoint, MHA GQA pretranspose plus
   head-time cache inputs for the derived full-step WASM graph, the full-head-time layout cleanup
   stack, and the full-step head-time dynamics path unless split dynamics is explicitly requested.
-- The current validated default windows are about `46 fps` in headed Chrome and `43.5 fps` in
+- The current validated default windows are about `46.3 fps` in headed Chrome and up to `44.2 fps` in
   WebKit/Safari-family, both preserving `sample_steps=2` and passing visual plus WASM latent
   validation. The `45 fps` target is reached in Chrome but still not in Safari/WebKit.
