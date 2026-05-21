@@ -92,7 +92,7 @@ function benchmarkConfig(options: BenchmarkOptions) {
     browserProfile: process.env.WEBGPU_BENCHMARK_BROWSER_PROFILE ?? null,
     ortModule:
       process.env.WEBGPU_BENCHMARK_ORT_MODULE ??
-      (wasmDefaults ? '/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs' : null),
+      (wasmDefaults ? '/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs' : null),
     wasmNumThreads: process.env.WEBGPU_BENCHMARK_WASM_NUM_THREADS ?? null,
     decoderWorkerPipeline:
       process.env.WEBGPU_BENCHMARK_DECODER_WORKER_PIPELINE ?? (wasmDefaults ? 'true' : null),

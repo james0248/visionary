@@ -98,7 +98,7 @@ const DEFAULT_GRAPH_OPTIMIZATION_LEVEL = requestedBackend === 'wasm' ? 'all' : '
 const DEFAULT_WASM_NUM_THREADS = 3;
 const DEFAULT_ORT_MODULE =
   requestedBackend === 'wasm'
-    ? `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`
+    ? `/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs`
     : `/node_modules/onnxruntime-web/dist/ort.webgpu.bundle.min.mjs`;
 const DEFAULT_ORT_WASM_BASE = `/node_modules/onnxruntime-web/dist/`;
 const DEFAULT_DECODER_WORKER_PIPELINE = requestedBackend === 'wasm';
