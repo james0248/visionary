@@ -95,7 +95,7 @@ const DEFAULT_FULL_DYNAMICS_GRAPH_CAPTURE = browserProfile === 'safari';
 const DEFAULT_DECODER_GRAPH_CAPTURE = browserProfile === 'safari';
 const DEFAULT_GPU_PATCH_RENDERER = true;
 const DEFAULT_GRAPH_OPTIMIZATION_LEVEL = requestedBackend === 'wasm' ? 'all' : 'basic';
-const DEFAULT_WASM_NUM_THREADS = browserProfile === 'safari' ? 3 : 4;
+const DEFAULT_WASM_NUM_THREADS = 3;
 const DEFAULT_ORT_MODULE =
   requestedBackend === 'wasm'
     ? `/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs`

@@ -7567,16 +7567,24 @@ Rejected / kept out:
   `38.45 fps` with the same validation gates passed, dynamics `23.69 ms`, cache wait `1.11 ms`,
   and decoder total `26.76 ms`. This is a reliable improvement over the adjacent split controls
   (`39.39 fps` Chrome and `37.47 fps` WebKit), but it is still well short of the requested `60 fps`.
+- Accepted a post-full-head-time WASM thread retune. The new full-step dynamics shape changes the
+  main/decoder contention balance, so Chrome no longer wants four main ORT threads. Defaulting the
+  main WASM runtime to `3` threads while keeping the decoder worker at `3` threads passed the
+  frame-64 actual-demo validation gates in both browser families: Chrome measured `41.54 fps`
+  (`21.90 ms` dynamics, `1.47 ms` cache wait, `25.05 ms` decoder total), and WebKit/Safari-family
+  measured `38.16 fps` (`23.74 ms` dynamics, `1.14 ms` cache wait, `26.94 ms` decoder total).
+  Rejected nearby controls: Chrome `5/3` regressed to `32.82 fps`, Chrome `2/3` regressed to
+  `38.39 fps`, and WebKit `4/3` regressed to `33.90 fps`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
   MatMul attention for the remaining explicit attention islands, the extended static head-merge
   cleanup including ranked MHA query merges, the decoder singleton-key attention bypass, the decoder
   primitive RMSNorm rewrite, the worker-backed JavaScript cache updater for WASM, the decoder
-  worker pipeline with `decoderWorkerNumThreads=3`, browser-specific main WASM threads
-  (`4` for Chrome/Chromium and `3` for Safari/WebKit), ORT WASM `graphOptimizationLevel=all`,
+  worker pipeline with `decoderWorkerNumThreads=3`, `3` main WASM threads in both browser families,
+  ORT WASM `graphOptimizationLevel=all`,
   MHA GQA pretranspose plus head-time cache inputs for the derived full-step WASM graph, and the
   full-step head-time dynamics path unless split dynamics is explicitly requested.
-- The current validated default windows are about `41.2 fps` in headed Chrome and `38.5 fps` in
+- The current validated default windows are about `41.5 fps` in headed Chrome and `38.2 fps` in
   WebKit/Safari-family, both preserving `sample_steps=2` and passing visual plus WASM latent
   validation. The `30 fps` target is reached, but the requested `60 fps` target is not.
