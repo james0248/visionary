@@ -7729,6 +7729,14 @@ Rejected / kept out:
     with higher decoder total time. Keep decoder `QuickGelu` fused.
   - Checked the `71` MLP residual `Gemm -> Add` sites for bias folding. None are initializer-backed;
     each adds a dynamic residual from a `Squeeze`, so there is no safe Gemm-bias fold to apply.
+  - Serializing the post-squeeze full-head-time dynamics graph through native ORT
+    `ORT_ENABLE_ALL` was CPU-exact and reduced the copied graph from `2561 -> 2479` nodes
+    (`FusedMatMul 0 -> 36`, `Transpose 298 -> 262`, `Unsqueeze 212 -> 166`), but WebKit measured
+    only `43.43 fps`; the restored adjacent control measured `43.94 fps`. Keep the plain exported
+    graph and browser runtime optimizer.
+  - Serializing the Safari/WebKit MHA decoder through native ORT `ORT_ENABLE_ALL` was exact and
+    reduced only `423 -> 419` nodes, but WebKit measured `43.72 fps`, below the restored adjacent
+    control. Keep the plain decoder asset.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
