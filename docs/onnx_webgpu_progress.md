@@ -7860,6 +7860,11 @@ Rejected / kept out:
   file for `final_z`, `candidate_k_entry`, and `candidate_v_entry`. ORT Web loaded it and output
   validation passed, but WebKit measured only `41.34 fps`, slightly below the adjacent accepted ONNX
   control. Keep the ONNX artifact; ORT format does not improve steady-state browser inference here.
+- Rejected decoder-worker-only graph optimization retunes on the current full-head-time path. A
+  temporary query control kept main dynamics at `graphOptimizationLevel=all` but compiled the
+  decoder worker at `extended` or `basic`. Both passed output and latent validation, but WebKit
+  measured `40.73 fps` for `extended` and `39.86 fps` for `basic`, below the restored accepted
+  path. Keep the decoder worker on the same `all` optimization level as the main WASM sessions.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
