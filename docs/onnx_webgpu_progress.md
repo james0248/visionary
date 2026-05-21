@@ -7516,6 +7516,13 @@ Rejected / kept out:
   output-valid, but it did not improve the benchmark: Chrome measured `40.05 fps` and
   WebKit/Safari-family measured `37.42 fps`, effectively the same/noisier than the adjacent clean
   controls. Keep the main decoder session available as a fallback.
+- Rejected a final ORT serialization pass on the extracted split sample/entry WASM graphs. The
+  `ORT_ENABLE_EXTENDED` pass reduced the copied local sample graph `2236 -> 2212` nodes and entry
+  graph `1167 -> 1155` nodes by converting `MatMul + Transpose` islands into `FusedMatMul`, and
+  both browsers passed visual/latent validation. The speed was not reliable: serializing both split
+  files measured Chrome `40.12 fps` but WebKit/Safari-family `37.33 fps`; sample-only measured
+  Chrome `39.52 fps`, and entry-only measured Chrome `39.67 fps`. Restored the accepted split files.
+  The restored control passed at Chrome `40.10 fps` and WebKit/Safari-family `37.51 fps`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
