@@ -2217,6 +2217,36 @@ function createCpuEntryCacheUpdater(spec, manifest) {
             dim);
   const entryIndex = (layer, batchIndex, token, head, dim) =>
     ((((layer * batch + batchIndex) * tokens + token) * heads + head) * headDim + dim);
+  const headTimeHeadStride = contextLength * headDim;
+  const headTimeTokenStride = heads * headTimeHeadStride;
+  const headTimeEntryTokenStride = heads * headDim;
+  const headTimeHeadCount = layers * batch * tokens * heads;
+  const headTimeCacheHeadBases =
+    cacheLayout === 'layer_batch_token_head_time_dim'
+      ? new Int32Array(headTimeHeadCount)
+      : null;
+  const headTimeEntryHeadBases =
+    cacheLayout === 'layer_batch_token_head_time_dim'
+      ? new Int32Array(headTimeHeadCount)
+      : null;
+  if (headTimeCacheHeadBases && headTimeEntryHeadBases) {
+    let index = 0;
+    for (let layer = 0; layer < layers; layer += 1) {
+      for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
+        for (let token = 0; token < tokens; token += 1) {
+          const cacheTokenBase =
+            ((layer * batch + batchIndex) * tokens + token) * headTimeTokenStride;
+          const entryTokenBase =
+            ((layer * batch + batchIndex) * tokens + token) * headTimeEntryTokenStride;
+          for (let head = 0; head < heads; head += 1) {
+            headTimeCacheHeadBases[index] = cacheTokenBase + head * headTimeHeadStride;
+            headTimeEntryHeadBases[index] = entryTokenBase + head * headDim;
+            index += 1;
+          }
+        }
+      }
+    }
+  }
 
   return {
     update(cache, kEntry, vEntry, cacheLength) {
@@ -2291,65 +2321,48 @@ function createCpuEntryCacheUpdater(spec, manifest) {
         return cache;
       }
       if (cacheLayout === 'layer_batch_token_head_time_dim') {
-        const headStride = contextLength * headDim;
-        const tokenStride = heads * headStride;
-        const entryTokenStride = heads * headDim;
-        for (let layer = 0; layer < layers; layer += 1) {
-          for (let batchIndex = 0; batchIndex < batch; batchIndex += 1) {
-            for (let token = 0; token < tokens; token += 1) {
-              const cacheTokenBase =
-                ((layer * batch + batchIndex) * tokens + token) * tokenStride;
-              const entryTokenBase =
-                ((layer * batch + batchIndex) * tokens + token) * entryTokenStride;
-              for (let head = 0; head < heads; head += 1) {
-                const cacheHeadBase = cacheTokenBase + head * headStride;
-                const entryHeadBase = entryTokenBase + head * headDim;
-                if (logicalLength < contextLength) {
-                  const dstTime = Math.min(Math.max(logicalLength, 0), contextLength - 1);
-                  const dstBase = cacheHeadBase + dstTime * headDim;
-                  kCache.set(
-                    kEntryData.subarray(entryHeadBase, entryHeadBase + headDim),
-                    dstBase,
-                  );
-                  vCache.set(
-                    vEntryData.subarray(entryHeadBase, entryHeadBase + headDim),
-                    dstBase,
-                  );
-                  continue;
-                }
-                for (let halfDim = 0; halfDim < halfHeadDim; halfDim += 1) {
-                  const cosTheta = cosValues[halfDim];
-                  const sinTheta = sinValues[halfDim];
-                  let dstLeft = cacheHeadBase + halfDim;
-                  let dstRight = cacheHeadBase + halfHeadDim + halfDim;
-                  let srcLeft = dstLeft + headDim;
-                  let srcRight = dstRight + headDim;
-                  for (let time = 0; time < contextLength - 1; time += 1) {
-                    const left = kCache[srcLeft];
-                    const right = kCache[srcRight];
-                    kCache[dstLeft] = left * cosTheta + right * sinTheta;
-                    kCache[dstRight] = right * cosTheta - left * sinTheta;
-                    dstLeft += headDim;
-                    dstRight += headDim;
-                    srcLeft += headDim;
-                    srcRight += headDim;
-                  }
-                  kCache[cacheHeadBase + (contextLength - 1) * headDim + halfDim] =
-                    kEntryData[entryHeadBase + halfDim];
-                  kCache[cacheHeadBase + (contextLength - 1) * headDim + halfHeadDim + halfDim] =
-                    kEntryData[entryHeadBase + halfHeadDim + halfDim];
-                }
-                vCache.copyWithin(
-                  cacheHeadBase,
-                  cacheHeadBase + headDim,
-                  cacheHeadBase + headStride,
-                );
-                vCache.set(
-                  vEntryData.subarray(entryHeadBase, entryHeadBase + headDim),
-                  cacheHeadBase + headStride - headDim,
-                );
-              }
+        const headStride = headTimeHeadStride;
+        const lastHeadOffset = headStride - headDim;
+        const dstTime = Math.min(Math.max(logicalLength, 0), contextLength - 1);
+        for (let index = 0; index < headTimeHeadCount; index += 1) {
+          const cacheHeadBase = headTimeCacheHeadBases[index];
+          const entryHeadBase = headTimeEntryHeadBases[index];
+          if (logicalLength < contextLength) {
+            let dst = cacheHeadBase + dstTime * headDim;
+            for (let dim = 0; dim < headDim; dim += 1) {
+              kCache[dst] = kEntryData[entryHeadBase + dim];
+              vCache[dst] = vEntryData[entryHeadBase + dim];
+              dst += 1;
             }
+            continue;
+          }
+          for (let halfDim = 0; halfDim < halfHeadDim; halfDim += 1) {
+            const cosTheta = cosValues[halfDim];
+            const sinTheta = sinValues[halfDim];
+            let dstLeft = cacheHeadBase + halfDim;
+            let dstRight = cacheHeadBase + halfHeadDim + halfDim;
+            let srcLeft = dstLeft + headDim;
+            let srcRight = dstRight + headDim;
+            for (let time = 0; time < contextLength - 1; time += 1) {
+              const left = kCache[srcLeft];
+              const right = kCache[srcRight];
+              kCache[dstLeft] = left * cosTheta + right * sinTheta;
+              kCache[dstRight] = right * cosTheta - left * sinTheta;
+              dstLeft += headDim;
+              dstRight += headDim;
+              srcLeft += headDim;
+              srcRight += headDim;
+            }
+            kCache[cacheHeadBase + lastHeadOffset + halfDim] =
+              kEntryData[entryHeadBase + halfDim];
+            kCache[cacheHeadBase + lastHeadOffset + halfHeadDim + halfDim] =
+              kEntryData[entryHeadBase + halfHeadDim + halfDim];
+          }
+          vCache.copyWithin(cacheHeadBase, cacheHeadBase + headDim, cacheHeadBase + headStride);
+          let dst = cacheHeadBase + lastHeadOffset;
+          for (let dim = 0; dim < headDim; dim += 1) {
+            vCache[dst] = vEntryData[entryHeadBase + dim];
+            dst += 1;
           }
         }
         return cache;

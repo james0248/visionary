@@ -7624,18 +7624,35 @@ Rejected / kept out:
   but slightly slower; WebKit main WASM thread counts `2` and `4`, decoder-worker thread count `4`,
   forcing the base decoder, `graphOptimizationLevel=basic`, `graphOptimizationLevel=extended`, and
   `/ort.wasm.min.mjs` all regressed or failed to improve the accepted default.
+- Rejected several more bridge/ONNX trials while chasing the revised `45 fps` browser target. Direct
+  transferable decoder buffers passed validation but regressed WebKit to `40.95 fps` and produced a
+  long frame spike. Using `MessageChannel` instead of `queueMicrotask` reduced decoder wait but did
+  not improve total WebKit fps. Forcing split dynamics on the base slide-entry graph measured
+  `39.30 fps`. A `GroupQueryAttention` full-step trial was CPU-exact against the accepted graph but
+  measured only `42.73 fps` in WebKit. Re-fusing the Safari decoder primitive RMSNorm islands into
+  `SimplifiedLayerNormalization` was valid and reached `43.67 fps` in one short run, but did not
+  compound with the accepted runtime change. Converting all full-step dynamics RMSNorm nodes to
+  primitive arithmetic was also valid but stayed in the same WebKit window at `43.70 fps`.
+- Accepted a head-time CPU cache-updater cleanup for the WASM full-step path. The updater now
+  precomputes per-head cache/entry offsets for the `[layer,batch,token,head,time,dim]` layout and
+  writes the final V entry without constructing a per-head subarray. This keeps the exact same cache
+  math and passed output/latent validation. The short WebKit window improved to `43.76 fps` with
+  cache update around `0.86 ms`; the longer 128-frame WebKit validation passed at `43.49 fps`
+  (`22.99 ms/frame`, `21.48 ms` dynamics, `0.86 ms` cache, `24.02 ms` decoder total). Chrome
+  validation repeated cleanly at `45.97 fps` (`21.75 ms/frame`, `19.83 ms` dynamics, `1.29 ms`
+  cache, `22.94 ms` decoder total) after one noisy Chrome window with a single long frame.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
   MatMul attention for the remaining explicit attention islands, the extended static head-merge
   cleanup including ranked MHA query merges, the optional Safari/WebKit decoder MHA artifact when
   available, the decoder singleton-key attention bypass, the decoder
-  primitive RMSNorm rewrite, the synchronous JavaScript head-time cache updater for WASM, the decoder
-  worker pipeline with `decoderWorkerNumThreads=3` on Chromium and `2` on non-Chromium browser
-  profiles, `3` main WASM threads in both browser families, ORT WASM `graphOptimizationLevel=all`,
-  the bundled ORT WASM entrypoint, MHA GQA pretranspose plus head-time cache inputs for the derived
-  full-step WASM graph, the full-head-time layout cleanup stack, and the full-step head-time dynamics
-  path unless split dynamics is explicitly requested.
-- The current validated default windows are about `46.1 fps` in headed Chrome and `42-43.6 fps` in
+  primitive RMSNorm rewrite, the synchronous JavaScript head-time cache updater for WASM with
+  precomputed head-time offsets, the decoder worker pipeline with `decoderWorkerNumThreads=3` on
+  Chromium and `2` on non-Chromium browser profiles, `3` main WASM threads in both browser families,
+  ORT WASM `graphOptimizationLevel=all`, the bundled ORT WASM entrypoint, MHA GQA pretranspose plus
+  head-time cache inputs for the derived full-step WASM graph, the full-head-time layout cleanup
+  stack, and the full-step head-time dynamics path unless split dynamics is explicitly requested.
+- The current validated default windows are about `46 fps` in headed Chrome and `43.5 fps` in
   WebKit/Safari-family, both preserving `sample_steps=2` and passing visual plus WASM latent
-  validation. The `45 fps` target is reached in Chrome but not yet in Safari/WebKit.
+  validation. The `45 fps` target is reached in Chrome but still not in Safari/WebKit.
