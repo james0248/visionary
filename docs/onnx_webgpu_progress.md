@@ -7484,6 +7484,15 @@ Rejected / kept out:
   measured `39.65 fps`; `extended` passed at `40.21 fps`. Neither beat the adjacent default
   decoder-worker setting at `40.45 fps`, so keep the worker using the same `graphOptimizationLevel`
   as the main WASM sessions.
+- Refreshed native ORT CPU profiling on the current accepted head-time split sample/entry files
+  with `ORT_ENABLE_ALL`. The profile is still broad rather than dominated by one missed rewrite:
+  split sample op-family totals were led by `Gemm` ~`7.6 ms`,
+  `SimplifiedLayerNormalization` ~`6.0 ms`, `Unsqueeze` ~`5.8 ms`, `Gather` ~`5.5 ms`,
+  `MultiHeadAttention` ~`4.8 ms`, then `Concat`/`Slice`/`Split`/`Transpose`/`RotaryEmbedding`.
+  Split entry showed the same smaller shape: `Unsqueeze` ~`3.0 ms`, `Gemm` ~`2.9 ms`, norm
+  ~`2.7 ms`, gather ~`2.5 ms`, MHA ~`2.0 ms`. This matches the browser bottleneck: more narrow
+  node-count cleanup is unlikely to recover the missing `~8 ms`; reaching 60fps probably needs a
+  larger runtime/kernel change.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
