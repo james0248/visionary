@@ -7865,6 +7865,11 @@ Rejected / kept out:
   decoder worker at `extended` or `basic`. Both passed output and latent validation, but WebKit
   measured `40.73 fps` for `extended` and `39.86 fps` for `basic`, below the restored accepted
   path. Keep the decoder worker on the same `all` optimization level as the main WASM sessions.
+- Rejected forcing the direct-`z` decoder on the current full-head-time WASM path. WebKit validation
+  passed and measured `40.98 fps` then `41.23 fps`, which was only noise-level against adjacent
+  accepted-decoder windows. Chrome validation also passed, but regressed to `45.39 fps` versus the
+  accepted Chrome window around `46 fps`. Keep the manifest default: base decoder for Chromium and
+  the Safari/WebKit MHA decoder for Safari-family profiles.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
