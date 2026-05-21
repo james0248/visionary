@@ -7910,6 +7910,16 @@ Rejected / kept out:
   Native Safari now uses `45 fps` as its no-flag default speed gate and passed twice after the timing
   fix (`45.39 fps`, then `45.57 fps`); Chrome passed at `47.18 fps`. Visual and latent validation
   passed in both browsers.
+- Rejected adding static `value_info` shape metadata to custom-op outputs in the full-head-time
+  dynamics ONNX. A local ignored-asset trial propagated shapes through simple ORT contrib ops and
+  added `270` value-info entries, but native Safari timed out during the benchmark execute call
+  instead of producing a faster window. The original ONNX asset was restored to hash
+  `c1f8695bcab54217b7ba81af651f0091d13be0318c3afbd45c0143c5d707af17`.
+- Rejected increasing the native Safari benchmark's excluded warmup window from `32` generated
+  frames. After a restored accepted-path default sample missed the 45 fps gate at `43.80 fps` and
+  the next sample passed at `45.40 fps`, `96` warmup frames looked promising (`46.29 fps`, then
+  `45.17 fps`), but the no-flag default still failed at `44.86 fps` and `192` warmup frames failed
+  at `44.62 fps`. Keep the default warmup unchanged; longer warmup does not solve Safari variance.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
@@ -7925,8 +7935,9 @@ Current WASM conclusion:
   and the full-step head-time dynamics path unless split dynamics is explicitly requested.
 - The current validated default windows are about `46-47 fps` in headed Chrome, about `39-44 fps`
   in Playwright WebKit windows, and about `45 fps` in native Safari depending on warmup/load. The
-  latest clean checks were Chrome `47.18 fps` with visual and latent validation passing and native
-  Safari default-gate checks at `45.39 fps` and `45.57 fps` with visual and latent validation passing.
-  All accepted measurements preserve `sample_steps=2`. Chrome and native Safari now reach the
-  revised `45 fps` target on this machine; Safari still has little margin, and Playwright WebKit
+  latest clean checks were Chrome `47.18 fps` with visual and latent validation passing; native
+  Safari remains variable around the revised target, with recent accepted-path samples from
+  `43.80 fps` to `46.29 fps` while visual and latent validation continued to pass.
+  All accepted measurements preserve `sample_steps=2`. Chrome reaches the revised `45 fps` target
+  on this machine; native Safari can reach it but is not reliable enough yet, and Playwright WebKit
   remains useful for validation but is noisier/slower than native Safari.
