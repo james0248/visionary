@@ -7740,6 +7740,32 @@ Rejected / kept out:
     and past K/V gathers. It failed CPU exactness before browser timing (`final_z` max abs about
     `3.69`), so the ORT contrib MHA past-input semantics/layout are not a drop-in replacement for
     the accepted explicit cache append graph.
+- Rejected several additional post-45fps probes on the current full-head-time WASM path:
+  - A rank-2 `SimplifiedLayerNormalization` branch cleanup rewrote `69`
+    `Unsqueeze -> SimplifiedLayerNormalization -> Squeeze -> Gemm` branches to run the norm on the
+    already-squeezed tensor with squeezed scale initializers. It removed `70` graph nodes
+    (`2561 -> 2491`) and was CPU bit-exact for `final_z`, `candidate_k_entry`, and
+    `candidate_v_entry`, but browser timing did not improve reliably: WebKit/Safari-family was only
+    noise-level in the loaded window and Chrome regressed slightly (`46.02 fps` trial versus the
+    restored accepted asset at `45.95 fps` in the adjacent clean rerun). Restore the accepted graph;
+    the smaller rank-2 norm branch does not move the ORT WASM frame budget.
+  - Rechecked the public `onnxruntime-web` package index. There is no newer runtime than the already
+    rejected `1.27.0-dev.20260506-673c3320fc`; latest stable is still `1.26.0`, also already
+    rejected on this path. Do not churn ignored `node_modules` for the same runtime builds.
+  - Narrowed the failed temporal MHA past-cache rewrite to one attention site. Feeding ORT
+    `MultiHeadAttention` with current K/V plus `past_key`/`past_value` did not reproduce the
+    accepted explicit full-K/V 4D inputs (`max_abs` about `2.62` for that site), and adding
+    `past_sequence_length` did not change the mismatch. Supplying the already-concatenated 4D K/V
+    inputs remains exact. This confirms the past-input path is a semantic/layout mismatch, not just
+    a whole-graph rewrite bug.
+  - Checked whether the existing `breakout_tokenizer_decoder_b1_t64` artifact could support a
+    batched decoder pipeline. Native ORT timing was worse per frame than the accepted single-frame
+    decoder (`~6.0 ms/frame` for `t64` versus `~2.8 ms/frame` for `t1`), so that artifact is not a
+    useful throughput path.
+  - Retested disabling the decoder worker on the current full-head-time graph as a contention
+    control. The Chrome actual-demo benchmark did not complete a short 32-frame validation window in
+    over 90 seconds and was terminated. Keep the decoder worker pipeline; serial main-thread
+    decoding is not viable.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
