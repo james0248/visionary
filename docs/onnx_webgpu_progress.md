@@ -7894,6 +7894,11 @@ Rejected / kept out:
   the earlier static-zero-latent failure from preallocating all outputs, and Chrome stayed valid at
   `46.60 fps`, but native Safari was inconsistent across adjacent runs (`45.06`, `44.92`, then
   `44.17 fps`). Keep the default ORT-allocated WASM outputs.
+- Tightened native Safari benchmark cleanup. The WebDriver runner now best-effort kills only the
+  `Safari --automation` process after deleting the session so repeated benchmark runs do not leave
+  extra WebKit content processes behind. This is benchmark hygiene, not a runtime speedup: the
+  explicit Safari `--min-fps 45` run still failed at `44.08 fps`, while default Safari validation
+  passed at `44.95 fps`; Chrome validation passed at `45.27 fps`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

@@ -126,6 +126,18 @@ async function ensureSafariDriver(port: number) {
   return proc;
 }
 
+function stopSafariAutomation() {
+  if (process.platform !== 'darwin') return;
+  try {
+    Bun.spawnSync(['pkill', '-f', 'Safari --automation -ApplePersistenceIgnoreStateQuietly YES'], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
 function demoUrl(options: CliOptions) {
   const params = new URLSearchParams();
   params.set('fps', '0');
@@ -597,4 +609,5 @@ try {
 } finally {
   driverProcess?.kill();
   serverProcess?.kill();
+  stopSafariAutomation();
 }
