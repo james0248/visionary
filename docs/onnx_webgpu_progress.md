@@ -7870,6 +7870,15 @@ Rejected / kept out:
   accepted-decoder windows. Chrome validation also passed, but regressed to `45.39 fps` versus the
   accepted Chrome window around `46 fps`. Keep the manifest default: base decoder for Chromium and
   the Safari/WebKit MHA decoder for Safari-family profiles.
+- Accepted a small Safari-family WASM demo hot-path cleanup for the revised `45 fps` target. The
+  CPU head-time cache updater now handles the short-cache fill case before the per-head slide loop,
+  which removes a branch from the full-cache steady-state path, and frame timing records the stable
+  `latent` property directly instead of spreading a validation object each frame. Native Safari
+  passed at `45.45 fps` over `96` timed frames (`20.54 ms` dynamics, `0.84 ms` cache update,
+  `22.90 ms` decoder total), and Chrome passed at `46.50 fps` over `96` timed frames with visual and
+  latent validation passing in both browsers. Rejected adjacent knobs: `decoderWorkerNumThreads=1`
+  dropped native Safari to `33.44 fps`, and an in-place frame-waiter compaction trial regressed the
+  next Safari window to `44.73 fps`.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

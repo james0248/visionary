@@ -2344,18 +2344,22 @@ function createCpuEntryCacheUpdater(spec, manifest) {
         const headStride = headTimeHeadStride;
         const lastHeadOffset = headStride - headDim;
         const dstTime = Math.min(Math.max(logicalLength, 0), contextLength - 1);
-        for (let index = 0; index < headTimeHeadCount; index += 1) {
-          const cacheHeadBase = headTimeCacheHeadBases[index];
-          const entryHeadBase = headTimeEntryHeadBases[index];
-          if (logicalLength < contextLength) {
+        if (logicalLength < contextLength) {
+          for (let index = 0; index < headTimeHeadCount; index += 1) {
+            const cacheHeadBase = headTimeCacheHeadBases[index];
+            const entryHeadBase = headTimeEntryHeadBases[index];
             let dst = cacheHeadBase + dstTime * headDim;
             for (let dim = 0; dim < headDim; dim += 1) {
               kCache[dst] = kEntryData[entryHeadBase + dim];
               vCache[dst] = vEntryData[entryHeadBase + dim];
               dst += 1;
             }
-            continue;
           }
+          return cache;
+        }
+        for (let index = 0; index < headTimeHeadCount; index += 1) {
+          const cacheHeadBase = headTimeCacheHeadBases[index];
+          const entryHeadBase = headTimeEntryHeadBases[index];
           for (let halfDim = 0; halfDim < halfHeadDim; halfDim += 1) {
             const cosTheta = cosValues[halfDim];
             const sinTheta = sinValues[halfDim];
@@ -3687,12 +3691,19 @@ function waitForFrameCount(targetFrame, timeoutMs = 240_000) {
   });
 }
 
-function recordGeneratedFrame(started, stages = {}, validation = {}) {
+function recordGeneratedFrame(started, stages = {}, validation: { latent?: unknown } = {}) {
   frameCount += 1;
   statsFramesSinceUpdate += 1;
   const now = performance.now();
   const elapsed = now - started;
-  frameStats.push({ frame: frameCount, started, completed: now, elapsedMs: elapsed, stages, ...validation });
+  frameStats.push({
+    frame: frameCount,
+    started,
+    completed: now,
+    elapsedMs: elapsed,
+    stages,
+    latent: validation.latent ?? null,
+  });
   if (frameStats.length > 512) frameStats = frameStats.slice(-512);
   resolveFrameWaiters();
   const statsWindowStart = lastStatsUpdateTime || lastFrameTime;
