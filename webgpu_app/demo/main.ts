@@ -3322,9 +3322,7 @@ async function createRuntimeForBackend(backend, loaded) {
       fullStepNames.cacheUpdate === 'entry'
         ? backend === 'webgpu'
           ? createEntryCacheUpdater(device, loaded.fullStepSpec, loaded.manifest)
-          : typeof Worker === 'function'
-            ? createWorkerEntryCacheUpdater(cacheUpdateSpec, loaded.manifest)
-            : createCpuEntryCacheUpdater(cacheUpdateSpec, loaded.manifest)
+          : createCpuEntryCacheUpdater(cacheUpdateSpec, loaded.manifest)
         : null;
     decoderWorker =
       backend === 'wasm' && decoderWorkerPipelineEnabled && typeof Worker === 'function'
