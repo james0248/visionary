@@ -113,6 +113,12 @@ def export_full_wasm_headtime_dynamics_model(
     rewrites = {
         "mha_gqa_pretranspose": rewrite_split_mha_gqa_pretranspose_for_wasm(output_path),
         "cache_bhntd": rewrite_split_cache_bhntd_for_wasm(output_path),
+        "head_split_unsqueeze_concat": rewrite_head_split_unsqueeze_concats_for_wasm(
+            output_path
+        ),
+        "identity_head_gather": rewrite_identity_head_gathers_for_wasm(output_path),
+        "packed_qkv_head_groups": rewrite_packed_qkv_head_groups_for_wasm(output_path),
+        "swiglu_rank2": rewrite_swiglu_rank2_islands_for_webgpu(output_path),
     }
     return output_path, rewrites
 
@@ -6697,6 +6703,609 @@ def rewrite_singleton_key_attention_for_wasm(path: Path, enabled: bool = True) -
             "Bypass attention chains whose score tensor has a singleton key axis. "
             "Softmax over a 1-wide axis is exactly one, so the attention result is "
             "the value tensor."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "rewrites": {key: int(value) for key, value in rewrites.items()},
+        "rewrite_examples": examples,
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+    }
+
+
+def rewrite_head_split_unsqueeze_concats_for_wasm(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = ("Split", "Unsqueeze", "Concat", "Reshape", "Transpose")
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    node_by_output: dict[str, onnx.NodeProto] = {}
+    for node in model.graph.node:
+        for output_name in node.output:
+            if output_name:
+                node_by_output[output_name] = node
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def int_initializer(name: str) -> tuple[int, ...] | None:
+        value = initializer_arrays.get(name)
+        if value is None or not np.issubdtype(value.dtype, np.integer):
+            return None
+        return tuple(int(item) for item in np.asarray(value).reshape(-1))
+
+    def graph_input_shape(name: str) -> tuple[int, ...] | None:
+        for graph_input in model.graph.input:
+            if graph_input.name == name:
+                shape = _tensor_shape(graph_input)
+                return tuple(int(dim) for dim in shape) if shape is not None else None
+        return None
+
+    cache_shape = graph_input_shape("k_cache") or graph_input_shape("v_cache")
+    token_count = cache_shape[2] if cache_shape and len(cache_shape) >= 3 else None
+    if token_count is None or token_count <= 0:
+        return {
+            "enabled": True,
+            "tool": "custom_head_split_unsqueeze_concat_wasm_rewrite",
+            "reason": "could not infer token count from cache inputs",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": 0,
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    replacements: dict[str, list[onnx.NodeProto]] = {}
+    remove_nodes: set[str] = set()
+    stale_value_info: set[str] = set()
+    new_initializers: list[onnx.TensorProto] = []
+    examples: list[dict[str, Any]] = []
+
+    for concat in model.graph.node:
+        if (
+            concat.op_type != "Concat"
+            or len(concat.input) < 2
+            or int(attr_value(concat, "axis", 0)) != 1
+        ):
+            continue
+        unsqueezes: list[onnx.NodeProto] = []
+        split: onnx.NodeProto | None = None
+        eligible = True
+        for input_name in concat.input:
+            unsqueeze = node_by_output.get(input_name)
+            if (
+                unsqueeze is None
+                or unsqueeze.op_type != "Unsqueeze"
+                or len(unsqueeze.input) < 2
+                or int_initializer(unsqueeze.input[1]) != (0, 1)
+                or len(unsqueeze.output) != 1
+            ):
+                eligible = False
+                break
+            candidate_split = node_by_output.get(unsqueeze.input[0])
+            if (
+                candidate_split is None
+                or candidate_split.op_type != "Split"
+                or len(candidate_split.input) < 2
+                or int(attr_value(candidate_split, "axis", 0)) != 1
+            ):
+                eligible = False
+                break
+            if split is None:
+                split = candidate_split
+            elif split is not candidate_split:
+                eligible = False
+                break
+            unsqueezes.append(unsqueeze)
+        if not eligible or split is None:
+            continue
+        split_sizes = int_initializer(split.input[1])
+        if (
+            split_sizes is None
+            or len(split_sizes) != len(concat.input)
+            or len(split.output) != len(split_sizes)
+            or len(set(split_sizes)) != 1
+            or list(split.output) != [unsqueeze.input[0] for unsqueeze in unsqueezes]
+            or any(len(consumers.get(output_name, [])) != 1 for output_name in split.output)
+            or any(len(consumers.get(unsqueeze.output[0], [])) != 1 for unsqueeze in unsqueezes)
+        ):
+            continue
+
+        head_count = len(split_sizes)
+        head_dim = split_sizes[0]
+        if head_count <= 1 or head_dim <= 0:
+            continue
+        prefix = node_key(concat)
+        shape_name = f"{prefix}__head_split_unsqueeze_concat_shape"
+        pretranspose = f"{prefix}__head_split_unsqueeze_concat_pretranspose"
+        new_initializers.append(
+            onnx.numpy_helper.from_array(
+                np.asarray((1, int(token_count), head_count, head_dim), dtype=np.int64),
+                shape_name,
+            )
+        )
+        replacements[node_key(split)] = [
+            onnx.helper.make_node(
+                "Reshape",
+                [split.input[0], shape_name],
+                [pretranspose],
+                name=f"{prefix}__head_split_unsqueeze_concat_reshape",
+            ),
+            onnx.helper.make_node(
+                "Transpose",
+                [pretranspose],
+                list(concat.output),
+                name=f"{prefix}__head_split_unsqueeze_concat_transpose",
+                perm=[0, 2, 1, 3],
+            ),
+        ]
+        remove_nodes.add(node_key(concat))
+        remove_nodes.update(node_key(unsqueeze) for unsqueeze in unsqueezes)
+        stale_value_info.update(split.output)
+        stale_value_info.update(unsqueeze.output[0] for unsqueeze in unsqueezes)
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "split": split.name,
+                    "concat": concat.name,
+                    "heads": head_count,
+                    "head_dim": head_dim,
+                    "token_count": int(token_count),
+                    "output": concat.output[0],
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_head_split_unsqueeze_concat_wasm_rewrite",
+            "reason": "no eligible Split -> Unsqueeze -> Concat head layouts found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": 0,
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in remove_nodes:
+            continue
+        rewritten_nodes.extend(replacements.get(key, [node]))
+
+    stale_value_info.update(
+        name
+        for nodes in replacements.values()
+        for node in nodes
+        for name in node.output[:-1]
+    )
+    kept_value_info = [
+        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    model.graph.initializer.extend(new_initializers)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_head_split_unsqueeze_concat_wasm_rewrite",
+        "reason": (
+            "Replace static Split -> Unsqueeze -> Concat head layout islands with "
+            "one Reshape plus Transpose for the ORT WASM CPU path."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "rewrites": len(replacements),
+        "rewrite_examples": examples,
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+    }
+
+
+def rewrite_identity_head_gathers_for_wasm(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = ("Gather", "Reshape")
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    replacements: dict[str, onnx.NodeProto] = {}
+    stale_value_info: set[str] = set()
+    new_initializers: list[onnx.TensorProto] = []
+    examples: list[dict[str, Any]] = []
+
+    for gather in model.graph.node:
+        if gather.op_type != "Gather" or len(gather.input) < 2 or len(gather.output) != 1:
+            continue
+        indices = initializer_arrays.get(gather.input[1])
+        if (
+            indices is None
+            or indices.shape != (8, 32)
+            or int(attr_value(gather, "axis", -1)) != 1
+            or not np.array_equal(np.asarray(indices).reshape(-1), np.arange(256))
+        ):
+            continue
+        prefix = node_key(gather)
+        shape_name = f"{prefix}__identity_gather_reshape_shape"
+        new_initializers.append(
+            onnx.numpy_helper.from_array(np.asarray((-1, 8, 32), dtype=np.int64), shape_name)
+        )
+        replacements[prefix] = onnx.helper.make_node(
+            "Reshape",
+            [gather.input[0], shape_name],
+            list(gather.output),
+            name=f"{prefix}__identity_gather_reshape",
+        )
+        stale_value_info.update(gather.output)
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "gather": gather.name,
+                    "input": gather.input[0],
+                    "output": gather.output[0],
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_identity_head_gather_wasm_rewrite",
+            "reason": "no eligible identity 8x32 head Gather nodes found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": 0,
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    rewritten_nodes = [
+        replacements.get(node_key(node), node)
+        for node in model.graph.node
+    ]
+    used_inputs = {
+        input_name for node in rewritten_nodes for input_name in node.input if input_name
+    }
+    kept_initializers = [
+        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
+    ]
+    kept_value_info = [
+        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.initializer[:]
+    model.graph.initializer.extend(kept_initializers)
+    model.graph.initializer.extend(new_initializers)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_identity_head_gather_wasm_rewrite",
+        "reason": (
+            "Replace identity 8x32 head Gather layout nodes with Reshape. The Gather "
+            "indices are exactly 0..255, so this only changes the view shape."
+        ),
+        "node_count_before": int(sum(before.values())),
+        "node_count_after": int(sum(after.values())),
+        "rewrites": len(replacements),
+        "rewrite_examples": examples,
+        "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+        "tracked_ops_after": {op: int(after.get(op, 0)) for op in tracked_ops},
+    }
+
+
+def rewrite_packed_qkv_head_groups_for_wasm(path: Path) -> dict[str, Any]:
+    before = op_counts(path)
+    tracked_ops = ("Split", "Unsqueeze", "Concat", "Reshape", "Transpose")
+    model = onnx.load(path.as_posix(), load_external_data=True)
+    initializer_arrays = {
+        initializer.name: onnx.numpy_helper.to_array(initializer)
+        for initializer in model.graph.initializer
+    }
+    consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
+    for node in model.graph.node:
+        for input_name in node.input:
+            consumers[input_name].append(node)
+
+    def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
+        for attr in node.attribute:
+            if attr.name == name:
+                return onnx.helper.get_attribute_value(attr)
+        return default
+
+    def int_initializer(name: str) -> tuple[int, ...] | None:
+        value = initializer_arrays.get(name)
+        if value is None or not np.issubdtype(value.dtype, np.integer):
+            return None
+        return tuple(int(item) for item in np.asarray(value).reshape(-1))
+
+    def grouped_layout_nodes(
+        prefix: str,
+        input_name: str,
+        output_name: str,
+        axes: tuple[int, ...],
+        concat_axis: int,
+        heads: int = 2,
+        head_dim: int = 32,
+    ) -> tuple[list[onnx.NodeProto], list[onnx.TensorProto]] | None:
+        if axes == (1, 2):
+            shape = (
+                (-1, heads, 1, head_dim)
+                if concat_axis == 1
+                else (-1, 1, heads, head_dim)
+            )
+            shape_name = f"{prefix}__coalesced_head_group_shape_{concat_axis}"
+            return (
+                [
+                    onnx.helper.make_node(
+                        "Reshape",
+                        [input_name, shape_name],
+                        [output_name],
+                        name=f"{prefix}__coalesced_head_group_reshape_{concat_axis}",
+                    )
+                ],
+                [
+                    onnx.numpy_helper.from_array(
+                        np.asarray(shape, dtype=np.int64), shape_name
+                    )
+                ],
+            )
+        if axes == (0, 2) and concat_axis == 2:
+            shape_name = f"{prefix}__coalesced_head_group_shape"
+            return (
+                [
+                    onnx.helper.make_node(
+                        "Reshape",
+                        [input_name, shape_name],
+                        [output_name],
+                        name=f"{prefix}__coalesced_head_group_reshape",
+                    )
+                ],
+                [
+                    onnx.numpy_helper.from_array(
+                        np.asarray((1, -1, heads, head_dim), dtype=np.int64),
+                        shape_name,
+                    )
+                ],
+            )
+        if axes == (0, 1) and concat_axis == 1:
+            shape_name = f"{prefix}__coalesced_head_group_shape"
+            pretranspose = f"{prefix}__coalesced_head_group_pretranspose"
+            return (
+                [
+                    onnx.helper.make_node(
+                        "Reshape",
+                        [input_name, shape_name],
+                        [pretranspose],
+                        name=f"{prefix}__coalesced_head_group_reshape",
+                    ),
+                    onnx.helper.make_node(
+                        "Transpose",
+                        [pretranspose],
+                        [output_name],
+                        name=f"{prefix}__coalesced_head_group_transpose",
+                        perm=[0, 2, 1, 3],
+                    ),
+                ],
+                [
+                    onnx.numpy_helper.from_array(
+                        np.asarray((1, -1, heads, head_dim), dtype=np.int64),
+                        shape_name,
+                    )
+                ],
+            )
+        return None
+
+    replacements: dict[str, list[onnx.NodeProto]] = {}
+    remove_nodes: set[str] = set()
+    stale_value_info: set[str] = set()
+    new_initializers: list[onnx.TensorProto] = []
+    examples: list[dict[str, Any]] = []
+    rewrites = Counter()
+
+    split_patterns = {
+        (32, 32, 256, 32, 32): (
+            (64, 256, 64),
+            ((0, 1), (2,), (3, 4)),
+        ),
+        (32, 32, 32, 32, 256): (
+            (64, 64, 256),
+            ((0, 1), (2, 3), (4,)),
+        ),
+    }
+
+    for split in model.graph.node:
+        if (
+            split.op_type != "Split"
+            or len(split.input) < 2
+            or int(attr_value(split, "axis", 0)) != 1
+        ):
+            continue
+        split_sizes = int_initializer(split.input[1])
+        if split_sizes not in split_patterns:
+            continue
+        grouped_sizes, groups = split_patterns[split_sizes]
+        if len(split.output) != len(split_sizes):
+            continue
+
+        prefix = node_key(split)
+        split_sizes_name = f"{prefix}__coalesced_head_group_split_sizes"
+        grouped_outputs: list[str] = []
+        replacement_nodes: list[onnx.NodeProto] = []
+        replacement_initializers = [
+            onnx.numpy_helper.from_array(
+                np.asarray(grouped_sizes, dtype=np.int64), split_sizes_name
+            )
+        ]
+        eligible = True
+        pair_infos: list[tuple[tuple[int, ...], str, list[onnx.NodeProto], list[onnx.NodeProto]]] = []
+        for group in groups:
+            if len(group) == 1:
+                grouped_outputs.append(split.output[group[0]])
+                continue
+            group_name = f"{split.output[group[0]]}__coalesced_{len(group)}x32"
+            unsqueezes: list[onnx.NodeProto] = []
+            for index in group:
+                output_consumers = consumers.get(split.output[index], [])
+                if len(output_consumers) != 1 or output_consumers[0].op_type != "Unsqueeze":
+                    eligible = False
+                    break
+                unsqueezes.append(output_consumers[0])
+            if not eligible:
+                break
+            axes = [int_initializer(unsqueeze.input[1]) for unsqueeze in unsqueezes]
+            if axes[0] is None or any(axis != axes[0] for axis in axes):
+                eligible = False
+                break
+            concat_inputs = [unsqueeze.output[0] for unsqueeze in unsqueezes]
+            concat_nodes = [
+                node
+                for node in consumers.get(unsqueezes[0].output[0], [])
+                if node.op_type == "Concat" and list(node.input) == concat_inputs
+            ]
+            if not concat_nodes:
+                eligible = False
+                break
+            concat_keys = {node_key(node) for node in concat_nodes}
+            for unsqueeze in unsqueezes:
+                if {
+                    node_key(node) for node in consumers.get(unsqueeze.output[0], [])
+                } != concat_keys:
+                    eligible = False
+                    break
+            if not eligible:
+                break
+            grouped_outputs.append(group_name)
+            pair_infos.append((group, group_name, unsqueezes, concat_nodes))
+
+        if not eligible:
+            continue
+
+        replacement_nodes.append(
+            onnx.helper.make_node(
+                "Split",
+                [split.input[0], split_sizes_name],
+                grouped_outputs,
+                name=f"{prefix}__coalesced_head_group_split",
+                axis=1,
+            )
+        )
+        for group, group_name, unsqueezes, concat_nodes in pair_infos:
+            axes = int_initializer(unsqueezes[0].input[1])
+            assert axes is not None
+            for concat in concat_nodes:
+                layout = grouped_layout_nodes(
+                    node_key(concat),
+                    group_name,
+                    concat.output[0],
+                    axes,
+                    int(attr_value(concat, "axis", 0)),
+                )
+                if layout is None:
+                    eligible = False
+                    break
+                layout_nodes, layout_initializers = layout
+                replacement_nodes.extend(layout_nodes)
+                replacement_initializers.extend(layout_initializers)
+                remove_nodes.add(node_key(concat))
+                stale_value_info.update(concat.output)
+            if not eligible:
+                break
+            remove_nodes.update(node_key(unsqueeze) for unsqueeze in unsqueezes)
+            stale_value_info.update(split.output[index] for index in group)
+            stale_value_info.update(unsqueeze.output[0] for unsqueeze in unsqueezes)
+        if not eligible:
+            continue
+
+        replacements[prefix] = replacement_nodes
+        new_initializers.extend(replacement_initializers)
+        rewrites[str(split_sizes)] += 1
+        if len(examples) < 12:
+            examples.append(
+                {
+                    "split": split.name,
+                    "old_sizes": list(split_sizes),
+                    "new_sizes": list(grouped_sizes),
+                    "groups": [list(group) for group in groups],
+                }
+            )
+
+    if not replacements:
+        return {
+            "enabled": True,
+            "tool": "custom_packed_qkv_head_group_wasm_rewrite",
+            "reason": "no eligible packed QKV head-group Split islands found",
+            "node_count_before": int(sum(before.values())),
+            "node_count_after": int(sum(before.values())),
+            "rewrites": {},
+            "rewrite_examples": [],
+            "tracked_ops_before": {op: int(before.get(op, 0)) for op in tracked_ops},
+            "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
+        }
+
+    rewritten_nodes: list[onnx.NodeProto] = []
+    for node in model.graph.node:
+        key = node_key(node)
+        if key in remove_nodes:
+            continue
+        rewritten_nodes.extend(replacements.get(key, [node]))
+
+    used_inputs = {
+        input_name for node in rewritten_nodes for input_name in node.input if input_name
+    }
+    kept_initializers = [
+        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
+    ]
+    kept_value_info = [
+        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
+    ]
+    del model.graph.node[:]
+    model.graph.node.extend(rewritten_nodes)
+    del model.graph.initializer[:]
+    model.graph.initializer.extend(kept_initializers)
+    model.graph.initializer.extend(new_initializers)
+    del model.graph.value_info[:]
+    model.graph.value_info.extend(kept_value_info)
+    external_data_path(path).unlink(missing_ok=True)
+    onnx.save_model(model, path.as_posix(), save_as_external_data=False)
+
+    after = op_counts(path)
+    return {
+        "enabled": True,
+        "tool": "custom_packed_qkv_head_group_wasm_rewrite",
+        "reason": (
+            "Coalesce adjacent 32-wide packed QKV Split outputs into 64-wide head "
+            "groups, replacing immediate Unsqueeze/Concat layout restoration with "
+            "Reshape/Transpose views."
         ),
         "node_count_before": int(sum(before.values())),
         "node_count_after": int(sum(after.values())),

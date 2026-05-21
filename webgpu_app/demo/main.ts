@@ -3842,6 +3842,10 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
     latent = tensorSummaryForValidation(zOutput);
   }
   stages.dynamicsMs = performance.now() - dynamicsStarted;
+  if (pipelineDecoder && !pipelinedDecoderOutputs) {
+    pipelinedDecoderStarted = performance.now();
+    pipelinedDecoderOutputs = runWorkerDecoder(runtime, zOutput);
+  }
   prefillNextNoiseInputSlot(frameInputs);
   if (usedGraphCaptureStep) activeStep.graphCapture.capturedOnce = true;
   const preserveStepOutputs = Boolean(
@@ -3865,10 +3869,6 @@ async function generateFrame(options: { pipelineDecoder?: boolean; debugCacheUpd
         )
       : null;
 
-  if (pipelineDecoder && !pipelinedDecoderOutputs) {
-    pipelinedDecoderStarted = performance.now();
-    pipelinedDecoderOutputs = runWorkerDecoder(runtime, zOutput);
-  }
   if (!pipelineDecoder) {
     const decoderStarted = performance.now();
     const decoderOutputs = await runDecoder(runtime, zOutput);
@@ -3979,6 +3979,10 @@ function scheduleStreamLoop(delayMs) {
   streamLoopPending = true;
   if (delayMs > 0 || typeof MessageChannel === 'undefined') {
     window.setTimeout(runScheduledStreamLoop, delayMs);
+    return;
+  }
+  if (typeof queueMicrotask === 'function') {
+    queueMicrotask(runScheduledStreamLoop);
     return;
   }
   if (!streamLoopChannel) {
