@@ -114,13 +114,13 @@ test('world model demo starts wasm from a full cache and keeps it full @demo', a
   const initialCacheState = await page.evaluate(() => {
     const runtime = (window as any).visionaryDemoDebug.runtime;
     return {
-      asyncCacheUpdater: Boolean(runtime.cacheUpdater?.async),
+      cacheUpdater: Boolean(runtime.cacheUpdater),
       contextLength: runtime.contextLength,
       decoderWorker: Boolean(runtime.decoderWorker),
       initialLength: runtime.cache.length.data[0],
     };
   });
-  expect(initialCacheState.asyncCacheUpdater).toBe(true);
+  expect(initialCacheState.cacheUpdater).toBe(true);
   expect(initialCacheState.decoderWorker).toBe(true);
   expect(initialCacheState.initialLength).toBe(initialCacheState.contextLength);
 

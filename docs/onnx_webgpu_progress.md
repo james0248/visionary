@@ -7821,6 +7821,17 @@ Rejected / kept out:
     Box-Muller noise fills from the hot path. After fixing the trial to initialize/reset the ring
     correctly, validation passed with `noiseRingSize=256`, but WebKit/Safari-family measured only
     `40.89 fps`. Keep the existing two-slot synchronous noise fill.
+  - Tried two remaining local ORT loader entrypoints not worth promoting. `/ort.bundle.min.mjs`
+    validated but regressed WebKit/Safari-family to `37.12 fps`, and `/ort.wasm.mjs` validated but
+    stayed below the accepted bundled WASM entrypoint at `41.00 fps`. Keep
+    `/ort.wasm.bundle.min.mjs`.
+- Aligned the manually opened WASM demo and standalone demo build with the accepted benchmark
+  runtime by changing the default `data-wasm-ort-module` / bundled vendor module from
+  `ort.wasm.min.mjs` to `ort.wasm.bundle.min.mjs`. This does not change the benchmark, which
+  already passed that module explicitly, but it fixes the old mismatch where the actual demo could
+  be slower than the benchmark unless the URL overrode `ortModule`. The WASM demo smoke now runs
+  without an explicit `ortModule` override, and the smoke assertion now checks for the accepted
+  full-head-time cache updater instead of requiring the older async updater shape.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,

@@ -36,7 +36,7 @@ const wasmAssetBase =
 const ortModule =
   args.get('--ort-module') ?? './vendor/onnxruntime-web/ort.webgpu.bundle.min.mjs';
 const wasmOrtModule =
-  args.get('--wasm-ort-module') ?? './vendor/onnxruntime-web/ort.wasm.min.mjs';
+  args.get('--wasm-ort-module') ?? './vendor/onnxruntime-web/ort.wasm.bundle.min.mjs';
 const ortWasmBase = args.get('--ort-wasm-base') ?? './vendor/onnxruntime-web/';
 
 const demoDir = resolve('demo');
@@ -103,6 +103,10 @@ mkdirSync(vendorDir, { recursive: true });
 copyFileSync(
   join(ortDistDir, 'ort.webgpu.bundle.min.mjs'),
   join(vendorDir, 'ort.webgpu.bundle.min.mjs'),
+);
+copyFileSync(
+  join(ortDistDir, 'ort.wasm.bundle.min.mjs'),
+  join(vendorDir, 'ort.wasm.bundle.min.mjs'),
 );
 copyFileSync(join(ortDistDir, 'ort.wasm.min.mjs'), join(vendorDir, 'ort.wasm.min.mjs'));
 for (const file of readdirSync(ortDistDir)) {
