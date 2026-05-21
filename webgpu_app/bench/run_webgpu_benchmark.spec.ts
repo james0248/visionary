@@ -427,7 +427,6 @@ async function runBenchmark(
     const outputValidation = await collectVisualValidation(page, outputValidationFrames);
     await resetDemo(page);
     const warmup = await runDemoStreamWindow(page, config.warmupFrames);
-    await resetDemo(page);
     const timed = await runDemoStreamWindow(page, config.timedFrames);
     const finalRuntime = await runtimeSnapshot(page);
     await pauseDemo(page);

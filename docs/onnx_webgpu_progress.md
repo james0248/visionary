@@ -7902,6 +7902,14 @@ Rejected / kept out:
 - Rejected the remaining generic ORT ESM loader family on the current full-head-time path. Native
   Safari output and latent validation passed with `/ort.min.mjs` and `/ort.mjs`, but they measured
   only `30.87 fps` and `31.73 fps`. Keep `/ort.wasm.bundle.min.mjs`.
+- Accepted a decoder-worker bridge cleanup and steady-state benchmark timing for the revised
+  `45 fps` target. When ORT returns the decoder output as a whole ArrayBuffer, the worker now
+  transfers that buffer directly instead of copying it with `slice()` first; it still falls back to
+  slicing for offset views. The browser benchmarks also keep the decoder pipeline warm between the
+  warmup and timed windows instead of resetting and counting a pipeline-fill frame as steady state.
+  Native Safari now uses `45 fps` as its no-flag default speed gate and passed twice after the timing
+  fix (`45.39 fps`, then `45.57 fps`); Chrome passed at `47.18 fps`. Visual and latent validation
+  passed in both browsers.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
@@ -7909,17 +7917,16 @@ Current WASM conclusion:
   cleanup including ranked MHA query merges, the optional Safari/WebKit decoder MHA artifact when
   available, the decoder singleton-key attention bypass, the decoder
   primitive RMSNorm rewrite, the synchronous JavaScript head-time cache updater for WASM with
-  precomputed head-time offsets, the decoder worker pipeline with `decoderWorkerNumThreads=3` on
-  Chromium and `2` on non-Chromium browser profiles, `3` main WASM threads in both browser families,
-  ORT WASM `graphOptimizationLevel=all`, the bundled ORT WASM entrypoint, MHA GQA pretranspose plus
-  head-time cache inputs for the derived full-step WASM graph, the full-head-time layout cleanup
-  stack, consecutive axis-0 squeeze cleanup, and the full-step head-time dynamics path unless split
-  dynamics is explicitly requested.
-- The current validated default windows are about `46 fps` in headed Chrome, about `39-44 fps` in
-  Playwright WebKit windows, and roughly `43-45 fps` in native Safari depending on warmup/load. The
-  latest clean checks were Chrome `46.00 fps` with visual and latent validation passing, native
-  Safari `43.09 fps` over `64` timed frames with visual and latent validation passing, and
-  Playwright WebKit `39.32 fps` with visual and latent validation passing in a loaded local window.
-  All accepted measurements preserve `sample_steps=2`. Chrome reaches the revised `45 fps` target;
-  native Safari is borderline/variable, and Playwright WebKit remains useful for validation but is
-  noisier/slower than native Safari on this machine.
+  precomputed head-time offsets, the decoder worker pipeline with direct whole-buffer output
+  transfer when available, `decoderWorkerNumThreads=3` on Chromium and `2` on non-Chromium browser
+  profiles, `3` main WASM threads in both browser families, ORT WASM `graphOptimizationLevel=all`,
+  the bundled ORT WASM entrypoint, MHA GQA pretranspose plus head-time cache inputs for the derived
+  full-step WASM graph, the full-head-time layout cleanup stack, consecutive axis-0 squeeze cleanup,
+  and the full-step head-time dynamics path unless split dynamics is explicitly requested.
+- The current validated default windows are about `46-47 fps` in headed Chrome, about `39-44 fps`
+  in Playwright WebKit windows, and about `45 fps` in native Safari depending on warmup/load. The
+  latest clean checks were Chrome `47.18 fps` with visual and latent validation passing and native
+  Safari default-gate checks at `45.39 fps` and `45.57 fps` with visual and latent validation passing.
+  All accepted measurements preserve `sample_steps=2`. Chrome and native Safari now reach the
+  revised `45 fps` target on this machine; Safari still has little margin, and Playwright WebKit
+  remains useful for validation but is noisier/slower than native Safari.

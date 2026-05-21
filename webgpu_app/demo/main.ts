@@ -2748,10 +2748,11 @@ self.onmessage = async (event) => {
     const input = new ort.Tensor('float32', new Float32Array(message.inputBuffer), inputDims);
     const outputs = await session.run({ [inputName]: input }, [outputName]);
     const output = outputs[outputName];
-    const outputBuffer = output.data.buffer.slice(
-      output.data.byteOffset,
-      output.data.byteOffset + output.data.byteLength,
-    );
+    const outputData = output.data;
+    const outputBuffer =
+      outputData.byteOffset === 0 && outputData.byteLength === outputData.buffer.byteLength
+        ? outputData.buffer
+        : outputData.buffer.slice(outputData.byteOffset, outputData.byteOffset + outputData.byteLength);
     self.postMessage(
       {
         id: message.id,
