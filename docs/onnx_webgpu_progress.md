@@ -7529,6 +7529,11 @@ Rejected / kept out:
   passed, but cache wait did not improve: Chrome measured `40.05 fps` with cache wait `1.52 ms`,
   and WebKit/Safari-family measured `37.72 fps` with cache wait `1.11 ms`. The adjacent restored
   control was effectively the same, so keep the simpler explicit entry-buffer copy.
+- Rejected a head-time cache-updater locality rewrite that rotated K cache by contiguous time blocks
+  instead of the accepted dimension-strided loop. Typecheck and Chrome validation passed, but the
+  cache wait worsened to `1.62 ms` and the run measured `39.88 fps`, below the restored control.
+  Keep the accepted loop order; JavaScriptCore/V8 optimize that smaller strided inner loop better
+  for this shape.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
