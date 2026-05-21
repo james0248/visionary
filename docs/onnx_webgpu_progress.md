@@ -7497,6 +7497,9 @@ Rejected / kept out:
   repeatable commands: `bun run benchmark:wasm:chrome`, `bun run benchmark:wasm:webkit`, and
   `bun run benchmark:wasm:all`. They route through the same actual-demo benchmark and wrapper flag
   plumbing as the long-form Playwright commands.
+- Audited live-node reachability in the accepted split sample, split entry, and decoder ONNX files.
+  All nodes are reachable from their public outputs (`2236/2236`, `1167/1167`, and `429/429` live),
+  so there is no dead post-extraction computation to prune from the current served artifacts.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
