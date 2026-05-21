@@ -7786,6 +7786,11 @@ Rejected / kept out:
     Safari/WebKit decoder graph shrank from `423 -> 375` nodes and CPU ORT comparison was bit-exact
     for zero and random latent inputs, but WebKit/Safari-family measured only `40.69 fps` with
     decoder total about `25.48 ms`. Keep the accepted split/unsqueeze/concat form for this decoder.
+  - Tried reusing a stable decoder-worker input tensor and feed map, copying each incoming 4 KiB
+    latent into that tensor before `session.run()`. Output and latent validation passed, but timing
+    was noise-level: WebKit/Safari-family measured `41.09 fps` with decoder total about `25.23 ms`,
+    and Chrome measured `46.28 fps` with decoder total about `22.80 ms`. Keep the simpler per-run
+    input tensor construction.
 
 Current WASM conclusion:
 - The accepted pure-WASM path is now the s2 entry-cache slide graph with temporal dynamics MHA,
