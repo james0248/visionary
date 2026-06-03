@@ -65,6 +65,8 @@ function demoModelAssets() {
   const preferredExports = [
     manifest.demo_generation?.preferred_full_cache_step_export,
     manifest.demo_generation?.preferred_full_cache_step_export_wasm,
+    manifest.demo_generation?.preferred_decoder_export,
+    manifest.demo_generation?.preferred_decoder_export_wasm_safari,
     'breakout_tokenizer_decoder_b1_t1',
     'breakout_tokenizer_decode_z_b1_t1',
   ].filter(Boolean);
