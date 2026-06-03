@@ -33,13 +33,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context_step_level", type=int, default=5)
     parser.add_argument("--context_signal_level", type=int, default=29)
     parser.add_argument("--num_obs_tokens", type=int, default=32)
+    parser.add_argument("--num_actions", type=int, default=4)
+    parser.add_argument(
+        "--action_meanings",
+        default=None,
+        help="Comma-separated action meanings in action-id order. Defaults to Breakout's reduced action set.",
+    )
     parser.add_argument("--noise_seed", type=int, default=0)
+    parser.add_argument(
+        "--align_actions_to_frames",
+        action="store_true",
+        help="Store frame-aligned actions, matching dynamics training: [prev_action, actions[:-1]].",
+    )
     parser.add_argument(
         "--clean_context",
         action="store_true",
         help="Store clean encoded prefix latents instead of training-style noised context latents.",
     )
     return parser.parse_args()
+
+
+def parse_action_meanings(value: str | None, num_actions: int) -> dict[str, str]:
+    if value is None:
+        meanings = ["noop", "fire", "right", "left"]
+    else:
+        meanings = [item.strip() for item in value.split(",")]
+    if len(meanings) != num_actions:
+        raise ValueError(
+            f"Expected {num_actions} action meanings, got {len(meanings)}: {meanings}"
+        )
+    return {str(index): meaning for index, meaning in enumerate(meanings)}
+
+
+def align_prefix_actions(actions: np.ndarray, start: int, prefix_frames: int) -> np.ndarray:
+    cropped_actions = actions[start : start + prefix_frames]
+    prev_action = actions[start - 1] if start > 0 else np.asarray(0, dtype=actions.dtype)
+    aligned_actions = np.empty_like(cropped_actions)
+    aligned_actions[0] = prev_action
+    aligned_actions[1:] = cropped_actions[:-1]
+    return aligned_actions
 
 
 def write_array(path: Path, array: np.ndarray) -> dict[str, Any]:
@@ -56,6 +88,7 @@ def write_array(path: Path, array: np.ndarray) -> dict[str, Any]:
 def main() -> None:
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    action_meanings = parse_action_meanings(args.action_meanings, args.num_actions)
 
     tokenizer_step = resolve_model_export_step(args.tokenizer_dir, args.tokenizer_step)
     tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(
@@ -80,7 +113,12 @@ def main() -> None:
         )
 
     prefix_frames = frames[args.start : args.start + args.prefix_frames]
-    prefix_actions = actions[args.start : args.start + args.prefix_frames]
+    raw_prefix_actions = actions[args.start : args.start + args.prefix_frames]
+    prefix_actions = (
+        align_prefix_actions(actions, args.start, args.prefix_frames)
+        if args.align_actions_to_frames
+        else raw_prefix_actions
+    )
     patches = preprocessor.preprocess_video(prefix_frames)[None]
     display_pixels = np.asarray(preprocessor.patches_to_images(patches), dtype=np.uint8)[0]
 
@@ -136,6 +174,9 @@ def main() -> None:
         "context_step_level": int(args.context_step_level),
         "context_signal_level": int(args.context_signal_level),
         "clean_context": bool(args.clean_context),
+        "action_alignment": "frame_aligned" if args.align_actions_to_frames else "raw",
+        "raw_prefix_actions": raw_prefix_actions.astype(np.int32).tolist(),
+        "stored_prefix_actions": prefix_actions.astype(np.int32).tolist(),
         "noise_seed": int(args.noise_seed),
         "tokenizer_dir": str(args.tokenizer_dir),
         "tokenizer_step": int(tokenizer_step),
@@ -160,13 +201,8 @@ def main() -> None:
         },
         "episode_actions": {
             "path": "actions",
-            "num_actions": 4,
-            "meanings": {
-                "0": "noop",
-                "1": "fire",
-                "2": "right",
-                "3": "left",
-            },
+            "num_actions": int(args.num_actions),
+            "meanings": action_meanings,
         },
         "notes": [
             "The tokenizer encoder is intentionally offline-only for the web demo.",

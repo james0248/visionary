@@ -27,7 +27,10 @@ const contentTypes = {
 
 function resolveRequestPath(url) {
   const pathname = decodeURIComponent(new URL(url, `http://${host}:${port}`).pathname);
-  const relative = normalize(pathname).replace(/^[/\\]+/, '');
+  let relative = normalize(pathname).replace(/^[/\\]+/, '');
+  if (relative === 'webgpu_app' || relative.startsWith(`webgpu_app${sep}`)) {
+    relative = relative.replace(/^webgpu_app[/\\]?/, '');
+  }
   const absolute = resolve(join(root, relative));
   if (absolute !== root && !absolute.startsWith(`${root}${sep}`)) {
     return null;
@@ -37,7 +40,10 @@ function resolveRequestPath(url) {
 
 const server = createServer((request, response) => {
   if (request.url === '/health') {
-    response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+    response.writeHead(200, {
+      'content-type': 'text/plain; charset=utf-8',
+      'cache-control': 'no-store, max-age=0',
+    });
     response.end('ok');
     return;
   }
@@ -60,6 +66,7 @@ const server = createServer((request, response) => {
     response.writeHead(200, {
       'content-type': contentTypes[extname(path)] ?? 'application/octet-stream',
       'content-length': stat.size,
+      'cache-control': 'no-store, max-age=0',
       'cross-origin-opener-policy': 'same-origin',
       'cross-origin-embedder-policy': 'require-corp',
     });

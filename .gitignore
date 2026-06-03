@@ -35,13 +35,9 @@ artifacts/
 /data/
 
 # Generated WebGPU/ONNX artifacts
-webgpu_app/assets/*.onnx
-webgpu_app/assets/*.onnx.data
-webgpu_app/assets/*.pre_*.onnx
-webgpu_app/assets/breakout_onnx_manifest.json
-webgpu_app/assets/breakout_demo_context.*
-webgpu_app/assets/breakout_demo_initial_cache.*
+webgpu_app/assets/
 webgpu_app/assets_raw/
+webgpu_app/dream_arcade_assets/
 webgpu_app/bench/results/*.json
 webgpu_app/bench/benchmark.js
 webgpu_app/bench/benchmark.js.map

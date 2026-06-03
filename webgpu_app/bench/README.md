@@ -1,15 +1,18 @@
 # ORT WebGPU Demo Benchmark
 
-This benchmark measures the browser path needed by the interactive demo. It intentionally does not
-run the exported full-window, no-cache ONNX models.
+This benchmark drives the interactive demo page itself. It clicks the same Start/Pause controls,
+measures generated frames from `window.visionaryDemoDebug.frameStats`, and validates screenshots
+from the visible frame surface. It intentionally does not keep a separate benchmark-only ONNX
+runtime path.
 
-Node.js/Bun is only used to launch Playwright and serve files. ONNX Runtime WebGPU runs inside a real
-Chrome browser.
+Node.js/Bun is only used to launch Playwright and serve files. ONNX Runtime runs inside the browser
+that Playwright launches.
 
 ## Setup
 
 ```bash
-bun install
+cd webgpu_app
+bun install --frozen-lockfile
 bunx playwright install chrome
 ```
 
@@ -19,11 +22,40 @@ bunx playwright install chrome
 bun run benchmark:webgpu:smoke
 bun run benchmark:webgpu
 bun run benchmark:webgpu:ci
+bun run benchmark:wasm:all
 ```
 
 The default scripts launch headed Google Chrome and require a hardware WebGPU adapter. On Apple
-Silicon this should report the M-series GPU in `webgpu_app/bench/results/latest.json`; it should not
+Silicon this should report the M-series GPU in `bench/results/latest.json`; it should not
 report SwiftShader.
+
+Benchmark controls are wrapper flags passed after `--`. Prefer these over leading shell environment
+assignments:
+
+```bash
+bun run benchmark:webgpu -- --grep @graph-capture --webgpu-benchmark-timed-runs 64
+bun run benchmark:webgpu -- --webgpu-benchmark-asset-base /dream_arcade_assets/breakout
+bun run benchmark:webgpu -- --webgpu-benchmark-graph-optimization-level extended
+bun run benchmark:webgpu -- --webgpu-benchmark-browser-profile safari
+bun run benchmark:webgpu -- --webgpu-benchmark-provider wasm
+```
+
+For a Safari-family automation check of the WASM path, run the same benchmark under the WebKit
+project. For real Safari, enable WebDriver automation once with `safaridriver --enable`, then run
+the native Safari benchmark:
+
+```bash
+bun run benchmark:wasm:chrome
+bun run benchmark:wasm:webkit
+bun run benchmark:wasm:safari
+bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=webkit --grep @output_validation --webgpu-benchmark-provider wasm
+```
+
+`benchmark:wasm:chrome` and `benchmark:wasm:safari` both enforce the revised `45 fps` gate by
+default. Native Safari remains close to the threshold on this machine. The Playwright WebKit command
+remains a Safari-family validation harness because it is noisier than native Safari.
+The timed window runs immediately after warmup so the reported steady-state FPS does not include the
+decoder pipeline fill frame after a reset.
 
 For a functional-only check in headless Chromium/SwiftShader:
 
@@ -33,27 +65,60 @@ bun run benchmark:webgpu:headless-smoke
 
 ## Required Demo Assets
 
-The benchmark only runs when these cached demo artifacts are present in
-`webgpu_app/assets/breakout_onnx_manifest.json`:
+The benchmark only runs when the cached demo context and initial-cache artifacts are present in the
+selected asset directory:
 
-- `breakout_dynamics_prefill_cached_b1_t64.onnx`
-- `breakout_dynamics_sample_append_context_cache_length_entry_b1_t1_s2.onnx`
-- `breakout_tokenizer_decode_z_b1_t1.onnx`
-- `breakout_demo_context.*`
-- `breakout_demo_initial_cache.*`
+- `breakout_demo_context_noop60_fire4.*`
+- `breakout_demo_initial_cache_noop60_fire4.*`
 
-If those artifacts are missing, the benchmark writes a structured `blocked` result instead of running
-the old full-window graphs.
+For the WebGPU asset set under `webgpu_app/dream_arcade_assets/breakout`, the maintained path uses
+the manifest's preferred full-cache step export plus the single-frame decoder:
 
-Create the demo artifacts with:
+- `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2.onnx`
+- `breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2.onnx`
+- `breakout_tokenizer_decoder_b1_t1.onnx`, with `breakout_tokenizer_decode_z_b1_t1.onnx` as the
+  fallback
+
+For the accepted WASM asset set under
+`webgpu_app/dream_arcade_assets/breakout_wasm_default_mha`, the maintained actual-demo path uses:
+
+- `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2_full_headtime.onnx`
+- `breakout_tokenizer_decoder_b1_t1.onnx` on Chromium
+- `breakout_tokenizer_decoder_b1_t1_wasm_mha.onnx` on Safari/WebKit
+
+If those artifacts are missing, the demo fails to reach `Ready` and the benchmark fails with the
+page status and recent browser diagnostics.
+
+Create the demo artifacts from the repository root with:
 
 ```bash
-uv run python scripts/webgpu/export_dreamer4_onnx.py \
+uv run python webgpu_app/export/export_dreamer4_onnx.py \
   --tokenizer_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_tokenizer_small_2x \
   --tokenizer_step 1000000 \
   --dynamics_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_dynamics_small_2x \
   --dynamics_step 1000000 \
-  --out_dir webgpu_app/assets \
+  --out_dir webgpu_app/dream_arcade_assets/breakout \
+  --seq_len 64 \
+  --sample_steps 2 \
+  --export_cached \
+  --validate \
+  --overwrite
+uv run python webgpu_app/export/specialize_full_cache_entry.py \
+  --asset_dir webgpu_app/dream_arcade_assets/breakout
+```
+
+Create WASM-specific artifacts in a separate directory so backend-specific ONNX rewrites do not
+overwrite the WebGPU artifacts. The benchmark and demo use this directory by default for
+`provider=wasm` / `backend=wasm`:
+
+```bash
+uv run python webgpu_app/export/export_dreamer4_onnx.py \
+  --tokenizer_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_tokenizer_small_2x \
+  --tokenizer_step 1000000 \
+  --dynamics_dir gs://visionary-exp/dream-arcade/checkpoints/breakout_dynamics_small_2x \
+  --dynamics_step 1000000 \
+  --out_dir webgpu_app/dream_arcade_assets/breakout_wasm_default_mha \
+  --export_target wasm \
   --seq_len 64 \
   --sample_steps 2 \
   --export_cached \
@@ -63,14 +128,19 @@ uv run python scripts/webgpu/export_dreamer4_onnx.py \
 
 ## Measured Path
 
-The benchmark models one generated demo frame as:
+The benchmark measures the demo's actual stream loop:
 
 ```text
-run the cache-length entry dynamics step artifact
-update the rolling K/V cache from the returned entry tensors
-copy predicted z to the decoder input
-decode the accepted single frame
+click Start
+let the demo run warmup frames
+reset to the initial full-cache artifact
+click Start again
+time the generated-frame stream until the target frame count is reached
+pause and write results/latest.json
 ```
+
+The interactive demo starts from a full offline cache and uses the full-cache entry artifact for
+every generated frame.
 
 Sampling constants are recorded in the result:
 
@@ -83,14 +153,45 @@ context_tau_effective = 29 / 32
 
 ## Metrics
 
-`results/latest.json` uses `schema_version: 2` and reports:
+`results/latest.json` uses `schema_version: 3` and reports:
 
-- `cached_prefill`: context cache creation time
-- `cached_step`: cached dynamics target-forward time and full dynamics frame time
-- `streaming_frame`: full steady-state generated-frame time and FPS
+- `benchmark_kind: actual_demo_stream`
+- `streaming_frame.timing`: generated-frame latency, generated-frame intervals, measured window
+  FPS, and warmup-window timing from the real demo stream loop
+- `streaming_frame.output_validation`: screenshot hashes from visible generated frames plus a loose
+  Breakout brick-band coverage check; `status: failed` means the measured FPS is not a valid demo
+  result
+- `streaming_frame.frame_stability_validation`: p95 and max generated-frame intervals. By default
+  the benchmark fails if p95 exceeds `50 ms` or any interval exceeds `100 ms`, so average FPS cannot
+  hide visible stalls.
+- `demo.initial` and `demo.final`: backend, graph-capture state, decoder-worker state, cache length,
+  selected ONNX exports, and sample-step metadata observed from the demo runtime
 
 Fetch time, session creation time, warmup, and browser metadata are reported separately from
 steady-state frame timing.
+
+For compatibility, each benchmark invocation still writes `results/latest.json` or
+`results/graph_capture_latest.json`. It also writes a project-scoped companion such as
+`results/latest_chromium.json` or `results/latest_webkit.json`, so Chrome and WebKit/Safari-family
+checks can be compared after running both commands.
+
+Safari-profile and WebKit runs are valid only when `streaming_frame.output_validation.status` is
+`passed`. The benchmark records the selected graph-capture state in `demo.final`, so a fast number
+without visible-frame validation should be treated as invalid.
+The native Safari benchmark writes `bench/results/latest_safari.json` and also updates
+`bench/results/latest.json` with the same schema as the Playwright actual-demo benchmark.
+
+The pure WASM path can be selected with `provider=wasm`; the demo then defaults to
+`assetBase=/dream_arcade_assets/breakout_wasm_default_mha`,
+`ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.bundle.min.mjs`, `wasmNumThreads=3`, and the
+decoder worker pipeline. Chrome defaults to `decoderWorkerNumThreads=3`; Safari/WebKit defaults to
+`decoderWorkerNumThreads=2`.
+
+The current accepted actual-demo WASM path is the full head-time dynamics artifact with a full
+64-frame initial cache. On the local machine it reaches the revised `45 fps` target in headed Chrome
+and native Safari, while Playwright WebKit is still noisier/slower and should be treated primarily as
+a Safari-family validation harness. Keep validating `wasmNumThreads` and decoder worker settings per
+browser and machine.
 
 ## Graph Capture
 
@@ -100,14 +201,13 @@ The regular benchmark also includes a graph-capture test case:
 bun run benchmark:webgpu
 ```
 
-When graph capture succeeds, `results/latest.json` records graph-capture warmup-adjusted timings
-under the `*_after_graph_capture_warmup` fields. If ONNX Runtime rejects graph capture because part
-of the graph cannot be assigned to WebGPU, the test records a structured `blocked` result instead of
-failing the whole benchmark run.
+When graph capture succeeds, `results/graph_capture_latest.json` records the same schema v3 actual
+demo result and the observed capture state under `demo.final`. If graph capture produces stale or
+broken visible frames, `streaming_frame.output_validation.status` fails and the test fails.
 
 ## Baselines
 
-`webgpu_app/bench/baselines/webgpu_benchmark_baseline.json` starts in warning mode. After cached
+`bench/baselines/webgpu_benchmark_baseline.json` starts in warning mode. After cached
 demo artifacts exist and stable results are collected on the target machine, add representative
 `streaming_frame` entries from `results/latest.json` and switch `policy.mode` to `fail` when
 regressions should break CI.

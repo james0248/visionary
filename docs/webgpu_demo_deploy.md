@@ -41,6 +41,8 @@ The demo reads configuration from script data attributes, query parameters, or
 - `assetBase`: directory containing `breakout_onnx_manifest.json` and the referenced model artifacts.
 - `ortModule`: ONNX Runtime Web module URL.
 - `ortWasmBase`: directory containing ONNX Runtime WASM fallback files.
+- `wasmNumThreads`: ONNX Runtime Web WASM worker count. Current local testing uses `4`; validate
+  this per browser and machine.
 - `backend`: `auto`, `webgpu`, or `wasm`.
 - `fps`: desired frame cap. `0` means uncapped and is the default.
 
@@ -48,8 +50,16 @@ Examples:
 
 ```text
 /?assetBase=https://static.example.com/breakout&fps=30
-/?backend=wasm&fps=0
+/?backend=wasm&ortModule=/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs&wasmNumThreads=4&fps=0
 ```
+
+When `backend=wasm` is selected, the demo prefers the full-cache slide dynamics artifact so the
+WASM graph returns complete updated K/V caches. This avoids the slower JavaScript entry-cache update
+used by the WebGPU-optimized entry-cache artifact.
+
+Generate WASM assets with `export_dreamer4_onnx.py --export_target wasm` into a separate
+`assetBase` from the WebGPU assets. The WASM export profile has its own ONNX pass pipeline because
+ORT WebGPU and ORT WASM support different fused/layout operations.
 
 ## Caching
 
