@@ -5,7 +5,7 @@
     "build:webgpu:browser": "bun scripts/build_browser_entrypoints.ts",
     "benchmark:webgpu": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium",
     "benchmark:webgpu:ci": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium && uv run python bench/check_webgpu_benchmark.py --result bench/results/latest.json --baseline bench/baselines/webgpu_benchmark_baseline.json",
-    "benchmark:webgpu:headless-smoke": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium --grep @smoke --allow-software-webgpu --playwright-headless 1",
+    "benchmark:webgpu:headless-smoke": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium --grep @smoke --playwright-headless 1",
     "benchmark:webgpu:smoke": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium --grep @smoke",
     "benchmark:wasm:chrome": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium --grep @output_validation --playwright-channel chrome --webgpu-benchmark-provider wasm --webgpu-benchmark-warmup-runs 16 --webgpu-benchmark-timed-runs 96 --webgpu-benchmark-validation-frames 64 --webgpu-benchmark-min-fps 45",
     "benchmark:wasm:webkit": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=webkit --grep @output_validation --webgpu-benchmark-provider wasm",

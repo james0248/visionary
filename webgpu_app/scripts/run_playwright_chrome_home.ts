@@ -22,7 +22,6 @@ const benchmarkFlagEnv = new Map([
   ['--webgpu-benchmark-decoder-graph-capture', 'WEBGPU_BENCHMARK_DECODER_GRAPH_CAPTURE'],
   ['--webgpu-benchmark-preferred-layout', 'WEBGPU_BENCHMARK_PREFERRED_LAYOUT'],
   ['--webgpu-benchmark-graph-optimization-level', 'WEBGPU_BENCHMARK_GRAPH_OPTIMIZATION_LEVEL'],
-  ['--webgpu-benchmark-prefill-artifact', 'WEBGPU_BENCHMARK_PREFILL_ARTIFACT'],
   ['--webgpu-benchmark-step-artifact', 'WEBGPU_BENCHMARK_STEP_ARTIFACT'],
   ['--webgpu-benchmark-decoder-artifact', 'WEBGPU_BENCHMARK_DECODER_ARTIFACT'],
   ['--webgpu-benchmark-context-name', 'WEBGPU_BENCHMARK_CONTEXT_NAME'],
@@ -40,7 +39,6 @@ const benchmarkFlagEnv = new Map([
   ['--webgpu-benchmark-split-wasm-dynamics', 'WEBGPU_BENCHMARK_SPLIT_WASM_DYNAMICS'],
   ['--webgpu-benchmark-validation-frames', 'WEBGPU_BENCHMARK_VALIDATION_FRAMES'],
   ['--demo-query', 'DEMO_QUERY'],
-  ['--allow-software-webgpu', 'ALLOW_SOFTWARE_WEBGPU'],
 ]);
 const DEFAULT_BENCHMARK_ATTEMPTS = 1;
 const BENCHMARK_RESULT_PATH = 'bench/results/latest.json';
