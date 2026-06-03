@@ -3813,10 +3813,6 @@ function scheduleStreamLoop(delayMs) {
     window.setTimeout(runScheduledStreamLoop, delayMs);
     return;
   }
-  if (typeof queueMicrotask === 'function') {
-    queueMicrotask(runScheduledStreamLoop);
-    return;
-  }
   if (!streamLoopChannel) {
     streamLoopChannel = new MessageChannel();
     streamLoopChannel.port1.onmessage = runScheduledStreamLoop;
