@@ -65,16 +65,26 @@ bun run benchmark:webgpu:headless-smoke
 
 ## Required Demo Assets
 
-The benchmark only runs when these cached demo artifacts are present in
-`webgpu_app/dream_arcade_assets/breakout/breakout_onnx_manifest.json`:
+The benchmark only runs when the cached demo context and initial-cache artifacts are present in the
+selected asset directory:
+
+- `breakout_demo_context_noop60_fire4.*`
+- `breakout_demo_initial_cache_noop60_fire4.*`
+
+For the WebGPU asset set under `webgpu_app/dream_arcade_assets/breakout`, the maintained path uses
+the manifest's preferred full-cache step export plus the single-frame decoder:
 
 - `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2.onnx`
 - `breakout_dynamics_sample_append_context_full_cache_entry_b1_t1_s2.onnx`
-- `breakout_dynamics_sample_append_context_full_cache_entry_packed_b1_t1_s2_final_z_add_zero_safari_trial.onnx`
-- `breakout_tokenizer_decoder_b1_t1.onnx` preferred, with
-  `breakout_tokenizer_decode_z_b1_t1.onnx` as the fallback
-- `breakout_demo_context_noop60_fire4.*`
-- `breakout_demo_initial_cache_noop60_fire4.*`
+- `breakout_tokenizer_decoder_b1_t1.onnx`, with `breakout_tokenizer_decode_z_b1_t1.onnx` as the
+  fallback
+
+For the accepted WASM asset set under
+`webgpu_app/dream_arcade_assets/breakout_wasm_default_mha`, the maintained actual-demo path uses:
+
+- `breakout_dynamics_sample_append_context_slide_entry_b1_t1_s2_full_headtime.onnx`
+- `breakout_tokenizer_decoder_b1_t1.onnx` on Chromium
+- `breakout_tokenizer_decoder_b1_t1_wasm_mha.onnx` on Safari/WebKit
 
 If those artifacts are missing, the demo fails to reach `Ready` and the benchmark fails with the
 page status and recent browser diagnostics.
