@@ -1,7 +1,3 @@
-export function byExportName(manifest) {
-  return Object.fromEntries((manifest.exports ?? []).map((entry) => [entry.name, entry]));
-}
-
 export function findExport(manifest, name) {
   const entry = manifest.exports.find((item) => item.name === name);
   if (!entry) throw new Error(`Missing export ${name}`);
@@ -14,21 +10,6 @@ export function findFirstExport(manifest, names) {
     if (entry) return entry;
   }
   throw new Error(`Missing exports: ${names.filter(Boolean).join(', ')}`);
-}
-
-export function findFirstOptionalExport(manifest, names) {
-  for (const name of names.filter(Boolean)) {
-    const entry = manifest.exports.find((item) => item.name === name);
-    if (entry) return entry;
-  }
-  return null;
-}
-
-export function findSpec(exportsByName, names) {
-  for (const name of names) {
-    if (exportsByName[name]) return exportsByName[name];
-  }
-  return null;
 }
 
 export function formatShape(shape) {
