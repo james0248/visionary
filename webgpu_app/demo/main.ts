@@ -107,8 +107,7 @@ const DEFAULT_ORT_MODULE =
 const DEFAULT_ORT_WASM_BASE = `/node_modules/onnxruntime-web/dist/`;
 const DEFAULT_DECODER_WORKER_PIPELINE = requestedBackend === 'wasm';
 const DEFAULT_DECODER_WORKER_NUM_THREADS = browserProfile === 'chromium' ? 3 : 2;
-const DEFAULT_SPLIT_WASM_DYNAMICS =
-  requestedBackend === 'wasm' && (browserProfile === 'chromium' || browserProfile === 'safari');
+const DEFAULT_SPLIT_WASM_DYNAMICS = false;
 const SPLIT_WASM_HEAD_TIME_CACHE_LAYOUT = 'layer_batch_token_head_time_dim';
 const explicitOrtModule = explicitConfigValue('ortModule');
 const wasmOrtModule = configValue('wasmOrtModule', DEFAULT_ORT_MODULE);
