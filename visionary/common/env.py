@@ -99,9 +99,9 @@ class FireResetEnv(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
         if self.fire_on_life_loss:
             lives = self.env.unwrapped.ale.lives()
-            if 0 < lives < self.lives:
-                obs, _, terminated, truncated, info = self.env.step(1)  # FIRE
-                if terminated or truncated:
-                    obs, info = self.env.reset()
+            if not (terminated or truncated) and 0 < lives < self.lives:
+                obs, fire_reward, terminated, truncated, info = self.env.step(1)  # FIRE
+                reward += fire_reward
+                lives = self.env.unwrapped.ale.lives()
             self.lives = lives
         return obs, reward, terminated, truncated, info
