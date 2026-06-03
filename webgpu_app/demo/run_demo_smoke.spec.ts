@@ -149,7 +149,7 @@ test('world model demo keeps safari profile on the valid dynamics path @demo', a
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
   await page.goto(
-    '/demo/index.html?browserProfile=safari&graphCapture=true&dynamicsGraphCapture=true&fullDynamicsGraphCapture=true&decoderGraphCapture=true&allowSafariDynamicsGraphCapture=true',
+    '/demo/index.html?browserProfile=safari&graphCapture=true&dynamicsGraphCapture=true&fullDynamicsGraphCapture=true&decoderGraphCapture=true&allowSafariGraphCapture=true',
   );
   await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
 
