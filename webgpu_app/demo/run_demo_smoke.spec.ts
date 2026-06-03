@@ -1,6 +1,59 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
-const demoPath = `/webgpu_app/demo/index.html${process.env.DEMO_QUERY ?? ''}`;
+const demoPath = `/demo/index.html${process.env.DEMO_QUERY ?? ''}`;
+
+function visibleFrame(page: Page) {
+  return page.locator('#frame:not([hidden]), .frame-fallback:not([hidden])').first();
+}
+
+async function generatedFrameCount(page: Page) {
+  return page.evaluate(() => (window as any).visionaryDemoDebug?.frameCount ?? 0);
+}
+
+async function waitForGeneratedFrame(page: Page, targetFrame: number, previousFrame = 0) {
+  const minimumFrame = Math.max(targetFrame, previousFrame + 1);
+  await expect
+    .poll(async () => generatedFrameCount(page), {
+      timeout: 240_000,
+    })
+    .toBeGreaterThanOrEqual(minimumFrame);
+  return generatedFrameCount(page);
+}
+
+async function visibleFramePixelHash(page: Page) {
+  const hash = await page.evaluate(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>('#frame:not([hidden])');
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return null;
+    const bytes = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let value = 2166136261 >>> 0;
+    for (let index = 0; index < bytes.length; index += 1) {
+      value ^= bytes[index];
+      value = Math.imul(value, 16777619) >>> 0;
+    }
+    return value.toString(16).padStart(8, '0');
+  });
+  if (hash) return hash;
+  return (await visibleFrame(page).screenshot()).toString('base64');
+}
+
+async function generateFrameInPage(page: Page) {
+  await page.evaluate(() => (window as any).visionaryDemoDebug.generateFrame());
+  return generatedFrameCount(page);
+}
+
+async function cacheSlotStats(page: Page) {
+  return page.evaluate(() => (window as any).visionaryDemoDebug.cacheSlotStats());
+}
+
+function expectContiguousFilledCache(stats: any, expectedLength: number) {
+  expect(stats.cacheLength).toBe(expectedLength);
+  expect(stats.activeFinite).toBe(true);
+  expect(stats.futureFinite).toBe(true);
+  expect(stats.activeNonZeroSlots).toBe(expectedLength);
+  expect(stats.activeMinMaxAbs).toBeGreaterThan(0);
+  expect(stats.futureMaxAbs).toBe(0);
+}
 
 test('world model demo loads its stylesheet @demo', async ({ page }) => {
   await page.goto(demoPath);
@@ -28,33 +81,199 @@ test('world model demo starts and renders a frame @demo', async ({ page }) => {
   await expect(page.locator('#latency')).not.toHaveText('-- ms');
 });
 
-test('world model demo changes the canvas over generated frames @demo', async ({ page }) => {
+test('world model demo changes the display over generated frames @demo', async ({ page }) => {
   await page.goto(demoPath);
   await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
   await page.locator('#start').click();
 
   const samples = [];
+  const frame = visibleFrame(page);
+  await expect(frame).toBeVisible();
   for (const targetFrame of [1, 2, 3, 4, 5, 8, 12]) {
     await expect
       .poll(async () => Number(await page.locator('#frame-count').textContent()), {
         timeout: 180_000,
       })
       .toBeGreaterThanOrEqual(targetFrame);
-    samples.push(
-      await page.locator('#frame').evaluate((canvasElement) => {
-        const canvas = canvasElement as HTMLCanvasElement;
-        const context = canvas.getContext('2d');
-        if (!context) throw new Error('Could not get 2D canvas context');
-        const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
-        let hash = 2166136261;
-        for (let index = 0; index < data.length; index += 4) {
-          hash ^= data[index] + (data[index + 1] << 8) + (data[index + 2] << 16);
-          hash = Math.imul(hash, 16777619);
-        }
-        return hash >>> 0;
-      }),
-    );
+    samples.push((await frame.screenshot()).toString('base64'));
   }
 
   expect(new Set(samples).size).toBeGreaterThan(1);
+});
+
+test('world model demo starts wasm from a full cache and keeps it full @demo', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(demoPath);
+  await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
+  const backend = await page.locator('#backend').textContent();
+  test.skip(!backend?.includes('wasm'), 'requires WASM');
+
+  await expect(visibleFrame(page)).toBeVisible();
+  const initialCacheState = await page.evaluate(() => {
+    const runtime = (window as any).visionaryDemoDebug.runtime;
+    return {
+      cacheUpdater: Boolean(runtime.cacheUpdater),
+      contextLength: runtime.contextLength,
+      decoderWorker: Boolean(runtime.decoderWorker),
+      initialLength: runtime.cache.length.data[0],
+    };
+  });
+  expect(initialCacheState.cacheUpdater).toBe(true);
+  expect(initialCacheState.decoderWorker).toBe(true);
+  expect(initialCacheState.initialLength).toBe(initialCacheState.contextLength);
+
+  const sampledFrameHashes = new Map<number, string>();
+  const cacheLengths = new Map<number, number>();
+  const sampleFrames = new Set([1, 2, 4, 8]);
+  for (let frameNumber = 1; frameNumber <= 8; frameNumber += 1) {
+    await generateFrameInPage(page);
+    if (!sampleFrames.has(frameNumber)) continue;
+    sampledFrameHashes.set(frameNumber, await visibleFramePixelHash(page));
+    cacheLengths.set(
+      frameNumber,
+      await page.evaluate(() => (window as any).visionaryDemoDebug.runtime.cache.length.data[0]),
+    );
+  }
+
+  expect([...cacheLengths.values()]).toEqual(
+    Array.from({ length: cacheLengths.size }, () => initialCacheState.contextLength),
+  );
+  expect(new Set([...sampledFrameHashes.values()]).size).toBe(sampledFrameHashes.size);
+  expect(pageErrors).toEqual([]);
+});
+
+test('world model demo keeps safari profile on the valid dynamics path @demo', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(
+    '/demo/index.html?browserProfile=safari&graphCapture=true&dynamicsGraphCapture=true&fullDynamicsGraphCapture=true&decoderGraphCapture=true&allowSafariGraphCapture=true',
+  );
+  await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
+
+  const captureState = await page.evaluate(() => ({
+    dynamics: Boolean((window as any).visionaryDemoDebug.runtime.graphCapture?.enabled),
+    fullDynamics: Boolean((window as any).visionaryDemoDebug.runtime.fullGraphCapture?.enabled),
+    decoder: Boolean((window as any).visionaryDemoDebug.runtime.decoderGraphCapture),
+    initialCacheSource: (window as any).visionaryDemoDebug.runtime.initialCacheSource,
+    prefillSkipReason: (window as any).visionaryDemoDebug.runtime.prefillSkipReason,
+    initialCacheLength: (window as any).visionaryDemoDebug.runtime.initialCache.length.data[0],
+  }));
+  expect(captureState).toEqual({
+    dynamics: false,
+    fullDynamics: true,
+    decoder: true,
+    initialCacheSource: 'artifact',
+    prefillSkipReason: null,
+    initialCacheLength: 64,
+  });
+
+  await expect(visibleFrame(page)).toBeVisible();
+
+  const sampledFrameHashes = new Map<number, string>();
+  const cacheLengths = new Map<number, number>();
+  for (let frameNumber = 1; frameNumber <= 8; frameNumber += 1) {
+    await generateFrameInPage(page);
+    if (![1, 2, 4, 8].includes(frameNumber)) continue;
+    sampledFrameHashes.set(frameNumber, await visibleFramePixelHash(page));
+    cacheLengths.set(
+      frameNumber,
+      await page.evaluate(() => (window as any).visionaryDemoDebug.runtime.cache.length.data[0]),
+    );
+  }
+
+  expect(sampledFrameHashes.size).toBe(4);
+  expect([...cacheLengths.values()]).toEqual([64, 64, 64, 64]);
+  expect(new Set([...sampledFrameHashes.values()]).size).toBe(sampledFrameHashes.size);
+  expect(pageErrors).toEqual([]);
+});
+
+test('world model demo starts WebGPU from a full contiguous cache @demo', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(demoPath);
+  await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
+  const backend = await page.locator('#backend').textContent();
+  test.skip(!backend?.includes('webgpu'), 'requires WebGPU');
+
+  const initialStats = await cacheSlotStats(page);
+  expectContiguousFilledCache(initialStats, initialStats.contextLength);
+  await generateFrameInPage(page);
+  expectContiguousFilledCache(await cacheSlotStats(page), initialStats.contextLength);
+  expect(pageErrors).toEqual([]);
+});
+
+test('world model demo stays on the full-cache path @demo', async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await page.goto(demoPath);
+  await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
+  const backend = await page.locator('#backend').textContent();
+  test.skip(!backend?.includes('webgpu'), 'requires WebGPU');
+
+  const captureState = await page.evaluate(() => ({
+    dynamics: Boolean((window as any).visionaryDemoDebug.runtime.graphCapture?.enabled),
+    fullDynamics: Boolean((window as any).visionaryDemoDebug.runtime.fullGraphCapture?.enabled),
+    decoder: Boolean((window as any).visionaryDemoDebug.runtime.decoderGraphCapture),
+    hasShortStepSession: Boolean((window as any).visionaryDemoDebug.runtime.sessions.step),
+    hasFullStepSession: Boolean((window as any).visionaryDemoDebug.runtime.sessions.fullStep),
+  }));
+  expect(captureState).toEqual({
+    dynamics: false,
+    fullDynamics: false,
+    decoder: false,
+    hasShortStepSession: false,
+    hasFullStepSession: true,
+  });
+
+  await page.locator('#start').click();
+  const frame = visibleFrame(page);
+  await expect(frame).toBeVisible();
+  const samples: string[] = [];
+  let lastSampledFrame = 0;
+  for (const targetFrame of [1, 2, 4]) {
+    lastSampledFrame = await waitForGeneratedFrame(page, targetFrame, lastSampledFrame);
+    samples.push((await frame.screenshot()).toString('base64'));
+  }
+  expect(new Set(samples).size).toBeGreaterThan(1);
+  expect(pageErrors).toEqual([]);
+});
+
+test('world model demo falls back when 2D canvas is unavailable @demo', async ({ page }) => {
+  const pageErrors: string[] = [];
+  const canvasConsoleMessages: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('console', (message) => {
+    if (/2D canvas|forced 2D canvas/.test(message.text())) {
+      canvasConsoleMessages.push(`console.${message.type()}: ${message.text()}`);
+    }
+  });
+  await page.addInitScript(() => {
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function getContext(
+      this: HTMLCanvasElement,
+      contextId: string,
+      options?: unknown,
+    ) {
+      if (contextId === '2d') throw new Error('forced 2D canvas unavailable');
+      return (originalGetContext as any).call(this, contextId, options);
+    } as typeof HTMLCanvasElement.prototype.getContext;
+  });
+
+  await page.goto('/demo/index.html?backend=wasm');
+  await expect(page.locator('#status')).toContainText('Ready', { timeout: 180_000 });
+  await expect(page.locator('.frame-fallback')).toBeVisible();
+  await page.locator('#start').click();
+  await expect
+    .poll(async () => Number(await page.locator('#frame-count').textContent()), {
+      timeout: 180_000,
+    })
+    .toBeGreaterThan(0);
+  await expect(page.locator('.frame-fallback')).toBeVisible();
+  expect(pageErrors).toEqual([]);
+  expect(canvasConsoleMessages).toEqual([]);
 });

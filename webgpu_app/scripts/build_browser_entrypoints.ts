@@ -9,14 +9,9 @@ type BrowserBuildEntry = {
 
 const defaultEntries: BrowserBuildEntry[] = [
   {
-    entrypoint: 'webgpu_app/demo/main.ts',
-    outdir: 'webgpu_app/demo',
-    outfile: 'webgpu_app/demo/main.js',
-  },
-  {
-    entrypoint: 'webgpu_app/bench/benchmark.ts',
-    outdir: 'webgpu_app/bench',
-    outfile: 'webgpu_app/bench/benchmark.js',
+    entrypoint: 'demo/main.ts',
+    outdir: 'demo',
+    outfile: 'demo/main.js',
   },
 ];
 
@@ -54,7 +49,7 @@ export async function buildBrowserEntrypoints(entries: BrowserBuildEntry[] = def
 
 export async function buildDemoBrowserBundle(outDir: string) {
   await buildEntry({
-    entrypoint: 'webgpu_app/demo/main.ts',
+    entrypoint: 'demo/main.ts',
     outdir: outDir,
     outfile: join(outDir, 'main.js'),
   });

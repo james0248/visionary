@@ -31,11 +31,30 @@ export class NormalNoiseGenerator {
     return radius * Math.cos(angle);
   }
 
-  tensorData(size) {
-    const values = new Float32Array(size);
-    for (let index = 0; index < size; index += 1) {
+  fillTensorData(values: Float32Array) {
+    let index = 0;
+    if (this.spare !== null && values.length > 0) {
+      values[index] = this.spare;
+      this.spare = null;
+      index += 1;
+    }
+
+    for (; index + 1 < values.length; index += 2) {
+      const u1 = Math.max(this.uniform(), 1e-7);
+      const u2 = this.uniform();
+      const radius = Math.sqrt(-2.0 * Math.log(u1));
+      const angle = 2.0 * Math.PI * u2;
+      values[index] = radius * Math.cos(angle);
+      values[index + 1] = radius * Math.sin(angle);
+    }
+
+    if (index < values.length) {
       values[index] = this.normal();
     }
     return values;
+  }
+
+  tensorData(size: number, values = new Float32Array(size)) {
+    return this.fillTensorData(values);
   }
 }

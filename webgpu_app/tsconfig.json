@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["playwright.config.ts", "scripts/**/*.ts", "webgpu_app/**/*.ts", "types/**/*.d.ts"]
+  "include": ["playwright.config.ts", "scripts/**/*.ts", "bench/**/*.ts", "demo/**/*.ts", "types/**/*.d.ts"]
 }

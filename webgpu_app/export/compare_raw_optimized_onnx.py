@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import onnx
 import onnxruntime as ort
 
 
@@ -60,6 +61,12 @@ def manifest_path(args: argparse.Namespace) -> Path:
 
 
 def artifact_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    if isinstance(manifest.get("artifacts"), dict):
+        return {
+            name: entry
+            for name, entry in manifest["artifacts"].items()
+            if isinstance(entry, dict) and entry.get("path")
+        }
     return {
         entry["name"]: entry
         for entry in manifest.get("exports", [])
@@ -74,8 +81,8 @@ def load_raw_manifest(raw_dir: Path) -> dict[str, Any]:
 def default_artifacts(manifest: dict[str, Any]) -> list[str]:
     demo = manifest.get("demo_generation", {})
     names = [
-        demo.get("preferred_prefill_export"),
-        demo.get("preferred_step_export"),
+        demo.get("preferred_full_cache_step_export"),
+        demo.get("preferred_full_cache_step_export_wasm"),
     ]
     decode_z = demo.get("decode_z")
     if isinstance(decode_z, dict):
@@ -90,13 +97,18 @@ def make_float(shape: list[int], rng: np.random.Generator) -> np.ndarray:
 
 
 def make_int(
-    name: str, shape: list[int], manifest: dict[str, Any], rng: np.random.Generator
+    name: str,
+    shape: list[int],
+    manifest: dict[str, Any],
+    rng: np.random.Generator,
+    input_bounds: dict[str, int],
 ) -> np.ndarray:
     dynamics = manifest.get("dynamics", {})
     context_length = int(dynamics.get("context_length", 64))
     max_step_size = int(dynamics.get("max_step_size", 6))
     num_actions = int(dynamics.get("num_actions", 4))
     if name == "actions":
+        num_actions = input_bounds.get(name, num_actions)
         return rng.integers(0, num_actions, size=tuple(shape), dtype=np.int32)
     if name == "step_levels":
         return np.full(tuple(shape), min(2, max_step_size - 1), dtype=np.int32)
@@ -112,6 +124,7 @@ def make_feed(
     spec: dict[str, Any],
     manifest: dict[str, Any],
     rng: np.random.Generator,
+    input_bounds: dict[str, int],
 ) -> np.ndarray:
     dtype = spec.get("dtype")
     shape = [int(dim) for dim in spec.get("shape", [])]
@@ -120,8 +133,45 @@ def make_feed(
     if dtype == "float16":
         return make_float(shape, rng).astype(np.float16)
     if dtype == "int32":
-        return make_int(name, shape, manifest, rng)
+        return make_int(name, shape, manifest, rng, input_bounds)
     raise ValueError(f"Unsupported input dtype for {name}: {dtype!r}")
+
+
+def node_depends_on_input(
+    value_name: str,
+    input_name: str,
+    producers: dict[str, Any],
+    seen: set[str] | None = None,
+) -> bool:
+    if value_name == input_name:
+        return True
+    if seen is None:
+        seen = set()
+    if value_name in seen:
+        return False
+    seen.add(value_name)
+    producer = producers.get(value_name)
+    if producer is None:
+        return False
+    return any(node_depends_on_input(parent, input_name, producers, seen) for parent in producer.input)
+
+
+def infer_integer_input_bounds(path: Path) -> dict[str, int]:
+    model = onnx.load(path.as_posix(), load_external_data=False)
+    producers = {output: node for node in model.graph.node for output in node.output}
+    initializers = {initializer.name: initializer for initializer in model.graph.initializer}
+    bounds: dict[str, int] = {}
+    for input_info in model.graph.input:
+        input_name = input_info.name
+        for node in model.graph.node:
+            if node.op_type != "Gather" or len(node.input) < 2:
+                continue
+            data = initializers.get(node.input[0])
+            if data is None or not data.dims:
+                continue
+            if node_depends_on_input(node.input[1], input_name, producers):
+                bounds[input_name] = min(bounds.get(input_name, int(data.dims[0])), int(data.dims[0]))
+    return bounds
 
 
 def model_input_specs(path: Path) -> dict[str, dict[str, Any]]:
@@ -185,6 +235,19 @@ def compare_arrays(
     atol: float,
     rtol: float,
 ) -> dict[str, Any]:
+    if raw.shape != optimized.shape:
+        if raw.size != optimized.size:
+            return {
+                "shape": list(raw.shape),
+                "optimized_shape": list(optimized.shape),
+                "raw_dtype": str(raw.dtype),
+                "optimized_dtype": str(optimized.dtype),
+                "passed": False,
+                "reason": "shape_mismatch",
+                "atol": atol,
+                "rtol": rtol,
+            }
+        optimized = optimized.reshape(raw.shape)
     raw_f = raw.astype(np.float32) if raw.dtype.kind in {"f", "i", "u", "b"} else raw
     opt_f = (
         optimized.astype(np.float32) if optimized.dtype.kind in {"f", "i", "u", "b"} else optimized
@@ -218,7 +281,7 @@ def compare_artifact(
     atol: float,
     rtol: float,
 ) -> dict[str, Any]:
-    raw_path = raw_dir / entry["path"]
+    raw_path = raw_dir / raw_entry.get("path", entry["path"])
     optimized_path = optimized_dir / entry["path"]
     if not raw_path.exists():
         raise FileNotFoundError(f"Missing raw artifact for {name}: {raw_path}")
@@ -227,8 +290,14 @@ def compare_artifact(
 
     rng = np.random.default_rng(seed)
     raw_inputs = raw_entry.get("inputs") or model_input_specs(raw_path)
+    raw_bounds = infer_integer_input_bounds(raw_path)
+    optimized_bounds = infer_integer_input_bounds(optimized_path)
+    input_bounds = {
+        input_name: min(raw_bound, optimized_bounds.get(input_name, raw_bound))
+        for input_name, raw_bound in raw_bounds.items()
+    }
     feeds = {
-        input_name: make_feed(input_name, input_spec, manifest, rng)
+        input_name: make_feed(input_name, input_spec, manifest, rng, input_bounds)
         for input_name, input_spec in raw_inputs.items()
     }
     raw_outputs = run_ort(raw_path, feeds)
@@ -277,10 +346,21 @@ def main() -> int:
         )
     exports = artifact_map(manifest)
     raw_exports = artifact_map(raw_manifest)
-    artifacts = args.artifact or default_artifacts(manifest)
-    missing = [name for name in artifacts if name not in exports]
+    candidate_artifacts = args.artifact or default_artifacts(manifest)
+    missing = [name for name in candidate_artifacts if name not in exports]
     if missing:
         raise KeyError(f"Artifacts not present in manifest: {missing}")
+    artifacts = [
+        name
+        for name in candidate_artifacts
+        if name in raw_exports or (args.raw_dir / exports[name]["path"]).exists()
+    ]
+    skipped = [name for name in candidate_artifacts if name not in artifacts]
+    if not artifacts:
+        raise KeyError(
+            "No default artifacts are present in the raw export directory. "
+            "Re-export with --raw_out_dir or pass --artifact."
+        )
 
     results = [
         compare_artifact(
@@ -305,6 +385,7 @@ def main() -> int:
         "atol": args.atol,
         "rtol": args.rtol,
         "passed": all(result["passed"] for result in results),
+        "skipped": skipped,
         "artifacts": results,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
