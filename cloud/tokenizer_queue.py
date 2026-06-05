@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import watcher
 
@@ -86,14 +86,30 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print one dashboard snapshot and exit without creating jobs.",
     )
+    parser.add_argument(
+        "--use-active-account",
+        action="store_true",
+        help=(
+            "Use the active gcloud account instead of watcher.impersonate_service_account. "
+            "Useful when TPU queue admission is granted to the user principal, not the watcher service account."
+        ),
+    )
     return parser.parse_args()
 
 
-def load_jobs(config_paths: list[Path]) -> list[Job]:
+def use_active_account(cfg: dict[str, Any]) -> None:
+    watcher_cfg = cfg.get("watcher")
+    if isinstance(watcher_cfg, dict):
+        watcher_cfg.pop("impersonate_service_account", None)
+
+
+def load_jobs(config_paths: list[Path], *, active_account: bool = False) -> list[Job]:
     jobs = []
     for config_path in config_paths:
         resolved_path = config_path.resolve()
         cfg = watcher.load_config(resolved_path)
+        if active_account:
+            use_active_account(cfg)
         candidates = list(cfg["candidates"])
         if len(candidates) != 1:
             raise ValueError(
@@ -140,8 +156,49 @@ def set_status(
 def summarize_called_process(exc: subprocess.CalledProcessError) -> str:
     detail = watcher.command_failure_detail(exc)
     if detail:
-        return detail.splitlines()[-1]
+        json_start = detail.find("{")
+        if json_start >= 0:
+            try:
+                data = json.loads(detail[json_start:])
+            except json.JSONDecodeError:
+                data = None
+            if isinstance(data, dict):
+                message = find_message(data)
+                if message:
+                    return message
+
+        lines = [line.strip() for line in detail.splitlines() if line.strip()]
+        for line in reversed(lines):
+            token = line.rstrip(",")
+            if token in {"{", "}", "[", "]"}:
+                continue
+            if token.startswith('"message":'):
+                raw_value = token.split(":", 1)[1].strip().rstrip(",")
+                try:
+                    parsed_value = json.loads(raw_value)
+                except json.JSONDecodeError:
+                    parsed_value = raw_value.strip('"')
+                if parsed_value:
+                    return str(parsed_value)
+            return token
     return f"exit code {exc.returncode}: {' '.join(str(part) for part in exc.cmd)}"
+
+
+def find_message(value: Any) -> str:
+    if isinstance(value, dict):
+        message = value.get("message")
+        if isinstance(message, str) and message:
+            return message
+        for nested_value in value.values():
+            nested_message = find_message(nested_value)
+            if nested_message:
+                return nested_message
+    if isinstance(value, list):
+        for item in value:
+            nested_message = find_message(item)
+            if nested_message:
+                return nested_message
+    return ""
 
 
 def queue_state_status(queued_state: str) -> tuple[str, bool]:
@@ -380,7 +437,11 @@ def refresh_job(job: Job, starter_script_contents: str) -> None:
     set_status(job, "WAITING")
 
 
-def start_job(job: Job, starter_script: Path) -> None:
+def start_job(
+    job: Job,
+    starter_script: Path,
+    before_create: Callable[[], None] | None = None,
+) -> None:
     candidate_index = 0
     candidate = job.candidates[candidate_index]
     attempt_id = int(job.state["next_attempt_id"])
@@ -389,6 +450,18 @@ def start_job(job: Job, starter_script: Path) -> None:
     job.state["next_attempt_id"] = attempt_id + 1
     watcher.save_watcher_state(job.cfg, job.state)
 
+    job.resource_name = watcher.queued_resource_name(job.name, candidate_index)
+    job.zone = candidate["zone"]
+    set_status(
+        job,
+        "CREATING",
+        detail=f"creating attempt {attempt_id}",
+        queued_state="CREATING",
+        active=True,
+    )
+    if before_create is not None:
+        before_create()
+
     watcher.create_queued_resource(
         job.cfg,
         candidate,
@@ -396,8 +469,6 @@ def start_job(job: Job, starter_script: Path) -> None:
         attempt_id=attempt_id,
         starter_script=starter_script,
     )
-    job.resource_name = watcher.queued_resource_name(job.name, candidate_index)
-    job.zone = candidate["zone"]
     set_status(
         job,
         "PENDING",
@@ -420,7 +491,7 @@ def render_dashboard(jobs: list[Job], max_active: int, message: str = "") -> Non
     live_count = sum(
         1
         for job in jobs
-        if job.status in {"ALIVE", "PENDING", "DELETING", "REQUEUE"}
+        if job.status in {"ALIVE", "CREATING", "PENDING", "DELETING", "REQUEUE"}
     )
     complete_count = sum(1 for job in jobs if job.status == "DONE")
     crashed_count = sum(1 for job in jobs if job.status == "CRASH")
@@ -469,8 +540,14 @@ def main() -> int:
     starter_script = args.starter_script.resolve()
     starter_script_contents = starter_script.read_text()
     config_paths = args.configs or DEFAULT_CONFIGS
-    jobs = load_jobs(config_paths)
-    message = ""
+    jobs = load_jobs(config_paths, active_account=args.use_active_account)
+    message = "initializing"
+    if args.use_active_account:
+        message = "initializing with active gcloud account"
+    for job in jobs:
+        job.zone = job.candidates[0]["zone"]
+        set_status(job, "CHECKING", detail="waiting for first cloud status check")
+    render_dashboard(jobs, args.max_active, message=message)
 
     while True:
         for job in jobs:
@@ -504,13 +581,22 @@ def main() -> int:
                 if job.status != "WAITING" or job.terminal or job.active:
                     continue
                 try:
-                    start_job(job, starter_script)
+                    start_job(
+                        job,
+                        starter_script,
+                        before_create=lambda: render_dashboard(
+                            jobs,
+                            args.max_active,
+                            message=f"{job.name}: creating queued resource",
+                        ),
+                    )
                 except subprocess.CalledProcessError as exc:
                     job.last_error = summarize_called_process(exc)
                     clear_current_attempt(job)
-                    set_status(job, "WAITING", detail=f"create failed: {job.last_error}")
+                    set_status(job, "CREATE_ERR", detail=job.last_error, active=True)
                     message = f"{job.name}: create failed: {job.last_error}"
-                    continue
+                    active_count += 1
+                    break
                 active_count += 1
                 message = f"{job.name}: queued in {job.zone}"
 

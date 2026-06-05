@@ -58,9 +58,9 @@ watcher:
 machine:
   family: v6e
   chips: 8
-  zone: asia-southeast1-b
+  zone: us-central1-b
   spot: true
   data_disk:
-    source: projects/visionary-491008/zones/asia-southeast1-b/disks/visionary-tokenizer-data-ase1b
+    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-tokenizer-data-uc1b
     mode: read-only
     mount_path: /mnt/data
