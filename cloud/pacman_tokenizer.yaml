@@ -58,9 +58,9 @@ watcher:
 machine:
   family: v6e
   chips: 8
-  zone: europe-west4-a
+  zone: asia-southeast1-b
   spot: true
   data_disk:
-    source: projects/visionary-491008/zones/europe-west4-a/disks/visionary-data-tokenizer-ew4a
+    source: projects/visionary-491008/zones/asia-southeast1-b/disks/visionary-tokenizer-data-ase1b
     mode: read-only
     mount_path: /mnt/data

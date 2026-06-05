@@ -22,6 +22,7 @@ LIVE_STATES = PENDING_STATES | {"ACTIVE", "SUSPENDING", "DELETING"}
 DELETE_IN_PROGRESS_STATES = {"SUSPENDING", "DELETING"}
 
 TRC_ACCELERATOR_LIMITS = {
+    ("v6e", "asia-southeast1-b", True): 64,
     ("v5e", "europe-west4-b", True): 64,
     ("v6e", "europe-west4-a", True): 64,
     ("v4", "us-central2-b", False): 32,

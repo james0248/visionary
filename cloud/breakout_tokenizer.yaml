@@ -62,15 +62,15 @@ watcher:
 # - v4  -> tpu-ubuntu2204-base
 #
 # Family / chip constraints from the current TRC inventory:
-# - v6e spot: regions europe-west4, us-east1; chips 1, 4, 8, 16, 32, 64
+# - v6e spot: zones asia-southeast1-b, europe-west4-a, us-east1-d; chips 1, 4, 8, 16, 32, 64
 # - v5e spot: regions europe-west4, us-central1; chips 1, 4, 8, 16, 32, 64
 # - v4 spot or on-demand: region us-central2; chips 4, 8, 16, 32
 machine:
   family: v6e
   chips: 8
-  zone: europe-west4-a
+  zone: asia-southeast1-b
   spot: true
   data_disk:
-    source: projects/visionary-491008/zones/europe-west4-a/disks/visionary-data-tokenizer-ew4a
+    source: projects/visionary-491008/zones/asia-southeast1-b/disks/visionary-tokenizer-data-ase1b
     mode: read-only
     mount_path: /mnt/data
