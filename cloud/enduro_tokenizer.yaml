@@ -1,6 +1,6 @@
 project: visionary-491008
 exp_name: enduro_tokenizer_small_2x
-checkpoint_dir: gs://visionary-exp/dream-arcade/checkpoints/${exp_name}
+checkpoint_dir: gs://dream-atari-bucket/dream-arcade/checkpoints/${exp_name}
 
 job:
   name: enduro-tokenizer
