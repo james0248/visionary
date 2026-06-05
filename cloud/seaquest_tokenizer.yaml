@@ -1,5 +1,5 @@
 project: visionary-491008
-exp_name: seaquest_tokenizer_small_2x
+exp_name: seaquest_tokenizer_skipframe
 checkpoint_dir: gs://dream-atari-bucket/dream-arcade/checkpoints/${exp_name}
 
 job:
@@ -24,7 +24,7 @@ training:
     - dataset.train_dir=/mnt/data/seaquest_tokenizer/train
     - dataset.eval_dir=/mnt/data/seaquest_tokenizer/eval
     - checkpoint.manager.directory=${checkpoint_dir}
-    - wandb.group=seaquest_tokenizer
+    - wandb.group=seaquest_tokenizer_skipframe
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json
