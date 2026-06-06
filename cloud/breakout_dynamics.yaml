@@ -1,7 +1,7 @@
 project: visionary-491008
-exp_name: breakout_dynamics_small_2x
-tokenizer_exp_name: breakout_tokenizer_small_2x
-checkpoint_dir: gs://visionary-exp/dream-arcade/checkpoints/${exp_name}
+exp_name: breakout_dynamics_skipframe
+tokenizer_exp_name: breakout_tokenizer_skipframe
+checkpoint_dir: gs://dream-atari-bucket/dream-arcade/checkpoints/${exp_name}
 
 job:
   name: breakout-dynamics
@@ -23,11 +23,12 @@ training:
   overrides:
     - exp_name=${exp_name}
     - tokenizer_exp_name=${tokenizer_exp_name}
+    - video_eval.tokenizer.checkpoint_dir=gs://dream-atari-bucket/dream-arcade/checkpoints/${tokenizer_exp_name}
     - dataset.train_dir=/mnt/data/breakout_dynamics/train
     - dataset.eval_dir=/mnt/data/breakout_dynamics/eval
     - dynamics.num_actions=4
     - checkpoint.manager.directory=${checkpoint_dir}
-    - wandb.group=breakout_dynamics
+    - wandb.group=breakout_dynamics_skipframe
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json
@@ -65,15 +66,15 @@ watcher:
 # - v4  -> tpu-ubuntu2204-base
 #
 # Family / chip constraints from the current TRC inventory:
-# - v6e spot: regions europe-west4, us-east1; chips 1, 4, 8, 16, 32, 64
+# - v6e spot: zones asia-southeast1-b, us-central1-b, europe-west4-a, us-east1-d; chips 1, 4, 8, 16, 32, 64
 # - v5e spot: regions europe-west4, us-central1; chips 1, 4, 8, 16, 32, 64
 # - v4 spot or on-demand: region us-central2; chips 4, 8, 16, 32
 machine:
   family: v6e
   chips: 8
-  zone: europe-west4-a
+  zone: us-central1-b
   spot: true
   data_disk:
-    source: projects/visionary-491008/zones/europe-west4-a/disks/visionary-data-dynamics-ew4a
+    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-dynamics-data-uc1b
     mode: read-only
     mount_path: /mnt/data

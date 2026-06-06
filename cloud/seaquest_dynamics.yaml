@@ -1,7 +1,7 @@
 project: visionary-491008
-exp_name: seaquest_dynamics_small_2x
-tokenizer_exp_name: seaquest_tokenizer_small_2x
-checkpoint_dir: gs://visionary-exp/dream-arcade/checkpoints/${exp_name}
+exp_name: seaquest_dynamics_skipframe
+tokenizer_exp_name: seaquest_tokenizer_skipframe
+checkpoint_dir: gs://dream-atari-bucket/dream-arcade/checkpoints/${exp_name}
 
 job:
   name: seaquest-dynamics
@@ -23,12 +23,13 @@ training:
   overrides:
     - exp_name=${exp_name}
     - tokenizer_exp_name=${tokenizer_exp_name}
+    - video_eval.tokenizer.checkpoint_dir=gs://dream-atari-bucket/dream-arcade/checkpoints/${tokenizer_exp_name}
     - dataset.train_dir=/mnt/data/seaquest_dynamics/train
     - dataset.eval_dir=/mnt/data/seaquest_dynamics/eval
     - dynamics.num_actions=18
     - checkpoint.manager.directory=${checkpoint_dir}
     - total_steps=1000000
-    - wandb.group=seaquest_dynamics
+    - wandb.group=seaquest_dynamics_skipframe
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json
@@ -62,9 +63,9 @@ watcher:
 machine:
   family: v6e
   chips: 8
-  region: us-east1
+  zone: us-central1-b
   spot: true
   data_disk:
-    source: projects/visionary-491008/zones/us-east1-d/disks/qbert-seaquest-dynamics-ue1d
+    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-dynamics-data-uc1b
     mode: read-only
     mount_path: /mnt/data

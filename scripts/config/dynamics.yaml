@@ -17,11 +17,11 @@ loss:
   bootstrap_start_step: 10000
 
 video_eval:
-  context_frames: 16
-  generated_frames: 112
+  context_frames: 4
+  generated_frames: 116
   sample_steps: 4
   context_tau: 0.9
-  fps: 20
+  fps: 15
   output_dir: artifacts/dynamics_eval/${exp_name}
   tokenizer:
     checkpoint_dir: gs://visionary-exp/dream-arcade/checkpoints/${tokenizer_exp_name}
@@ -31,18 +31,18 @@ dataset:
   train_dir: data/tokenized/train/
   eval_dir: data/tokenized/eval/
   batch_size: 64
-  batch_length: 128
+  batch_length: 64
   alternating_lengths:
     enabled: true
-    short: 32
-    long: 128
+    short: 16
+    long: 64
     long_every: 8
     final_long_only_steps: 0
   worker_count: 4
   num_threads: 8
   prefetch_buffer_size: 16
   eval:
-    batch_length: 128
+    batch_length: 64
     max_batches: 16
 
 dynamics:
@@ -50,6 +50,7 @@ dynamics:
   num_layers: 24
   num_heads: 8
   num_kv_heads: 2
+  temporal_layer_period: 4
   num_registers: 2
   num_obs_tokens: 32
   num_actions: ???
@@ -57,12 +58,11 @@ dynamics:
   model_dim: 128
   head_dim: 32
   mlp_hidden_dim: 384
-  context_length: 64
-  temporal_layer_period: 2
+  context_length: 32
   base: 10000.0
 
 checkpoint:
-  export_interval_steps: 50000
+  export_interval_steps: 100000
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
     directory: gs://visionary-exp/dream-arcade/checkpoints/${exp_name}
