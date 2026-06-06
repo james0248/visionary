@@ -17,7 +17,7 @@ import watcher
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
-DEFAULT_CONFIGS = [
+DEFAULT_TOKENIZER_CONFIGS = [
     SCRIPT_DIR / "breakout_tokenizer.yaml",
     SCRIPT_DIR / "pacman_tokenizer.yaml",
     SCRIPT_DIR / "qbert_tokenizer.yaml",
@@ -25,6 +25,19 @@ DEFAULT_CONFIGS = [
     SCRIPT_DIR / "space_invaders_tokenizer.yaml",
     SCRIPT_DIR / "enduro_tokenizer.yaml",
 ]
+DEFAULT_DYNAMICS_CONFIGS = [
+    SCRIPT_DIR / "breakout_dynamics.yaml",
+    SCRIPT_DIR / "pacman_dynamics.yaml",
+    SCRIPT_DIR / "qbert_dynamics.yaml",
+    SCRIPT_DIR / "seaquest_dynamics.yaml",
+    SCRIPT_DIR / "space_invaders_dynamics.yaml",
+    SCRIPT_DIR / "enduro_dynamics.yaml",
+]
+
+DEFAULT_CONFIGS_BY_KIND = {
+    "tokenizer": DEFAULT_TOKENIZER_CONFIGS,
+    "dynamics": DEFAULT_DYNAMICS_CONFIGS,
+}
 
 
 @dataclass
@@ -52,7 +65,13 @@ class Job:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Queue tokenizer TPU jobs while keeping only a fixed number alive."
+        description="Queue TPU training jobs while keeping only a fixed number alive."
+    )
+    parser.add_argument(
+        "--job-kind",
+        choices=sorted(DEFAULT_CONFIGS_BY_KIND),
+        default="tokenizer",
+        help="Default job config set to queue when --config is omitted.",
     )
     parser.add_argument(
         "--config",
@@ -60,7 +79,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         type=Path,
         help=(
-            "Tokenizer watcher config. Repeat to override the default six-tokenizer list."
+            "Watcher config. Repeat to override the default config list for --job-kind."
         ),
     )
     parser.add_argument(
@@ -486,7 +505,13 @@ def trim(value: str, width: int) -> str:
     return value[: width - 1] + "~"
 
 
-def render_dashboard(jobs: list[Job], max_active: int, message: str = "") -> None:
+def render_dashboard(
+    jobs: list[Job],
+    max_active: int,
+    message: str = "",
+    *,
+    title: str = "Training queue",
+) -> None:
     reserved_count = sum(1 for job in jobs if job.active)
     live_count = sum(
         1
@@ -499,7 +524,7 @@ def render_dashboard(jobs: list[Job], max_active: int, message: str = "") -> Non
 
     if sys.stdout.isatty():
         print("\033[2J\033[H", end="")
-    print(f"Tokenizer queue dashboard  {now}")
+    print(f"{title} dashboard  {now}")
     print(
         f"reserved={reserved_count}/{max_active}  live={live_count}  "
         f"done={complete_count}/{len(jobs)}  crash={crashed_count}"
@@ -539,7 +564,9 @@ def main() -> int:
     poll_interval = max(int(args.poll_interval_seconds), 1)
     starter_script = args.starter_script.resolve()
     starter_script_contents = starter_script.read_text()
-    config_paths = args.configs or DEFAULT_CONFIGS
+    job_kind = str(args.job_kind)
+    config_paths = args.configs or DEFAULT_CONFIGS_BY_KIND[job_kind]
+    dashboard_title = f"{job_kind.title()} queue"
     jobs = load_jobs(config_paths, active_account=args.use_active_account)
     message = "initializing"
     if args.use_active_account:
@@ -547,7 +574,7 @@ def main() -> int:
     for job in jobs:
         job.zone = job.candidates[0]["zone"]
         set_status(job, "CHECKING", detail="waiting for first cloud status check")
-    render_dashboard(jobs, args.max_active, message=message)
+    render_dashboard(jobs, args.max_active, message=message, title=dashboard_title)
 
     while True:
         for job in jobs:
@@ -588,6 +615,7 @@ def main() -> int:
                             jobs,
                             args.max_active,
                             message=f"{job.name}: creating queued resource",
+                            title=dashboard_title,
                         ),
                     )
                 except subprocess.CalledProcessError as exc:
@@ -600,7 +628,7 @@ def main() -> int:
                 active_count += 1
                 message = f"{job.name}: queued in {job.zone}"
 
-        render_dashboard(jobs, args.max_active, message=message)
+        render_dashboard(jobs, args.max_active, message=message, title=dashboard_title)
 
         if args.once:
             return (

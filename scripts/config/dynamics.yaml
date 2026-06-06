@@ -18,7 +18,7 @@ loss:
 
 video_eval:
   context_frames: 4
-  generated_frames: 116
+  generated_frames: 60
   sample_steps: 4
   context_tau: 0.9
   fps: 15
