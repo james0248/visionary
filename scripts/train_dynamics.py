@@ -706,7 +706,12 @@ def main(cfg: DictConfig):
             rollout_seed,
         ):
             video = jnp.asarray(video_batch[:1, :total_video_frames], dtype=jnp.float32)
-            actions = jnp.asarray(action_batch[:1, :total_video_frames], dtype=jnp.int32)
+            eval_action_dtype = (
+                jnp.float32
+                if str(cfg.dynamics.get("action_mode", "discrete")) == "continuous"
+                else jnp.int32
+            )
+            actions = jnp.asarray(action_batch[:1, :total_video_frames], dtype=eval_action_dtype)
             rollout_video = jnp.zeros_like(video)
             rollout_video = rollout_video.at[:, :video_context_frames].set(
                 video[:, :video_context_frames]

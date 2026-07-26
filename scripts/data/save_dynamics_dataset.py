@@ -245,11 +245,13 @@ def encode_record(
         if key != "frames" and value.ndim > 0 and value.shape[0] == episode_length:
             payload[key] = value[start:stop]
             if key == "actions":
-                payload["prev_action"] = (
-                    np.asarray(value[start - 1], dtype=value.dtype)
-                    if start > 0
-                    else np.full(value.shape[1:], -1, dtype=value.dtype)
-                )
+                if start > 0:
+                    prev_action = np.asarray(value[start - 1], dtype=value.dtype)
+                elif value.ndim > 1:
+                    prev_action = np.zeros(value.shape[1:], dtype=value.dtype)  # continuous
+                else:
+                    prev_action = np.full(value.shape[1:], -1, dtype=value.dtype)  # discrete
+                payload["prev_action"] = prev_action
 
     buffer = io.BytesIO()
     np.savez(buffer, **payload)

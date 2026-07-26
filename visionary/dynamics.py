@@ -1,4 +1,5 @@
 import math
+from typing import Literal
 
 import flax.linen as nn
 import jax
@@ -15,6 +16,7 @@ from visionary.transformer import (
 class ActionEmbedding(nn.Module):
     model_dim: int
     num_actions: int
+    action_mode: Literal["discrete", "continuous"] = "discrete"
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -33,17 +35,26 @@ class ActionEmbedding(nn.Module):
         if actions is None:
             return jnp.broadcast_to(base_token, (batch_size, seq_len, self.model_dim))
 
-        actions = jnp.asarray(actions, dtype=jnp.int32)
-        valid_actions = actions >= 0
-        safe_actions = jnp.where(valid_actions, actions, 0)
-        action_tokens = nn.Embed(
-            num_embeddings=self.num_actions,
-            features=self.model_dim,
-            embedding_init=nn.initializers.normal(stddev=0.02),
-            dtype=self.dtype,
-            name="action_embedding",
-        )(safe_actions)
-        action_tokens = jnp.where(valid_actions[..., None], action_tokens, 0)
+        if self.action_mode == "continuous":
+            actions = jnp.asarray(actions, dtype=self.dtype)
+            hidden = nn.Dense(self.model_dim, dtype=self.dtype, name="action_in")(actions)
+            hidden = nn.gelu(hidden)
+            action_tokens = nn.Dense(self.model_dim, dtype=self.dtype, name="action_out")(hidden)
+        elif self.action_mode == "discrete":
+            actions = jnp.asarray(actions, dtype=jnp.int32)
+            valid_actions = actions >= 0
+            safe_actions = jnp.where(valid_actions, actions, 0)
+            action_tokens = nn.Embed(
+                num_embeddings=self.num_actions,
+                features=self.model_dim,
+                embedding_init=nn.initializers.normal(stddev=0.02),
+                dtype=self.dtype,
+                name="action_embedding",
+            )(safe_actions)
+            action_tokens = jnp.where(valid_actions[..., None], action_tokens, 0)
+        else:
+            raise ValueError(f"Unknown action_mode: {self.action_mode!r}")
+
         return action_tokens + base_token
 
 
@@ -89,6 +100,7 @@ class DynamicsModel(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     context_length: int
+    action_mode: Literal["discrete", "continuous"] = "discrete"
     temporal_layer_period: int = 4
     base: float = 10000.0
     attention_logit_soft_cap: float | None = 50.0
@@ -103,6 +115,7 @@ class DynamicsModel(nn.Module):
         self.action_embedding = ActionEmbedding(
             model_dim=self.model_dim,
             num_actions=self.num_actions,
+            action_mode=self.action_mode,
             dtype=self.dtype,
         )
         self.register_tokens = self.param(
@@ -301,7 +314,8 @@ class DynamicsModel(nn.Module):
             "b t (n k) d -> b t n (k d)",
             n=self.num_obs_tokens,
         )
-        actions = jnp.asarray(batch["actions"], dtype=jnp.int32)
+        action_dtype = jnp.float32 if self.action_mode == "continuous" else jnp.int32
+        actions = jnp.asarray(batch["actions"], dtype=action_dtype)
 
         batch_size, seq_len, _, _ = z_target.shape
         bootstrap_rows = min(max(int(bootstrap_rows), 0), batch_size)
