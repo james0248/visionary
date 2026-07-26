@@ -115,6 +115,10 @@ def main() -> None:
                 pqt = sorted(d.glob(f"data/*/episode_{ep:06d}.parquet"))
                 if mp4 and pqt:
                     jobs.append((repo, cam, ep, mp4[0], pqt[0], start, stop))
+    # Shuffle before writing: grain shards by contiguous index blocks, so an
+    # order grouped by dataset would give each training host a nearly disjoint
+    # handful of datasets. Seeded, so a re-run reproduces the same layout.
+    np.random.default_rng(args.seed).shuffle(jobs)
     if args.limit:
         jobs = jobs[: args.limit]
     print(f"{len(jobs):,} (episode, camera) streams to pack "
