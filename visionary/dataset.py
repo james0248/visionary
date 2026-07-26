@@ -44,7 +44,9 @@ def _array_record_source_with_paths(data_dir: str) -> tuple[grain.ArrayRecordDat
     return grain.ArrayRecordDataSource(path_strings), path_strings
 
 
-def _describe_record_location(source: grain.ArrayRecordDataSource, paths: list[str], idx: int) -> str:
+def _describe_record_location(
+    source: grain.ArrayRecordDataSource, paths: list[str], idx: int
+) -> str:
     if hasattr(source, "_reader_idx_and_position"):
         try:
             reader_idx, position = source._reader_idx_and_position(idx)
@@ -154,3 +156,73 @@ class RandomDynamicsCrop(grain.RandomMapTransform):
             video=video[start_idx:stop_idx],
             actions=align_actions_to_frames(cropped_actions, prev_action=crop_prev_action),
         )
+
+
+def decode_video_window(
+    source: str | bytes,
+    start: int,
+    length: int,
+    decode_hw: tuple[int, int] | None = None,
+) -> np.ndarray:
+    import av
+
+    container = av.open(io.BytesIO(source) if isinstance(source, bytes) else source)
+    try:
+        stream = container.streams.video[0]
+        fps = float(stream.average_rate)
+        if start > 0:
+            container.seek(int(start / fps / stream.time_base), stream=stream, backward=True)
+        frames = []
+        for frame in container.decode(video=0):
+            if int(round(float(frame.time) * fps)) < start:
+                continue
+            if decode_hw is not None:
+                frame = frame.reformat(width=decode_hw[1], height=decode_hw[0], format="rgb24")
+            frames.append(np.asarray(frame.to_ndarray(format="rgb24")))
+            if len(frames) >= length:
+                break
+    finally:
+        container.close()
+    if not frames:
+        raise ValueError(f"Decoded no frames at start={start}")
+    return np.stack(frames)
+
+
+class VideoBytesDataSource(grain.RandomAccessDataSource):
+    """ArrayRecord shards whose records hold an encoded mp4 plus its frame count."""
+
+    def __init__(self, data_dir: str):
+        self._data_dir = epath.Path(data_dir).as_posix()
+        self._source, self._paths = _array_record_source_with_paths(self._data_dir)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(data_dir={self._data_dir!r})"
+
+    def __len__(self):
+        return len(self._source)
+
+    def __getitem__(self, idx: int) -> dict:
+        try:
+            with np.load(io.BytesIO(self._source[idx])) as data:
+                return {"video": data["video"].tobytes(), "length": int(data["length"])}
+        except Exception as exc:
+            location = _describe_record_location(self._source, self._paths, idx)
+            raise ValueError(
+                f"Failed to decode video record idx={idx} ({location}) from {self._data_dir}"
+            ) from exc
+
+
+class DecodeRandomVideoClip(grain.RandomMapTransform):
+    def __init__(self, frame_length: int, decode_hw: tuple[int, int] | None = None):
+        self.frame_length = frame_length
+        self.decode_hw = decode_hw
+
+    def random_map(self, element: dict, rng: np.random.Generator) -> VideoDataset:
+        length = element["length"]
+        start = (
+            0
+            if length <= self.frame_length
+            else int(rng.integers(0, length - self.frame_length + 1))
+        )
+        frames = decode_video_window(element["video"], start, self.frame_length, self.decode_hw)
+        return VideoDataset(video=frames)

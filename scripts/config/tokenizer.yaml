@@ -14,6 +14,12 @@ fsdp:
 dataset:
   train_dir: /mnt/data/train/
   eval_dir: /mnt/data/eval/
+  # VideoDataSource reads decoded frames; VideoBytesDataSource reads encoded mp4
+  # and pairs with DecodeRandomVideoClip below.
+  source:
+    _target_: visionary.dataset.VideoDataSource
+  clip_transform:
+    _target_: visionary.dataset.RandomVideoCrop
   frame_length: 32
   batch_size: 8
   worker_count: 4

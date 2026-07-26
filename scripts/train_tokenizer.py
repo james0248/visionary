@@ -23,7 +23,7 @@ from visionary.common.checkpoint import (
 from visionary.common.jax import fold_in_many, maybe_initialize_distributed
 from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
-from visionary.dataset import RandomVideoCrop, VideoDataset, VideoDataSource
+from visionary.dataset import VideoDataset
 from visionary.lpips import LPIPS
 from visionary.tokenizer import Tokenizer
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
@@ -501,8 +501,8 @@ def main(cfg: DictConfig):
     wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled) and is_primary_process)
     total_steps = int(cfg.total_steps)
 
-    train_source = VideoDataSource(cfg.dataset.train_dir)
-    eval_source = VideoDataSource(cfg.dataset.eval_dir)
+    train_source = instantiate(cfg.dataset.source, data_dir=cfg.dataset.train_dir)
+    eval_source = instantiate(cfg.dataset.source, data_dir=cfg.dataset.eval_dir)
     logger.info(
         "Loaded %d training videos and %d eval videos",
         len(train_source),
@@ -542,7 +542,9 @@ def main(cfg: DictConfig):
         "LPIPS settings: weight=%.3f",
         float(cfg.lpips_weight),
     )
-    crop_transform = RandomVideoCrop(cfg.dataset.frame_length)
+    clip_transform = instantiate(
+        cfg.dataset.clip_transform, frame_length=cfg.dataset.frame_length
+    )
     preprocess_transform = preprocessor.as_grain_transform()
 
     def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int):
@@ -562,7 +564,7 @@ def main(cfg: DictConfig):
             data_source=source,
             sampler=sampler,
             operations=[
-                crop_transform,
+                clip_transform,
                 preprocess_transform,
                 grain.Batch(
                     batch_size=batch_size_per_process,
