@@ -68,6 +68,10 @@ def main() -> None:
     ap.add_argument("--eval-ratio", type=float, default=0.02)
     ap.add_argument("--records-per-shard", type=int, default=256)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--fps", type=float, default=30.0,
+                    help="only pack streams recorded at this rate; 0 disables the check")
+    ap.add_argument("--aspect", type=float, default=4 / 3,
+                    help="only pack streams at this aspect ratio; 0 disables the check")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
@@ -76,13 +80,35 @@ def main() -> None:
     bounds = json.loads(Path(args.bounds).read_text())
     root = Path(args.data_dir)
 
-    jobs = []
+    jobs, skipped_fps, skipped_aspect, skipped_nometa = [], 0, 0, 0
     for repo, v in views.items():
         rb = bounds.get(repo)
         if not rb or not v["fixed"]:
             continue
         d = root / repo.replace("/", "__")
+        info_path = d / "meta" / "info.json"
+        if not info_path.exists():          # cannot verify rate or shape; do not guess
+            skipped_nometa += len(v["fixed"])
+            continue
+        meta = json.loads(info_path.read_text())
+        # Resampling video would desync it from the actions, which LeRobot stores
+        # one row per frame, so off-rate streams are dropped rather than fixed.
+        if args.fps and float(meta.get("fps", 0)) != args.fps:
+            skipped_fps += len(v["fixed"])
+            continue
         for cam in v["fixed"]:
+            # Scaling a 16:9 source into a 4:3 frame would distort the geometry
+            # the model is meant to learn, so mismatched aspects are dropped.
+            feature = meta.get("features", {}).get(f"observation.images.{cam}", {})
+            shape = feature.get("shape")
+            if args.aspect:
+                if not shape:
+                    skipped_nometa += 1
+                    continue
+                h, w = shape[0], shape[1]
+                if not h or abs(w / h - args.aspect) > 0.02:
+                    skipped_aspect += 1
+                    continue
             for ep_str, (start, stop) in rb.items():
                 ep = int(ep_str)
                 mp4 = sorted(d.glob(f"videos/*/observation.images.{cam}/episode_{ep:06d}.mp4"))
@@ -91,7 +117,9 @@ def main() -> None:
                     jobs.append((repo, cam, ep, mp4[0], pqt[0], start, stop))
     if args.limit:
         jobs = jobs[: args.limit]
-    print(f"{len(jobs):,} (episode, camera) streams to pack")
+    print(f"{len(jobs):,} (episode, camera) streams to pack "
+          f"(skipped {skipped_fps} off-rate, {skipped_aspect} off-aspect, "
+          f"{skipped_nometa} unverifiable cameras)")
     if args.dry_run:
         kept = sum(stop - start for *_, start, stop in jobs)
         print(f"  frames after trim: {kept:,}")
