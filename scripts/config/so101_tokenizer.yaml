@@ -27,7 +27,8 @@ dataset:
     contrast: 0.2
     saturation: 0.2
   frame_length: 32
-  batch_size: 16
+  # per process; v6e-8 shards it 8 ways, so this is 8 clips per chip
+  batch_size: 64
   worker_count: 8
   num_threads: 8
   prefetch_buffer_size: 16
