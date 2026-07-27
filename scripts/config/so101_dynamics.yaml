@@ -25,7 +25,7 @@ video_eval:
   fps: 30
   output_dir: artifacts/dynamics_eval/${exp_name}
   tokenizer:
-    checkpoint_dir: gs://visionary-exp/so101/checkpoints/${tokenizer_exp_name}
+    checkpoint_dir: gs://visionary-robot-bucket/so101/checkpoints/${tokenizer_exp_name}
     checkpoint_step: null
 
 dataset:
@@ -74,7 +74,7 @@ checkpoint:
   export_interval_steps: 100000
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
-    directory: gs://visionary-exp/so101/checkpoints/${exp_name}
+    directory: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
       save_interval_steps: 10000

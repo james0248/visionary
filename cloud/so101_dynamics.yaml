@@ -3,7 +3,7 @@
 project: visionary-491008
 exp_name: so101_dynamics
 tokenizer_exp_name: so101_tokenizer
-checkpoint_dir: gs://visionary-exp/so101/checkpoints/${exp_name}
+checkpoint_dir: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}
 
 job:
   name: so101-dynamics

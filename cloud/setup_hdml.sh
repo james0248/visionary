@@ -29,7 +29,7 @@ Example:
     --zone us-east1-d \
     --size-gb 200 \
     --throughput 2000 \
-    --gcs-path 'gs://visionary-exp/dream-arcade/data/*_tokenizer'
+    --gcs-path 'gs://dream-atari-bucket/data/*_tokenizer'
 
 Example with exact sources:
   cloud/setup_hdml.sh \
@@ -37,8 +37,8 @@ Example with exact sources:
     --zone us-east1-d \
     --size-gb 200 \
     --throughput 2000 \
-    --gcs-path gs://visionary-exp/dream-arcade/data/qbert_dynamics/ \
-    --gcs-path gs://visionary-exp/dream-arcade/data/seaquest_dynamics/
+    --gcs-path gs://dream-atari-bucket/data/qbert_dynamics/ \
+    --gcs-path gs://dream-atari-bucket/data/seaquest_dynamics/
 
 The script:
   1. Deletes an existing detached disk with the same name, if present.
