@@ -104,6 +104,8 @@ class DynamicsModel(nn.Module):
     temporal_layer_period: int = 4
     base: float = 10000.0
     attention_logit_soft_cap: float | None = 50.0
+    remat: bool = False
+    remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
     def setup(self):
@@ -132,6 +134,8 @@ class DynamicsModel(nn.Module):
             mlp_hidden_dim=self.mlp_hidden_dim,
             attention_logit_soft_cap=self.attention_logit_soft_cap,
             temporal_layer_period=self.temporal_layer_period,
+            remat=self.remat,
+            remat_policy=self.remat_policy,
             dtype=self.dtype,
         )
 

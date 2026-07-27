@@ -71,6 +71,8 @@ class TokenizerEncoder(nn.Module):
 
     base: float
     temporal_layer_period: int = 4
+    remat: bool = False
+    remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -120,6 +122,8 @@ class TokenizerEncoder(nn.Module):
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
             temporal_layer_period=self.temporal_layer_period,
+            remat=self.remat,
+            remat_policy=self.remat_policy,
             dtype=self.dtype,
         )(
             x=x,
@@ -150,6 +154,8 @@ class TokenizerDecoder(nn.Module):
 
     base: float
     temporal_layer_period: int = 4
+    remat: bool = False
+    remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -191,6 +197,8 @@ class TokenizerDecoder(nn.Module):
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
             temporal_layer_period=self.temporal_layer_period,
+            remat=self.remat,
+            remat_policy=self.remat_policy,
             dtype=self.dtype,
         )(
             x=x,
@@ -224,6 +232,8 @@ class Tokenizer(nn.Module):
 
     base: float
     temporal_layer_period: int = 4
+    remat: bool = False
+    remat_policy: str | None = None
     independent_prob: float = 0.3
     mask_prob_min: float = 0.0
     mask_prob_max: float = 0.9
@@ -271,6 +281,8 @@ class Tokenizer(nn.Module):
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
+            remat=self.remat,
+            remat_policy=self.remat_policy,
             dtype=self.dtype,
         )
         decoder_kwargs = dict(
@@ -285,6 +297,8 @@ class Tokenizer(nn.Module):
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
+            remat=self.remat,
+            remat_policy=self.remat_policy,
             dtype=self.dtype,
         )
         self.encoder = TokenizerEncoder(**encoder_kwargs)

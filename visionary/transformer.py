@@ -73,6 +73,15 @@ def pad_rope_for_latents(
     )
 
 
+def resolve_remat_policy(name: str | None):
+    if name is None:
+        return None
+    policy = getattr(jax.checkpoint_policies, name, None)
+    if policy is None:
+        raise ValueError(f"Unknown remat_policy: {name!r}")
+    return policy
+
+
 class Attention(nn.Module):
     model_dim: int
     num_heads: int
@@ -153,6 +162,8 @@ class SpatioTemporalTransformer(nn.Module):
     mlp_hidden_dim: int
     temporal_layer_period: int = 4
     attention_logit_soft_cap: float | None = 50.0
+    remat: bool = False
+    remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -179,13 +190,23 @@ class SpatioTemporalTransformer(nn.Module):
         temporal_mask = jnp.repeat(temporal_mask, total_tokens, axis=0)
         temporal_mask = temporal_mask[:, None, :, :]
 
+        # Recomputes each block in the backward pass instead of keeping its
+        # activations. Same parameter tree either way, so checkpoints carry over.
+        # remat_policy names an attribute of jax.checkpoint_policies; None keeps
+        # only the block input and recomputes everything else.
+        block_cls = (
+            nn.remat(TransformerBlock, policy=resolve_remat_policy(self.remat_policy))
+            if self.remat
+            else TransformerBlock
+        )
+
         def apply_block(
             block_idx: int,
             x: jnp.ndarray,
             rope_emb: tuple[jnp.ndarray, jnp.ndarray],
             mask: jnp.ndarray,
         ) -> jnp.ndarray:
-            return TransformerBlock(
+            return block_cls(
                 model_dim=self.model_dim,
                 num_heads=self.num_heads,
                 num_kv_heads=self.num_kv_heads,
