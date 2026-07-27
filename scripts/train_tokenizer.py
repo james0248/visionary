@@ -25,6 +25,7 @@ from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import VideoDataset
 from visionary.lpips import LPIPS
+from visionary.sigreg import sigreg_loss
 from visionary.tokenizer import Tokenizer
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
@@ -281,7 +282,10 @@ def compute_loss_metrics(
     batch: VideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
+    latent: jax.Array,
+    sigreg_key: jax.Array,
     lpips_weight: float,
+    sigreg_weight: float,
     preprocessor: TokenizerPreprocessor,
 ):
     original = batch["video"].astype(jnp.float32) / 255.0
@@ -300,18 +304,32 @@ def compute_loss_metrics(
         lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
     normalized_lpips_loss = lpips_loss / jax.lax.stop_gradient(lpips_rms)
 
+    if sigreg_weight > 0:
+        sigreg = sigreg_loss(latent, sigreg_key)
+    else:
+        sigreg = jnp.zeros((), dtype=mse_loss.dtype)
+
+    # per-channel over the pooled latents, the distribution sigreg targets
+    latent = latent.astype(jnp.float32).reshape(-1, latent.shape[-1])
+    latent_mean = jnp.mean(latent, axis=0)
+    latent_std = jnp.std(latent, axis=0)
+
     raw_loss = mse_loss + lpips_weight * lpips_loss
-    loss = normalized_mse_loss + lpips_weight * normalized_lpips_loss
+    loss = normalized_mse_loss + lpips_weight * normalized_lpips_loss + sigreg_weight * sigreg
     metrics = {
         "loss": loss,
         "raw_loss": raw_loss,
         "mse_loss": mse_loss,
         "lpips_loss": lpips_loss,
+        "sigreg_loss": sigreg,
         "normalized_mse_loss": normalized_mse_loss,
         "normalized_lpips_loss": normalized_lpips_loss,
         "mse_rms": mse_rms,
         "lpips_rms": lpips_rms,
         "mask_ratio": jnp.mean(mask),
+        "latent_mean_absmax": jnp.max(jnp.abs(latent_mean)),
+        "latent_std_min": jnp.min(latent_std),
+        "latent_std_max": jnp.max(latent_std),
     }
     return loss, metrics
 
@@ -322,23 +340,28 @@ def train_step(
     base_sample_key: jax.Array,
     global_step: int,
     lpips_weight: float,
+    sigreg_weight: float,
     preprocessor: TokenizerPreprocessor,
 ):
     sample_key = fold_in_many(base_sample_key, global_step)
+    model_key, sigreg_key = jax.random.split(sample_key)
 
     def loss_fn(params):
-        reconstructed, mask = state.apply_fn(
+        reconstructed, mask, latent = state.apply_fn(
             params,
             batch,
             method=Tokenizer.reconstruct,
-            rngs={"sample": sample_key},
+            rngs={"sample": model_key},
         )
         return compute_loss_metrics(
             state,
             batch,
             reconstructed,
             mask,
+            latent,
+            sigreg_key,
             lpips_weight,
+            sigreg_weight,
             preprocessor,
         )
 
@@ -359,11 +382,12 @@ def eval_step(
     global_step: int,
     batch_index: int,
     lpips_weight: float,
+    sigreg_weight: float,
     preprocessor: TokenizerPreprocessor,
 ):
     sample_key = fold_in_many(base_sample_key, global_step, batch_index)
-    model_key, frame_key = jax.random.split(sample_key)
-    reconstructed, mask = state.apply_fn(
+    model_key, frame_key, sigreg_key = jax.random.split(sample_key, num=3)
+    reconstructed, mask, latent = state.apply_fn(
         state.params,
         batch,
         mask_prob=0.1,
@@ -376,7 +400,10 @@ def eval_step(
         batch,
         reconstructed,
         mask,
+        latent,
+        sigreg_key,
         lpips_weight,
+        sigreg_weight,
         preprocessor,
     )
     sampled_frames = sample_sequence_frames(
@@ -612,7 +639,7 @@ def main(cfg: DictConfig):
         logger.info("LPIPS init took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
-    optimizer = optax.adam(cfg.learning_rate)
+    optimizer = instantiate(cfg.optimizer)
     state = TokenizerTrainState.create(
         model.apply,
         params,
@@ -643,7 +670,7 @@ def main(cfg: DictConfig):
             metrics_sharding,
         ),
         out_shardings=(state_shardings, metrics_sharding),
-        static_argnames=("lpips_weight", "preprocessor"),
+        static_argnames=("lpips_weight", "sigreg_weight", "preprocessor"),
         donate_argnums=(0,),
     )
     jit_eval_step = jax.jit(
@@ -659,7 +686,7 @@ def main(cfg: DictConfig):
             metrics_sharding,
             (sampled_frame_sharding, sampled_frame_sharding, sampled_frame_sharding),
         ),
-        static_argnames=("lpips_weight", "preprocessor"),
+        static_argnames=("lpips_weight", "sigreg_weight", "preprocessor"),
     )
     train_key = put_replicated(train_key, mesh)
     eval_key = put_replicated(eval_key, mesh)
@@ -758,6 +785,7 @@ def main(cfg: DictConfig):
             train_key,
             jnp.asarray(current_step, dtype=jnp.int32),
             float(cfg.lpips_weight),
+            float(cfg.sigreg_weight),
             preprocessor,
         )
         train_dispatched = time.monotonic()
@@ -803,6 +831,7 @@ def main(cfg: DictConfig):
                     jnp.asarray(step, dtype=jnp.int32),
                     jnp.asarray(batch_idx, dtype=jnp.int32),
                     float(cfg.lpips_weight),
+                    float(cfg.sigreg_weight),
                     preprocessor,
                 )
                 sampled_frames = host_local_batch(sampled_frames, mesh, batch_pspec)

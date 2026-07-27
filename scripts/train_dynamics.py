@@ -10,7 +10,6 @@ import imageio
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 import wandb
 from hydra.utils import instantiate, to_absolute_path
 from jax.experimental import mesh_utils, multihost_utils
@@ -609,7 +608,7 @@ def main(cfg: DictConfig):
     logger.info("Model init took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
-    optimizer = optax.adam(cfg.learning_rate)
+    optimizer = instantiate(cfg.optimizer)
     state = DynamicsTrainState.create(
         apply_fn=model.apply,
         params=params,

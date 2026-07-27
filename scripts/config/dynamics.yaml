@@ -1,5 +1,8 @@
 seed: 42
 learning_rate: 3e-4
+optimizer:
+  _target_: optax.adam
+  learning_rate: ${learning_rate}
 log_interval: 100
 eval_steps: 1000
 total_steps: 1000000

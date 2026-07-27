@@ -416,6 +416,9 @@ class _ExportSpatioTemporalTransformer(nn.Module):
     mlp_hidden_dim: int
     temporal_layer_period: int = 4
     attention_logit_soft_cap: float | None = 50.0
+    # accepted and ignored; export never runs a backward pass
+    remat: bool = False
+    remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -470,6 +473,8 @@ class _ExportSpatioTemporalTransformer(nn.Module):
             )(x, temporal_rope_emb, temporal_mask)
             block_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+
+        x = _ExportRMSNorm(dtype=self.dtype, name="final_norm")(x)
 
         return x
 
@@ -843,6 +848,8 @@ class _CachedSpatioTemporalTransformer(nn.Module):
             block_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
 
+        x = _ExportRMSNorm(dtype=self.dtype, name="final_norm")(x)
+
         return x, jnp.stack(cache_ks, axis=0), jnp.stack(cache_vs, axis=0)
 
     @nn.compact
@@ -937,6 +944,8 @@ class _CachedSpatioTemporalTransformer(nn.Module):
         candidate_cache_length = jnp.minimum(cache_length + 1, self.context_length).astype(
             jnp.int32
         )
+        x = _ExportRMSNorm(dtype=self.dtype, name="final_norm")(x)
+
         return (
             x,
             jnp.stack(candidate_ks, axis=0),
@@ -1036,6 +1045,8 @@ class _CachedSpatioTemporalTransformer(nn.Module):
         candidate_cache_length = jnp.minimum(cache_length + 1, self.context_length).astype(
             jnp.int32
         )
+        x = _ExportRMSNorm(dtype=self.dtype, name="final_norm")(x)
+
         return x, tuple(candidate_ks), tuple(candidate_vs), candidate_cache_length
 
     @nn.compact
@@ -1108,6 +1119,8 @@ class _CachedSpatioTemporalTransformer(nn.Module):
             temporal_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
 
+        x = _ExportRMSNorm(dtype=self.dtype, name="final_norm")(x)
+
         return x, jnp.stack(entry_ks, axis=0), jnp.stack(entry_vs, axis=0)
 
     @nn.compact
@@ -1172,6 +1185,8 @@ class _CachedSpatioTemporalTransformer(nn.Module):
             temporal_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
 
+        x = _ExportRMSNorm(dtype=self.dtype, name="final_norm")(x)
+
         return x
 
     @nn.compact
@@ -1227,6 +1242,8 @@ class _CachedSpatioTemporalTransformer(nn.Module):
             block_idx += 1
             temporal_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+
+        x = _ExportRMSNorm(dtype=self.dtype, name="final_norm")(x)
 
         return x
 

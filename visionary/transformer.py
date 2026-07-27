@@ -231,4 +231,4 @@ class SpatioTemporalTransformer(nn.Module):
             block_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
 
-        return x
+        return nn.RMSNorm(dtype=self.dtype, name="final_norm")(x)

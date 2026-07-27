@@ -1,5 +1,16 @@
 seed: 42
 learning_rate: 3e-4
+optimizer:
+  _target_: optax.chain
+  _args_:
+    - _target_: optax.clip_by_global_norm
+      max_norm: 1.0
+    - _target_: optax.adam
+      learning_rate:
+        _target_: optax.warmup_constant_schedule
+        init_value: 0.0
+        peak_value: ${learning_rate}
+        warmup_steps: 1000
 log_interval: 100
 eval_steps: 1000
 total_steps: 200000

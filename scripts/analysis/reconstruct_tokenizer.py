@@ -57,7 +57,7 @@ def main():
     preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
     patch_batch = {"video": preprocessor.preprocess_video(batch["video"])}
     patch_video = jax.numpy.asarray(patch_batch["video"], dtype=jax.numpy.float32) / 255.0
-    reconstructed_patches, mask = tokenizer.apply(
+    reconstructed_patches, mask, _ = tokenizer.apply(
         variables,
         patch_batch,
         mask_prob=float(args.mask_prob),

@@ -1,6 +1,11 @@
 seed: 42
 learning_rate: 3e-4
+optimizer:
+  _target_: optax.adam
+  learning_rate: ${learning_rate}
 lpips_weight: 0.4
+# holds the bottleneck latents at N(0, I); le-wm's weight
+sigreg_weight: 0.09
 log_interval: 100
 eval_steps: 1000
 total_steps: 1000000

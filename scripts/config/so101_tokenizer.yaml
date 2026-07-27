@@ -1,6 +1,19 @@
 seed: 42
 learning_rate: 3e-4
+optimizer:
+  _target_: optax.chain
+  _args_:
+    - _target_: optax.clip_by_global_norm
+      max_norm: 1.0
+    - _target_: optax.adam
+      learning_rate:
+        _target_: optax.warmup_constant_schedule
+        init_value: 0.0
+        peak_value: ${learning_rate}
+        warmup_steps: 1000
 lpips_weight: 0.4
+# holds the bottleneck latents at N(0, I); le-wm's weight
+sigreg_weight: 0.09
 log_interval: 100
 eval_steps: 1000
 total_steps: 50000
@@ -52,8 +65,9 @@ tokenizer:
   patch_size: 16
   base: 10000.0
   # 4 clips x 32 frames x 460 tokens per chip. Keeping the projection and MLP
-  # matmuls fits in 19.6 GB/chip and recomputes only 2% of the flops; full remat
-  # would cost 25%. Going to 8 clips per chip would not leave room for this.
+  # matmuls costs 21.3 GB/chip of activations (23.7 GB with optimizer state, of
+  # 32 GB) and recomputes only 2% of the flops; full remat would cost 25%.
+  # Going to 8 clips per chip would not leave room for this.
   remat: true
   remat_policy: dots_with_no_batch_dims_saveable
   independent_prob: 0.3
