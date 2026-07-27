@@ -27,8 +27,8 @@ dataset:
     contrast: 0.2
     saturation: 0.2
   frame_length: 32
-  # per process; v6e-8 shards it 8 ways, so this is 8 clips per chip
-  batch_size: 64
+  # per process; v6e-8 shards it 8 ways, so this is 4 clips per chip
+  batch_size: 32
   worker_count: 8
   num_threads: 8
   prefetch_buffer_size: 16
@@ -51,10 +51,9 @@ tokenizer:
   pad_width: [0, 0]
   patch_size: 16
   base: 10000.0
-  # 460 tokens x 32 frames does not fit v6e HBM without recomputing the blocks.
-  # Keeping the projection and MLP matmuls costs 9.9 GB/chip and recovers all
-  # but 2% of the recompute; saving the attention dots too would need 22 GB/chip
-  # to buy the last 2%.
+  # 4 clips x 32 frames x 460 tokens per chip. Keeping the projection and MLP
+  # matmuls fits in 19.6 GB/chip and recomputes only 2% of the flops; full remat
+  # would cost 25%. Going to 8 clips per chip would not leave room for this.
   remat: true
   remat_policy: dots_with_no_batch_dims_saveable
   independent_prob: 0.3
