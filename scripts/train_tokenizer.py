@@ -261,9 +261,11 @@ def update_loss_ema(
     state: TokenizerTrainState,
     mse_loss: jax.Array,
     lpips_loss: jax.Array,
+    sigreg_loss: jax.Array,
 ) -> TokenizerTrainState:
     mse_loss = mse_loss.astype(jnp.float32)
     lpips_loss = lpips_loss.astype(jnp.float32)
+    sigreg_loss = sigreg_loss.astype(jnp.float32)
     step_size = jnp.asarray(1.0 - LOSS_RMS_DECAY, dtype=mse_loss.dtype)
     return state.replace(
         mse_sq_ema=optax.incremental_update(
@@ -272,6 +274,11 @@ def update_loss_ema(
         lpips_sq_ema=optax.incremental_update(
             jnp.square(lpips_loss),
             state.lpips_sq_ema.astype(lpips_loss.dtype),
+            step_size,
+        ),
+        sigreg_sq_ema=optax.incremental_update(
+            jnp.square(sigreg_loss),
+            state.sigreg_sq_ema.astype(sigreg_loss.dtype),
             step_size,
         ),
     )
@@ -304,10 +311,12 @@ def compute_loss_metrics(
         lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
     normalized_lpips_loss = lpips_loss / jax.lax.stop_gradient(lpips_rms)
 
+    sigreg_rms = jnp.sqrt(state.sigreg_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if sigreg_weight > 0:
         sigreg = sigreg_loss(latent, sigreg_key)
     else:
         sigreg = jnp.zeros((), dtype=mse_loss.dtype)
+    normalized_sigreg_loss = sigreg / jax.lax.stop_gradient(sigreg_rms)
 
     # per-channel over the pooled latents, the distribution sigreg targets
     latent = latent.astype(jnp.float32).reshape(-1, latent.shape[-1])
@@ -315,7 +324,11 @@ def compute_loss_metrics(
     latent_std = jnp.std(latent, axis=0)
 
     raw_loss = mse_loss + lpips_weight * lpips_loss
-    loss = normalized_mse_loss + lpips_weight * normalized_lpips_loss + sigreg_weight * sigreg
+    loss = (
+        normalized_mse_loss
+        + lpips_weight * normalized_lpips_loss
+        + sigreg_weight * normalized_sigreg_loss
+    )
     metrics = {
         "loss": loss,
         "raw_loss": raw_loss,
@@ -324,8 +337,10 @@ def compute_loss_metrics(
         "sigreg_loss": sigreg,
         "normalized_mse_loss": normalized_mse_loss,
         "normalized_lpips_loss": normalized_lpips_loss,
+        "normalized_sigreg_loss": normalized_sigreg_loss,
         "mse_rms": mse_rms,
         "lpips_rms": lpips_rms,
+        "sigreg_rms": sigreg_rms,
         "mask_ratio": jnp.mean(mask),
         "latent_mean_absmax": jnp.max(jnp.abs(latent_mean)),
         "latent_std_min": jnp.min(latent_std),
@@ -371,6 +386,7 @@ def train_step(
         state,
         metrics["mse_loss"],
         metrics["lpips_loss"],
+        metrics["sigreg_loss"],
     )
     return state, metrics
 

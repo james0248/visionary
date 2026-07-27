@@ -15,6 +15,7 @@ class TokenizerTrainState(TrainState):
     l1_sq_ema: jax.Array
     lpips_sq_ema: jax.Array
     motion_sq_ema: jax.Array
+    sigreg_sq_ema: jax.Array
 
     @classmethod
     def create(cls, apply_fn, params, tx):
@@ -26,6 +27,7 @@ class TokenizerTrainState(TrainState):
             l1_sq_ema=jnp.ones((), dtype=jnp.float32),
             lpips_sq_ema=jnp.ones((), dtype=jnp.float32),
             motion_sq_ema=jnp.ones((), dtype=jnp.float32),
+            sigreg_sq_ema=jnp.ones((), dtype=jnp.float32),
         )
 
 

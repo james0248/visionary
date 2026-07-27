@@ -4,7 +4,6 @@ optimizer:
   _target_: optax.adam
   learning_rate: ${learning_rate}
 lpips_weight: 0.4
-# holds the bottleneck latents at N(0, I); le-wm's weight
 sigreg_weight: 0.09
 log_interval: 100
 eval_steps: 1000
@@ -46,8 +45,8 @@ tokenizer:
   mlp_hidden_dim: 384
   head_dim: 32
   channel_dim: 16
-  resize_shape: [ 128, 96 ]
-  pad_width: [ 0, 0 ]
+  resize_shape: [128, 96]
+  pad_width: [0, 0]
   patch_size: 8
   base: 10000.0
   independent_prob: 0.3
