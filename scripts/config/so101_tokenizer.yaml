@@ -1,0 +1,76 @@
+seed: 42
+learning_rate: 3e-4
+lpips_weight: 0.4
+log_interval: 100
+eval_steps: 1000
+total_steps: 50000
+exp_name: so101_tokenizer
+
+fsdp:
+  enabled: auto
+  data_axis_size: 8
+  log_sharding: true
+
+dataset:
+  train_dir: data/so101/shards/train
+  eval_dir: data/so101/shards/eval
+  # records hold encoded mp4
+  source:
+    _target_: visionary.dataset.VideoBytesDataSource
+  clip_transform:
+    _target_: visionary.dataset.DecodeRandomVideoClip
+    decode_hw: [240, 320]
+  augment:
+    _target_: visionary.dataset.AugmentVideoClip
+    crop_scale: 0.95
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+  frame_length: 32
+  batch_size: 16
+  worker_count: 8
+  num_threads: 8
+  prefetch_buffer_size: 16
+  eval:
+    max_batches: 16
+    log_frames: 8
+
+tokenizer:
+  _target_: visionary.tokenizer.Tokenizer
+  num_layers: 12
+  num_latents: 160
+  num_heads: 12
+  num_kv_heads: 3
+  temporal_layer_period: 4
+  model_dim: 768
+  mlp_hidden_dim: 2304
+  head_dim: 64
+  channel_dim: 16
+  resize_shape: [240, 320]
+  pad_width: [0, 0]
+  patch_size: 16
+  base: 10000.0
+  # 460 tokens x 32 frames does not fit v6e HBM without recomputing the blocks.
+  # Keeping the projection and MLP matmuls costs 9.9 GB/chip and recovers all
+  # but 2% of the recompute; saving the attention dots too would need 22 GB/chip
+  # to buy the last 2%.
+  remat: true
+  remat_policy: dots_with_no_batch_dims_saveable
+  independent_prob: 0.3
+
+checkpoint:
+  export_interval_steps: 50000
+  manager:
+    _target_: visionary.common.checkpoint.CheckpointManager
+    directory: gs://visionary-exp/so101/checkpoints/${exp_name}
+    options:
+      _target_: orbax.checkpoint.CheckpointManagerOptions
+      save_interval_steps: 5000
+      max_to_keep: 5
+      enable_async_checkpointing: true
+  resume_step: null
+
+wandb:
+  enabled: true
+  project: visionary
+  group: so101_tokenizer
