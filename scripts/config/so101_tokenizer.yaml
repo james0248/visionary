@@ -79,7 +79,7 @@ checkpoint:
     directory: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
-      save_interval_steps: 5000
+      save_interval_steps: 1000
       max_to_keep: 5
       enable_async_checkpointing: true
   resume_step: null
