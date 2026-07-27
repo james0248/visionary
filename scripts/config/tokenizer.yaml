@@ -20,6 +20,7 @@ dataset:
     _target_: visionary.dataset.VideoDataSource
   clip_transform:
     _target_: visionary.dataset.RandomVideoCrop
+  augment: null
   frame_length: 32
   batch_size: 8
   worker_count: 4

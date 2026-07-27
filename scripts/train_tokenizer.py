@@ -99,11 +99,7 @@ def choose_fsdp_partition_spec(
         dtype = np.int32 if isinstance(value, (int, np.integer)) else None
         value = np.asarray(value, dtype=dtype)
     shape = tuple(int(dim) for dim in value.shape)
-    if (
-        not enabled
-        or fsdp_axis_size <= 1
-        or not shape
-    ):
+    if not enabled or fsdp_axis_size <= 1 or not shape:
         return P()
 
     ranked_dims = sorted(range(len(shape)), key=lambda axis: shape[axis], reverse=True)
@@ -542,17 +538,15 @@ def main(cfg: DictConfig):
         "LPIPS settings: weight=%.3f",
         float(cfg.lpips_weight),
     )
-    clip_transform = instantiate(
-        cfg.dataset.clip_transform, frame_length=cfg.dataset.frame_length
-    )
+    clip_transform = instantiate(cfg.dataset.clip_transform, frame_length=cfg.dataset.frame_length)
+    augment_transform = instantiate(cfg.dataset.augment) if cfg.dataset.augment else None
+    logger.info("Train augmentation: %s", augment_transform or "disabled")
     preprocess_transform = preprocessor.as_grain_transform()
 
-    def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int):
+    def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int, augment: bool = False):
         sampler = grain.IndexSampler(
             num_records=len(source),
-            shard_options=grain.ShardByJaxProcess()
-            if process_count > 1
-            else grain.NoSharding(),
+            shard_options=grain.ShardByJaxProcess() if process_count > 1 else grain.NoSharding(),
             shuffle=shuffle,
             seed=seed,
         )
@@ -560,11 +554,14 @@ def main(cfg: DictConfig):
             num_threads=num_threads,
             prefetch_buffer_size=prefetch_buffer_size,
         )
+        operations = [clip_transform]
+        if augment and augment_transform is not None:
+            operations.append(augment_transform)
         return grain.DataLoader(
             data_source=source,
             sampler=sampler,
             operations=[
-                clip_transform,
+                *operations,
                 preprocess_transform,
                 grain.Batch(
                     batch_size=batch_size_per_process,
@@ -581,6 +578,7 @@ def main(cfg: DictConfig):
         shuffle=True,
         drop_remainder=True,
         seed=int(cfg.seed),
+        augment=True,
     )
     logger.info("Train DataLoader creation took %.1fs", time.monotonic() - _t)
 
@@ -791,9 +789,7 @@ def main(cfg: DictConfig):
             eval_batches = list(itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches))
             if fsdp_enabled:
                 global_eval_batch_counts = np.asarray(
-                    multihost_utils.process_allgather(
-                        np.asarray(len(eval_batches), dtype=np.int32)
-                    )
+                    multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
                 )
                 eval_batches = eval_batches[: int(np.min(global_eval_batch_counts))]
             vis_original_batches = []

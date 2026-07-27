@@ -1,6 +1,7 @@
 import io
 from typing import TypedDict
 
+import cv2
 import grain.python as grain
 import numpy as np
 from etils import epath
@@ -226,3 +227,62 @@ class DecodeRandomVideoClip(grain.RandomMapTransform):
         )
         frames = decode_video_window(element["video"], start, self.frame_length, self.decode_hw)
         return VideoDataset(video=frames)
+
+
+class AugmentVideoClip(grain.RandomMapTransform):
+    # Parameters are drawn once per clip, not per frame: a fresh crop each frame
+    # would synthesize camera motion. No flip, which would contradict the actions.
+    def __init__(
+        self,
+        crop_scale: float = 0.95,
+        brightness: float = 0.2,
+        contrast: float = 0.2,
+        saturation: float = 0.2,
+        hue: float = 0.0,
+        prob: float = 1.0,
+    ):
+        self.crop_scale = crop_scale
+        self.brightness = brightness
+        self.contrast = contrast
+        self.saturation = saturation
+        self.hue = hue
+        self.prob = prob
+
+    def random_map(self, element: VideoDataset, rng: np.random.Generator) -> VideoDataset:
+        video = element["video"]
+        if self.prob < 1.0 and rng.random() >= self.prob:
+            return VideoDataset(video=video)
+
+        _, height, width, _ = video.shape
+
+        if self.crop_scale < 1.0:
+            crop_h, crop_w = int(height * self.crop_scale), int(width * self.crop_scale)
+            top = int(rng.integers(0, height - crop_h + 1))
+            left = int(rng.integers(0, width - crop_w + 1))
+            video = video[:, top : top + crop_h, left : left + crop_w, :]
+            video = np.stack(
+                [
+                    cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
+                    for frame in video
+                ]
+            )
+
+        out = video.astype(np.float32)
+        if self.saturation > 0:
+            factor = 1.0 + float(rng.uniform(-self.saturation, self.saturation))
+            gray = out @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+            out = gray[..., None] + (out - gray[..., None]) * factor
+        if self.contrast > 0:
+            factor = 1.0 + float(rng.uniform(-self.contrast, self.contrast))
+            out = out.mean() + (out - out.mean()) * factor
+        if self.brightness > 0:
+            out *= 1.0 + float(rng.uniform(-self.brightness, self.brightness))
+        if self.hue > 0:
+            shift = float(rng.uniform(-self.hue, self.hue)) * 180.0
+            hsv = np.stack(
+                [cv2.cvtColor(f, cv2.COLOR_RGB2HSV) for f in np.clip(out, 0, 255).astype(np.uint8)]
+            )
+            hsv[..., 0] = (hsv[..., 0].astype(np.float32) + shift) % 180
+            out = np.stack([cv2.cvtColor(f, cv2.COLOR_HSV2RGB) for f in hsv]).astype(np.float32)
+
+        return VideoDataset(video=np.clip(out, 0, 255).astype(np.uint8))
