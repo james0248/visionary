@@ -240,8 +240,12 @@ def write_split(
     output_dir: Path,
 ) -> SplitStats:
     copies = 1 + (args.augment_copies if split_name == "train" else 0)
-    num_streams = len(source) if args.limit is None else min(len(source), args.limit)
-    items = [(idx, copy) for idx in range(num_streams) for copy in range(copies)]
+    # global stream indices, so episode ids stay stable across ranged runs
+    start = min(args.stream_start, len(source))
+    stop = len(source) if args.stream_stop is None else min(args.stream_stop, len(source))
+    if args.limit is not None:
+        stop = min(stop, start + args.limit)
+    items = [(idx, copy) for idx in range(start, stop) for copy in range(copies)]
 
     shard_writer = ShardWriter(output_dir, args.records_per_shard)
     stats = SplitStats(episodes_found=len(items))
@@ -415,6 +419,22 @@ def create_parser() -> argparse.ArgumentParser:
         help="Extra augmented encodings written per train stream (eval stays clean).",
     )
     parser.add_argument("--limit", type=int, help="Streams per split, for smoke tests.")
+    parser.add_argument(
+        "--split",
+        choices=("both", "train", "eval"),
+        default="both",
+        help="Which input split to encode.",
+    )
+    parser.add_argument(
+        "--stream_start",
+        type=int,
+        default=0,
+        help="First stream index to encode; episode ids stay global, so ranged "
+        "runs compose into one resumable dataset.",
+    )
+    parser.add_argument(
+        "--stream_stop", type=int, help="Stop stream index (exclusive). Defaults to the split end."
+    )
     return parser
 
 
@@ -461,9 +481,10 @@ def main() -> None:
         compute_action_stats(sources["train"], stats_path)
     normalizer = build_action_normalizer("continuous", str(stats_path))
 
+    splits = ("train", "eval") if args.split == "both" else (args.split,)
     split_stats = {
         split: write_split(split, sources[split], encoder, args, normalizer, output_dir / split)
-        for split in ("train", "eval")
+        for split in splits
     }
 
     metadata = {
@@ -484,6 +505,9 @@ def main() -> None:
             "encode_window_length": args.encode_window_length,
             "encode_window_overlap": args.encode_window_overlap,
             "augment_copies": args.augment_copies,
+            "split": args.split,
+            "stream_start": args.stream_start,
+            "stream_stop": args.stream_stop,
         },
         "stats": {split: stats.to_dict() for split, stats in split_stats.items()},
     }
