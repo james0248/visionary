@@ -469,8 +469,12 @@ def main() -> None:
 
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
-    sources = {split: open_split_source(input_dir, split) for split in ("train", "eval")}
-    logger.info("Found %d train and %d eval streams", len(sources["train"]), len(sources["eval"]))
+    splits = ("train", "eval") if args.split == "both" else (args.split,)
+    # only the splits actually used, so a run can work from a partial copy
+    needed = set(splits) | ({"train"} if not args.action_stats else set())
+    sources = {split: open_split_source(input_dir, split) for split in sorted(needed)}
+    for split, source in sources.items():
+        logger.info("Found %d %s streams", len(source), split)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.action_stats:
@@ -481,7 +485,6 @@ def main() -> None:
         compute_action_stats(sources["train"], stats_path)
     normalizer = build_action_normalizer("continuous", str(stats_path))
 
-    splits = ("train", "eval") if args.split == "both" else (args.split,)
     split_stats = {
         split: write_split(split, sources[split], encoder, args, normalizer, output_dir / split)
         for split in splits
