@@ -1,5 +1,5 @@
 # SO-101 dynamics training (TPU v6e-8), continuous 6-DoF actions. Needs the
-# so101_tokenizer checkpoint and dynamics ArrayRecords at /mnt/data/so101_dynamics.
+# so101_tokenizer checkpoint and the dynamics latents at /mnt/data/dyn.
 project: visionary-491008
 exp_name: so101_dynamics
 tokenizer_exp_name: so101_tokenizer
@@ -27,8 +27,8 @@ training:
   overrides:
     - exp_name=${exp_name}
     - tokenizer_exp_name=${tokenizer_exp_name}
-    - dataset.train_dir=/mnt/data/so101_dynamics/train
-    - dataset.eval_dir=/mnt/data/so101_dynamics/eval
+    - dataset.train_dir=/mnt/data/dyn/train
+    - dataset.eval_dir=/mnt/data/dyn/eval
     - checkpoint.manager.directory=${checkpoint_dir}
 
 markers:

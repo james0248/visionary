@@ -25,8 +25,7 @@ fsdp:
 
 loss:
   bootstrap_ratio: 0.25
-  # both Dreamer 4 and open-dreamer start bootstrapping halfway through
-  bootstrap_start_step: 100000
+  bootstrap_start_step: 25000
 
 video_eval:
   context_frames: 4
@@ -42,26 +41,30 @@ video_eval:
 dataset:
   train_dir: data/so101/dyn/train
   eval_dir: data/so101/dyn/eval
-  batch_size: 8
-  batch_length: 64
+  batch_size: 16
+  # inert while alternating_lengths is enabled; kept equal to long
+  batch_length: 128
   alternating_lengths:
     enabled: true
-    short: 16
-    long: 64
+    short: 32
+    # past context_length, so the truncated sliding window is trained too
+    long: 128
     long_every: 8
     final_long_only_steps: 0
   worker_count: 8
   num_threads: 8
   prefetch_buffer_size: 16
   eval:
-    batch_length: 64
+    batch_length: 128
     max_batches: 16
 
 dynamics:
   _target_: visionary.dynamics.DynamicsModel
+  # 651M, 4x the tokenizer; Atari keeps them near parity but Dreamer 4 makes
+  # the dynamics model much larger than the tokenizer
   num_layers: 24
-  num_heads: 12
-  num_kv_heads: 3
+  num_heads: 24
+  num_kv_heads: 6
   temporal_layer_period: 4
   num_registers: 2
   # one dynamics token per tokenizer latent, so no packing
@@ -70,16 +73,17 @@ dynamics:
   num_actions: 6
   action_mode: continuous
   max_step_size: 6
-  model_dim: 768
+  model_dim: 1536
   head_dim: 64
-  mlp_hidden_dim: 2304
+  mlp_hidden_dim: 4608
   # Dreamer 4 uses 96 frames of context for its real-world robot datasets
   context_length: 96
   base: 10000.0
-  # only 164 tokens, so keeping every matmul still fits in 5.4 GB/chip and the
-  # backward recomputes no matmuls at all
+  # params + adam are replicated (~10.4 GB/chip fp32) and saving the matmuls
+  # costs ~14 GB per sequence at the 128-frame long batches, so at 2 seqs/chip
+  # everything is recomputed: ~2 GB/seq of activations for 1.25x flops
   remat: true
-  remat_policy: dots_saveable
+  remat_policy: nothing_saveable
 
 checkpoint:
   export_interval_steps: 100000
@@ -88,7 +92,8 @@ checkpoint:
     directory: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
-      save_interval_steps: 10000
+      # spot preemption is frequent, so bound the work a restart can lose
+      save_interval_steps: 2000
       max_to_keep: 5
       enable_async_checkpointing: true
   resume_step: null
