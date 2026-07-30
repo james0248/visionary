@@ -118,6 +118,12 @@ def main() -> None:
     parser.add_argument("--data_dir", required=True, help="Eval latent ArrayRecord directory.")
     parser.add_argument("--output_dir", required=True, help="Where to write mp4 files.")
     parser.add_argument("--num_videos", type=int, default=20)
+    parser.add_argument(
+        "--indices",
+        help="Comma-separated video indices to render instead of 0..num_videos-1. "
+        "Indices are deterministic given --seed, so the same clip can be re-rendered "
+        "from a different checkpoint.",
+    )
     parser.add_argument("--step", type=int, help="Checkpoint step. Defaults to latest.")
     parser.add_argument("--context_frames", type=int, default=4)
     parser.add_argument(
@@ -275,8 +281,11 @@ def main() -> None:
     def to_u8(x: np.ndarray) -> np.ndarray:
         return np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8)
 
+    selected = (
+        [int(i) for i in args.indices.split(",")] if args.indices else list(range(args.num_videos))
+    )
     summary = []
-    for index in range(args.num_videos):
+    for position, index in enumerate(selected):
         sample = sample_for(index)
         total_frames = sample["total"]
         started = time.monotonic()
@@ -350,8 +359,8 @@ def main() -> None:
         )
         logger.info(
             "[%d/%d] %s  %d frames  psnr %.2f  ssim %.4f  (%.0fs)",
-            index + 1,
-            args.num_videos,
+            position + 1,
+            len(selected),
             path.name,
             total_frames,
             psnr,
