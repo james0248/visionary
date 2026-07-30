@@ -361,7 +361,7 @@ class DynamicsModel(nn.Module):
         z_pred_1 = self(z_noised, actions, step_levels, signal_levels)
 
         flow_loss = (z_pred_1 - z_target) ** 2
-        loss_weight = 0.9 * tau + 0.1
+        loss_weight = 1.0 / (1.0 - tau) ** 2
         weighted_flow_loss = loss_weight * flow_loss
 
         bootstrap_loss_metric = jnp.asarray(0.0, dtype=jnp.float32)
