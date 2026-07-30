@@ -1,0 +1,71 @@
+# Fine-tune of so101_dynamics from step 200000 with the velocity loss
+# weighting (1/(1-tau)^2). Same data, lower LR, 30k extra steps.
+project: visionary-491008
+exp_name: so101_dynamics_tau
+tokenizer_exp_name: so101_tokenizer
+checkpoint_dir: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}
+
+job:
+  name: so101-dynamics-tau
+  poll_interval_seconds: 60
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: so101
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/train_dynamics.py
+  config_name: so101_dynamics
+  auto_resume: true
+  overrides:
+    - exp_name=${exp_name}
+    - tokenizer_exp_name=${tokenizer_exp_name}
+    - dataset.train_dir=/mnt/data/dyn/train
+    - dataset.eval_dir=/mnt/data/dyn/eval
+    - checkpoint.manager.directory=${checkpoint_dir}
+    - total_steps=230000
+    - learning_rate=1e-4
+
+markers:
+  complete_uri: ${checkpoint_dir}/_training_complete.json
+  failure_prefix: ${checkpoint_dir}/failures
+
+logs:
+  uri: ${checkpoint_dir}/_starter.log
+  archive_uri_prefix: ${checkpoint_dir}/logs
+  tail_lines: 120
+
+failure_policy:
+  mode: retry
+  max_retries: 3
+  retry_backoff_seconds: 30
+
+secrets:
+  wandb_secret: wandb-api-key
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: ${checkpoint_dir}/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
+machine:
+  family: v6e
+  chips: 8
+  zone: us-central1-b
+  spot: true
+  data_disk:
+    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-so101-dynamics-data-uc1b
+    mode: read-only
+    mount_path: /mnt/data
