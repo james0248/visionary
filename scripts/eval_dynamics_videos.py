@@ -13,10 +13,12 @@ by generated frames on the right.
 """
 
 import argparse
+import io
 import json
 import logging
 from pathlib import Path
 
+import grain.python as grain
 import imageio
 import jax
 import jax.numpy as jnp
@@ -31,11 +33,29 @@ from visionary.common.checkpoint import (
     restore_preprocessor_export,
 )
 from visionary.common.train_state import DynamicsTrainState
-from visionary.dataset import DynamicsDataSource, RandomDynamicsCrop
+from visionary.dataset import align_actions_to_frames, decode_video_window
 from visionary.dynamics import DynamicsModel
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
+
+
+def build_raw_index(shards_dir: str) -> dict[tuple[str, int, str], bytes]:
+    """Map (repo, episode, camera) -> mp4 bytes from the packed video shards.
+
+    These are the same trimmed streams the latents were encoded from, so a
+    latent record's start_index indexes directly into this video.
+    """
+    paths = sorted(str(p) for p in Path(shards_dir).glob("*.arecord"))
+    if not paths:
+        raise FileNotFoundError(f"No .arecord files in {shards_dir}")
+    source = grain.ArrayRecordDataSource(paths)
+    index: dict[tuple[str, int, str], bytes] = {}
+    for i in range(len(source)):
+        with np.load(io.BytesIO(source[i])) as data:
+            key = (str(data["repo"]), int(data["episode"]), str(data["camera"]))
+            index[key] = data["video"].tobytes()
+    return index
 
 
 def load_train_config(checkpoint_dir: str) -> OmegaConf:
@@ -92,6 +112,17 @@ def main() -> None:
     parser.add_argument("--context_tau", type=float, default=0.9)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--raw_shards_dir",
+        help="Packed video shards (eval split) so the reference panel is the "
+        "original footage instead of the tokenizer's reconstruction.",
+    )
+    parser.add_argument(
+        "--include_recon",
+        action="store_true",
+        help="Add a middle panel with the tokenizer reconstruction, which "
+        "separates tokenizer error from dynamics error.",
+    )
     args = parser.parse_args()
 
     total_frames = args.context_frames + args.generated_frames
@@ -101,21 +132,45 @@ def main() -> None:
     cfg = load_train_config(args.checkpoint_dir)
     logger.info("Loaded training config for exp %s", cfg.get("exp_name", "?"))
 
-    source = DynamicsDataSource(args.data_dir)
-    logger.info("Eval source has %d records", len(source))
-    crop = RandomDynamicsCrop(total_frames)
+    # read records directly rather than through DynamicsDataSource: the crop
+    # offset and provenance are needed to locate the original footage
+    latent_paths = sorted(str(p) for p in Path(args.data_dir).glob("*.arecord"))
+    if not latent_paths:
+        raise FileNotFoundError(f"No .arecord files in {args.data_dir}")
+    latents = grain.ArrayRecordDataSource(latent_paths)
+    logger.info("Eval source has %d records", len(latents))
 
-    def batch_for(index: int):
-        record = source[index % len(source)]
-        cropped = crop.random_map(record, np.random.default_rng([args.seed, index]))
+    raw_index = build_raw_index(args.raw_shards_dir) if args.raw_shards_dir else {}
+    if args.raw_shards_dir:
+        logger.info("Indexed %d original streams from %s", len(raw_index), args.raw_shards_dir)
+
+    def sample_for(index: int):
+        with np.load(io.BytesIO(latents[index % len(latents)])) as data:
+            video = np.asarray(data["frames"])
+            actions = np.asarray(data["actions"], dtype=np.float32)
+            prev_action = np.asarray(data["prev_action"], dtype=np.float32)
+            key = (str(data["repo"]), int(data["episode"]), str(data["camera"]))
+            record_start = int(data["start_index"])
+        rng = np.random.default_rng([args.seed, index])
+        offset = int(rng.integers(0, max(len(video) - total_frames, 0) + 1))
+        stop = offset + total_frames
+        before = actions[offset - 1] if offset > 0 else prev_action
         return {
-            "video": np.asarray(cropped["video"], dtype=np.float32)[None],
-            "actions": np.asarray(cropped["actions"], dtype=np.float32)[None],
+            "video": np.asarray(video[offset:stop], dtype=np.float32)[None],
+            "actions": align_actions_to_frames(actions[offset:stop], prev_action=before)[None],
+            "key": key,
+            "absolute_start": record_start + offset,
         }
 
+    first = sample_for(0)
     # the model was initialised against the training batch_length, but the
     # rollout only ever sees total_frames, so init at that length
-    model, params, step = restore_params(cfg, args.checkpoint_dir, args.step, batch_for(0))
+    model, params, step = restore_params(
+        cfg,
+        args.checkpoint_dir,
+        args.step,
+        {"video": first["video"], "actions": first["actions"]},
+    )
     logger.info("Restored dynamics params from step %d", step)
 
     tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(
@@ -149,44 +204,83 @@ def main() -> None:
             sample_steps=args.sample_steps,
             method=DynamicsModel.generate_rollout,
         )
-        truth_images = preprocessor.patches_to_images(
+        recon_images = preprocessor.patches_to_images(
             tokenizer.apply(tokenizer_variables, video, method=type(tokenizer).decode)
         ).astype(jnp.float32)
         rollout_images = preprocessor.patches_to_images(
             tokenizer.apply(tokenizer_variables, generated, method=type(tokenizer).decode)
         ).astype(jnp.float32)
-        return truth_images, rollout_images
+        return recon_images, rollout_images
+
+    def to_u8(x: np.ndarray) -> np.ndarray:
+        return np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8)
 
     summary = []
     for index in range(args.num_videos):
-        batch = batch_for(index)
-        truth, generated = jax.device_get(
-            rollout(params, tokenizer_variables, batch["video"], batch["actions"], index)
+        sample = sample_for(index)
+        recon, generated = jax.device_get(
+            rollout(params, tokenizer_variables, sample["video"], sample["actions"], index)
         )
-        truth, generated = np.asarray(truth[0]), np.asarray(generated[0])
+        recon, generated = to_u8(np.asarray(recon[0])), to_u8(np.asarray(generated[0]))
 
-        gen_slice = slice(args.context_frames, total_frames)
-        psnr = float(
-            peak_signal_noise_ratio(truth[gen_slice], generated[gen_slice], data_range=1.0)
-        )
+        # the reference is the untouched footage when we can reach it, so the
+        # score covers tokenizer error too rather than hiding it
+        reference, reference_kind = recon, "tokenizer_recon"
+        if sample["key"] in raw_index:
+            try:
+                raw = decode_video_window(
+                    raw_index[sample["key"]],
+                    sample["absolute_start"],
+                    total_frames,
+                    tuple(preprocessor.resize_shape),
+                )
+                if len(raw) == total_frames:
+                    reference, reference_kind = raw, "raw"
+                else:
+                    logger.warning(
+                        "video %d: decoded %d/%d raw frames, falling back to recon",
+                        index,
+                        len(raw),
+                        total_frames,
+                    )
+            except Exception:
+                logger.warning("video %d: raw decode failed, falling back to recon", index)
+        elif raw_index:
+            logger.warning("video %d: %s not in raw index", index, sample["key"])
+
+        gen = slice(args.context_frames, total_frames)
+        ref_f = reference.astype(np.float32) / 255.0
+        gen_f = generated.astype(np.float32) / 255.0
+        psnr = float(peak_signal_noise_ratio(ref_f[gen], gen_f[gen], data_range=1.0))
         ssim = float(
             np.mean(
                 [
                     structural_similarity(t, g, data_range=1.0, channel_axis=-1)
-                    for t, g in zip(truth[gen_slice], generated[gen_slice], strict=True)
+                    for t, g in zip(ref_f[gen], gen_f[gen], strict=True)
                 ]
             )
         )
 
-        to_u8 = lambda x: np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8)  # noqa: E731
-        left, right = to_u8(truth), to_u8(generated)
-        separator = np.full((left.shape[1], 4, 3), 255, dtype=np.uint8)
-        frames = [
-            np.concatenate([lf, separator, rf], axis=1) for lf, rf in zip(left, right, strict=True)
-        ]
+        panels = [reference, recon, generated] if args.include_recon else [reference, generated]
+        separator = np.full((panels[0].shape[1], 4, 3), 255, dtype=np.uint8)
+        frames = []
+        for parts in zip(*panels, strict=True):
+            row = [parts[0]]
+            for part in parts[1:]:
+                row.extend([separator, part])
+            frames.append(np.concatenate(row, axis=1))
         path = output_dir / f"rollout_{step}_{index:02d}_psnr{psnr:.1f}.mp4"
         imageio.mimsave(path, frames, fps=args.fps)
-        summary.append({"index": index, "psnr": psnr, "ssim": ssim, "path": path.name})
+        summary.append(
+            {
+                "index": index,
+                "psnr": psnr,
+                "ssim": ssim,
+                "reference": reference_kind,
+                "stream": f"{sample['key'][0]}/ep{sample['key'][1]}/{sample['key'][2]}",
+                "path": path.name,
+            }
+        )
         logger.info(
             "[%d/%d] %s  psnr %.2f  ssim %.4f", index + 1, args.num_videos, path.name, psnr, ssim
         )
@@ -202,6 +296,7 @@ def main() -> None:
                 "generated_frames": args.generated_frames,
                 "sample_steps": args.sample_steps,
                 "context_tau": args.context_tau,
+                "raw_reference_videos": sum(1 for s in summary if s["reference"] == "raw"),
                 "mean_psnr": mean_psnr,
                 "mean_ssim": mean_ssim,
                 "videos": summary,
