@@ -146,6 +146,14 @@ def main() -> None:
         help="Round rollout lengths down to a multiple of this, so a handful of "
         "shapes are compiled instead of one per record.",
     )
+    parser.add_argument(
+        "--action_source",
+        choices=("true", "none", "shuffled"),
+        default="true",
+        help="Probe how much the rollout depends on the actions. 'none' takes the "
+        "model's unconditional path, 'shuffled' feeds another episode's actions. "
+        "Scores that barely move mean the conditioning is being ignored.",
+    )
     parser.add_argument("--sample_steps", type=int, default=4)
     parser.add_argument("--context_tau", type=float, default=0.9)
     parser.add_argument("--fps", type=int, default=30)
@@ -206,6 +214,14 @@ def main() -> None:
         offset = int(rng.integers(0, max(len(video) - total, 0) + 1))
         stop = offset + total
         before = actions[offset - 1] if offset > 0 else prev_action
+        if args.action_source == "shuffled":
+            # a different episode's actions: still a plausible trajectory, just
+            # the wrong one, so only a model that reads them will be hurt
+            other = (index + len(latents) // 2) % len(latents)
+            with np.load(io.BytesIO(latents[other])) as data:
+                donor = np.asarray(data["actions"], dtype=np.float32)
+            donor = np.resize(donor, (len(actions), donor.shape[1]))
+            actions, before = donor, donor[max(offset - 1, 0)]
         return {
             "video": np.asarray(video[offset:stop], dtype=np.float32)[None],
             "actions": align_actions_to_frames(actions[offset:stop], prev_action=before)[None],
@@ -236,7 +252,7 @@ def main() -> None:
     @functools.partial(jax.jit, static_argnames=("generated_frames",))
     def rollout(params, video, actions, seed, generated_frames):
         video = jnp.asarray(video, dtype=jnp.float32)
-        actions = jnp.asarray(actions, dtype=jnp.float32)
+        actions = None if args.action_source == "none" else jnp.asarray(actions, dtype=jnp.float32)
         primed = (
             jnp.zeros_like(video).at[:, : args.context_frames].set(video[:, : args.context_frames])
         )
@@ -345,7 +361,10 @@ def main() -> None:
             for part in parts[1:]:
                 row.extend([separator, part])
             frames.append(np.concatenate(row, axis=1))
-        path = output_dir / f"rollout_{step}_{index:02d}_psnr{psnr:.1f}.mp4"
+        tag = "" if args.action_source == "true" else f"_act-{args.action_source}"
+        path = (
+            output_dir / f"rollout_{step}_{index:02d}{tag}_s{args.sample_steps}_psnr{psnr:.1f}.mp4"
+        )
         imageio.mimsave(path, frames, fps=args.fps)
         summary.append(
             {
@@ -370,13 +389,15 @@ def main() -> None:
 
     mean_psnr = float(np.mean([s["psnr"] for s in summary]))
     mean_ssim = float(np.mean([s["ssim"] for s in summary]))
-    (output_dir / "summary.json").write_text(
+    suffix = "" if args.action_source == "true" else f"_act-{args.action_source}"
+    (output_dir / f"summary{suffix}_s{args.sample_steps}.json").write_text(
         json.dumps(
             {
                 "checkpoint_dir": args.checkpoint_dir,
                 "step": step,
                 "context_frames": args.context_frames,
                 "generated_frames": args.generated_frames,
+                "action_source": args.action_source,
                 "sample_steps": args.sample_steps,
                 "context_tau": args.context_tau,
                 "raw_reference_videos": sum(1 for s in summary if s["reference"] == "raw"),
