@@ -85,9 +85,20 @@ def restore_params(cfg: OmegaConf, checkpoint_dir: str, step: int | None, sample
         )
         return DynamicsTrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
 
-    # shapes only: allocating real optimizer state would trible the memory for
+    # shapes only: allocating real optimizer state would triple the memory for
     # no reason, and restore just needs the tree structure
     abstract_state = jax.eval_shape(make_state)
+    # the training run sharded these over its own mesh, so without an explicit
+    # sharding orbax reuses the saved topology and rejects a different slice
+    sharding = jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
+    abstract_state = jax.tree_util.tree_map(
+        lambda leaf: (
+            jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, sharding=sharding)
+            if hasattr(leaf, "shape")
+            else leaf
+        ),
+        abstract_state,
+    )
     manager = CheckpointManager(checkpoint_dir, instantiate(cfg.checkpoint.manager.options))
     resolved = manager.latest_step() if step is None else int(step)
     params = manager.restore(target=abstract_state, step=resolved, params_only=True)
