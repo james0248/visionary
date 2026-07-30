@@ -14,13 +14,13 @@ against the raw footage, in the regions that move.
 """
 
 import argparse
-import functools
 import io
 import json
 import logging
 from pathlib import Path
 
 import grain.python as grain
+import imageio
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -76,6 +76,12 @@ def main() -> None:
     parser.add_argument("--output", default="latent_denoise.json")
     parser.add_argument("--indices", default="0,2,6,7")
     parser.add_argument("--max_frames", type=int, default=192)
+    parser.add_argument(
+        "--video_dir",
+        help="Also write side-by-side mp4s: raw | identity | g3 | g5 | box5, "
+        "so the filters can be judged by eye rather than PSNR alone.",
+    )
+    parser.add_argument("--fps", type=int, default=30)
     args = parser.parse_args()
 
     tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(
@@ -133,9 +139,11 @@ def main() -> None:
             continue
         mask = moving_pixels(raw)
         raw_f = raw.astype(np.float32) / 255.0
+        panels = [raw]
         for name, kernel in FILTERS.items():
             zf = filter_time(z, kernel)
             decoded = np.clip(decode_all(zf), 0.0, 1.0)
+            panels.append(np.clip(np.rint(decoded * 255.0), 0, 255).astype(np.uint8))
             err = (decoded - raw_f) ** 2
             psnr_all = float(-10.0 * np.log10(err.mean() + 1e-12))
             psnr_mov = float(-10.0 * np.log10(err.mean(-1)[mask].mean() + 1e-12))
@@ -151,6 +159,19 @@ def main() -> None:
                 "clip %d %-8s | psnr all %.2f moving %.2f | delta-cos %+.3f",
                 index, name, psnr_all, psnr_mov, entry["latent_delta_cos"],
             )
+        if args.video_dir:
+            video_dir = Path(args.video_dir)
+            video_dir.mkdir(parents=True, exist_ok=True)
+            separator = np.full((panels[0].shape[1], 4, 3), 255, dtype=np.uint8)
+            frames = []
+            for parts in zip(*panels, strict=True):
+                row = [parts[0]]
+                for panel in parts[1:]:
+                    row.extend([separator, panel])
+                frames.append(np.concatenate(row, axis=1))
+            path = video_dir / f"denoise_{index:02d}_raw-id-g3-g5-box5.mp4"
+            imageio.mimsave(path, frames, fps=args.fps)
+            logger.info("wrote %s", path)
 
     Path(args.output).write_text(json.dumps(results, indent=2))
     print("\nfilter | mean psnr moving (all clips) | mean delta-cos")
