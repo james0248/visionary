@@ -13,9 +13,11 @@ by generated frames on the right.
 """
 
 import argparse
+import functools
 import io
 import json
 import logging
+import time
 from pathlib import Path
 
 import grain.python as grain
@@ -118,7 +120,26 @@ def main() -> None:
     parser.add_argument("--num_videos", type=int, default=20)
     parser.add_argument("--step", type=int, help="Checkpoint step. Defaults to latest.")
     parser.add_argument("--context_frames", type=int, default=4)
-    parser.add_argument("--generated_frames", type=int, default=60)
+    parser.add_argument(
+        "--generated_frames",
+        type=int,
+        default=60,
+        help="-1 rolls out to the end of each record. Cost grows with the square "
+        "of the length, since every generated frame re-runs the whole sequence.",
+    )
+    parser.add_argument(
+        "--max_frames",
+        type=int,
+        default=512,
+        help="Upper bound on total frames when --generated_frames is -1.",
+    )
+    parser.add_argument(
+        "--length_bucket",
+        type=int,
+        default=64,
+        help="Round rollout lengths down to a multiple of this, so a handful of "
+        "shapes are compiled instead of one per record.",
+    )
     parser.add_argument("--sample_steps", type=int, default=4)
     parser.add_argument("--context_tau", type=float, default=0.9)
     parser.add_argument("--fps", type=int, default=30)
@@ -136,7 +157,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    total_frames = args.context_frames + args.generated_frames
+    roll_to_end = args.generated_frames < 0
+    fixed_total = None if roll_to_end else args.context_frames + args.generated_frames
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -162,15 +184,28 @@ def main() -> None:
             prev_action = np.asarray(data["prev_action"], dtype=np.float32)
             key = (str(data["repo"]), int(data["episode"]), str(data["camera"]))
             record_start = int(data["start_index"])
+
+        if roll_to_end:
+            usable = min(len(video), args.max_frames)
+            # bucket the length so jit compiles a few shapes, not one per record
+            total = max(
+                usable // args.length_bucket * args.length_bucket,
+                args.context_frames + args.length_bucket,
+            )
+            total = min(total, len(video))
+        else:
+            total = fixed_total
+
         rng = np.random.default_rng([args.seed, index])
-        offset = int(rng.integers(0, max(len(video) - total_frames, 0) + 1))
-        stop = offset + total_frames
+        offset = int(rng.integers(0, max(len(video) - total, 0) + 1))
+        stop = offset + total
         before = actions[offset - 1] if offset > 0 else prev_action
         return {
             "video": np.asarray(video[offset:stop], dtype=np.float32)[None],
             "actions": align_actions_to_frames(actions[offset:stop], prev_action=before)[None],
             "key": key,
             "absolute_start": record_start + offset,
+            "total": total,
         }
 
     first = sample_for(0)
@@ -192,8 +227,8 @@ def main() -> None:
         restore_preprocessor_export(args.tokenizer_checkpoint_dir)
     )
 
-    @jax.jit
-    def rollout(params, tokenizer_variables, video, actions, seed):
+    @functools.partial(jax.jit, static_argnames=("generated_frames",))
+    def rollout(params, video, actions, seed, generated_frames):
         video = jnp.asarray(video, dtype=jnp.float32)
         actions = jnp.asarray(actions, dtype=jnp.float32)
         primed = (
@@ -202,9 +237,9 @@ def main() -> None:
         context_key, sample_key = jax.random.split(jax.random.key(seed))
         context_noise = jax.random.normal(context_key, video.shape, dtype=jnp.float32)
         sample_noise = jax.random.normal(
-            sample_key, (video.shape[0], args.generated_frames, *video.shape[2:]), dtype=jnp.float32
+            sample_key, (video.shape[0], generated_frames, *video.shape[2:]), dtype=jnp.float32
         )
-        generated = model.apply(
+        return model.apply(
             params,
             primed,
             actions,
@@ -215,13 +250,27 @@ def main() -> None:
             sample_steps=args.sample_steps,
             method=DynamicsModel.generate_rollout,
         )
-        recon_images = preprocessor.patches_to_images(
-            tokenizer.apply(tokenizer_variables, video, method=type(tokenizer).decode)
+
+    @jax.jit
+    def decode_chunk(tokenizer_variables, latent_chunk):
+        return preprocessor.patches_to_images(
+            tokenizer.apply(tokenizer_variables, latent_chunk, method=type(tokenizer).decode)
         ).astype(jnp.float32)
-        rollout_images = preprocessor.patches_to_images(
-            tokenizer.apply(tokenizer_variables, generated, method=type(tokenizer).decode)
-        ).astype(jnp.float32)
-        return recon_images, rollout_images
+
+    def decode_all(latent: jnp.ndarray, chunk: int = 64) -> np.ndarray:
+        """Decode in fixed-size chunks; a full-length clip at once will not fit."""
+        pieces = []
+        for start in range(0, latent.shape[1], chunk):
+            piece = latent[:, start : start + chunk]
+            if piece.shape[1] < chunk:  # keep one compiled shape
+                pad = chunk - piece.shape[1]
+                piece = jnp.pad(piece, ((0, 0), (0, pad), (0, 0), (0, 0)))
+                pieces.append(
+                    np.asarray(jax.device_get(decode_chunk(tokenizer_variables, piece)))[:, :-pad]
+                )
+            else:
+                pieces.append(np.asarray(jax.device_get(decode_chunk(tokenizer_variables, piece))))
+        return np.concatenate(pieces, axis=1)
 
     def to_u8(x: np.ndarray) -> np.ndarray:
         return np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8)
@@ -229,10 +278,17 @@ def main() -> None:
     summary = []
     for index in range(args.num_videos):
         sample = sample_for(index)
-        recon, generated = jax.device_get(
-            rollout(params, tokenizer_variables, sample["video"], sample["actions"], index)
+        total_frames = sample["total"]
+        started = time.monotonic()
+        generated_latent = rollout(
+            params,
+            sample["video"],
+            sample["actions"],
+            index,
+            total_frames - args.context_frames,
         )
-        recon, generated = to_u8(np.asarray(recon[0])), to_u8(np.asarray(generated[0]))
+        recon = to_u8(decode_all(jnp.asarray(sample["video"], dtype=jnp.float32))[0])
+        generated = to_u8(decode_all(generated_latent)[0])
 
         # the reference is the untouched footage when we can reach it, so the
         # score covers tokenizer error too rather than hiding it
@@ -293,7 +349,14 @@ def main() -> None:
             }
         )
         logger.info(
-            "[%d/%d] %s  psnr %.2f  ssim %.4f", index + 1, args.num_videos, path.name, psnr, ssim
+            "[%d/%d] %s  %d frames  psnr %.2f  ssim %.4f  (%.0fs)",
+            index + 1,
+            args.num_videos,
+            path.name,
+            total_frames,
+            psnr,
+            ssim,
+            time.monotonic() - started,
         )
 
     mean_psnr = float(np.mean([s["psnr"] for s in summary]))
