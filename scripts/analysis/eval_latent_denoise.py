@@ -26,6 +26,10 @@ import jax.numpy as jnp
 import numpy as np
 from hydra.utils import instantiate
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from visionary.common.checkpoint import (
     restore_model_export_single_device,
     restore_preprocessor_export,

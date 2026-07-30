@@ -24,6 +24,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from visionary.dataset import align_actions_to_frames
 from visionary.dynamics import DynamicsModel
 

@@ -28,6 +28,10 @@ import jax.numpy as jnp
 import numpy as np
 from einops import rearrange
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from visionary.dataset import align_actions_to_frames
 
 from eval_dynamics_videos import load_train_config, restore_params
