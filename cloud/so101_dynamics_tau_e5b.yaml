@@ -1,0 +1,72 @@
+# Tau fine-tune in us-east5-b: pricier spot but far more available. Same
+# checkpoint dir as the us-central1-b job -- only one may run at a time.
+project: visionary-491008
+exp_name: so101_dynamics_tau
+tokenizer_exp_name: so101_tokenizer
+checkpoint_dir: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}
+ops_dir: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}/e5b
+
+job:
+  name: so101-dyn-tau-e5b
+  poll_interval_seconds: 60
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: so101
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/train_dynamics.py
+  config_name: so101_dynamics
+  auto_resume: true
+  overrides:
+    - exp_name=${exp_name}
+    - tokenizer_exp_name=${tokenizer_exp_name}
+    - dataset.train_dir=/mnt/data/dyn/train
+    - dataset.eval_dir=/mnt/data/dyn/eval
+    - checkpoint.manager.directory=${checkpoint_dir}
+    - total_steps=300000
+    - learning_rate=1e-4
+
+markers:
+  complete_uri: ${checkpoint_dir}/_training_complete.json
+  failure_prefix: ${ops_dir}/failures
+
+logs:
+  uri: ${ops_dir}/_starter.log
+  archive_uri_prefix: ${ops_dir}/logs
+  tail_lines: 120
+
+failure_policy:
+  mode: retry
+  max_retries: 3
+  retry_backoff_seconds: 30
+
+secrets:
+  wandb_secret: wandb-api-key
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: ${ops_dir}/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
+machine:
+  family: v6e
+  chips: 8
+  zone: us-east5-b
+  spot: true
+  data_disk:
+    source: projects/visionary-491008/zones/us-east5-b/disks/visionary-so101-dynamics-data-ue5b
+    mode: read-only
+    mount_path: /mnt/data
