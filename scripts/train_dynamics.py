@@ -944,7 +944,7 @@ def main(cfg: DictConfig):
                 log_video_eval(
                     wb,
                     put_single_device_tree(state.params),
-                    eval_batches[0],
+                    eval_batches[(step // cfg.eval_steps) % num_batches],
                     step=step,
                     rollout_seed=make_host_seed(cfg.seed, step, num_batches),
                     video_cfg=video_cfg,
