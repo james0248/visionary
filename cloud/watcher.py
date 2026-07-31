@@ -29,6 +29,7 @@ TRC_ACCELERATOR_LIMITS = {
     ("v4", "us-central2-b", False): 32,
     ("v4", "us-central2-b", True): 32,
     ("v6e", "us-east1-d", True): 64,
+    ("v6e", "us-east5-b", True): 64,
     ("v5e", "us-central1-a", True): 64,
 }
 
