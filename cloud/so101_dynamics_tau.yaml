@@ -1,5 +1,5 @@
 # Fine-tune of so101_dynamics from step 200000 with the velocity loss
-# weighting (1/(1-tau)^2). Same data, lower LR, 100k extra steps.
+# weighting (1/(1-tau)^2). Same data, lower LR, 200k extra steps.
 project: visionary-491008
 exp_name: so101_dynamics_tau
 tokenizer_exp_name: so101_tokenizer
@@ -28,7 +28,7 @@ training:
     - dataset.train_dir=/mnt/data/dyn/train
     - dataset.eval_dir=/mnt/data/dyn/eval
     - checkpoint.manager.directory=${checkpoint_dir}
-    - total_steps=300000
+    - total_steps=400000
     - learning_rate=1e-4
 
 markers:
