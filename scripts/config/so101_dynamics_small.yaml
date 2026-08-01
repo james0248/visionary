@@ -29,10 +29,10 @@ loss:
 
 video_eval:
   context_frames: 4
-  generated_frames: 42
+  generated_frames: 30
   sample_steps: 4
   context_tau: 0.9
-  fps: 10
+  fps: 8
   output_dir: artifacts/dynamics_eval/${exp_name}
   tokenizer:
     checkpoint_dir: gs://visionary-robot-bucket/so101/checkpoints/${tokenizer_exp_name}
@@ -41,22 +41,22 @@ video_eval:
 dataset:
   train_dir: data/so101/dyn/train
   eval_dir: data/so101/dyn/eval
-  # every third frame, 10Hz effective
-  stride: 3
+  # every fourth frame, 7.5Hz effective
+  stride: 4
   batch_size: 16
-  batch_length: 43
+  batch_length: 32
   alternating_lengths:
     enabled: true
-    short: 12
+    short: 8
     # past context_length, so the truncated sliding window is trained too
-    long: 43
+    long: 32
     long_every: 8
     final_long_only_steps: 0
   worker_count: 8
   num_threads: 8
   prefetch_buffer_size: 16
   eval:
-    batch_length: 46
+    batch_length: 34
     max_batches: 16
 
 dynamics:
@@ -74,8 +74,8 @@ dynamics:
   model_dim: 1024
   head_dim: 64
   mlp_hidden_dim: 3072
-  # 3.2s at 10Hz, same wall-clock context as the 651M/30fps run
-  context_length: 32
+  # 3.2s at 7.5Hz, same wall-clock context as the 651M/30fps run
+  context_length: 24
   base: 10000.0
   remat: false
   remat_policy: null
