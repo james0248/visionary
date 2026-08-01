@@ -7,13 +7,14 @@ optimizer:
       max_norm: 1.0
     - _target_: optax.adam
       learning_rate:
-        _target_: optax.warmup_constant_schedule
-        init_value: 0.0
-        peak_value: ${learning_rate}
-        warmup_steps: 1000
+        _target_: optax.linear_schedule
+        init_value: ${learning_rate}
+        end_value: 1e-5
+        transition_steps: 500000
+        transition_begin: 1000000
 log_interval: 100
 eval_steps: 1000
-total_steps: 1000000
+total_steps: 1500000
 overfit_single_batch: false
 exp_name: so101_dynamics_small
 tokenizer_exp_name: so101_tokenizer
