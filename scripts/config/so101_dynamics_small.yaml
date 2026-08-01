@@ -95,4 +95,4 @@ checkpoint:
 wandb:
   enabled: true
   project: visionary
-  group: so101_dynamics
+  group: so101_dynamics_small
