@@ -26,7 +26,13 @@ from visionary.common.checkpoint import (
 from visionary.common.jax import fold_in_many, maybe_initialize_distributed
 from visionary.common.train_state import DynamicsTrainState
 from visionary.common.wandb import WandbLogger
-from visionary.dataset import DynamicsBatch, DynamicsDataSource, RandomDynamicsCrop
+from visionary.dataset import (
+    DynamicsBatch,
+    DynamicsDataSource,
+    RandomDynamicsCrop,
+    SubsetDataSource,
+    load_record_lengths,
+)
 from visionary.dynamics import DynamicsModel
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
 
@@ -514,13 +520,25 @@ def main(cfg: DictConfig):
             return 0
         return target_bootstrap_rows
 
+    stride = int(cfg.dataset.get("stride", 1))
+
     def make_loader(
         source: DynamicsDataSource,
         sequence_length: int,
         shuffle: bool,
         drop_remainder: bool,
         seed: int,
+        lengths: list[int] | None = None,
     ) -> grain.DataLoader:
+        span = (sequence_length - 1) * stride + 1
+        if lengths is not None:
+            indices = [i for i, n in enumerate(lengths) if n >= span]
+            if len(indices) < len(lengths):
+                logger.info(
+                    "Length %d (span %d): %d/%d records fit",
+                    sequence_length, span, len(indices), len(lengths),
+                )
+            source = SubsetDataSource(source, indices)
         sampler = grain.IndexSampler(
             num_records=len(source),
             shard_options=grain.ShardByJaxProcess()
@@ -537,7 +555,7 @@ def main(cfg: DictConfig):
             data_source=source,
             sampler=sampler,
             operations=[
-                RandomDynamicsCrop(sequence_length),
+                RandomDynamicsCrop(sequence_length, stride=stride),
                 grain.Batch(
                     batch_size=batch_size_per_process,
                     drop_remainder=drop_remainder,
@@ -548,6 +566,8 @@ def main(cfg: DictConfig):
         )
 
     _t = time.monotonic()
+    train_lengths_manifest = load_record_lengths(cfg.dataset.train_dir)
+    eval_lengths_manifest = load_record_lengths(cfg.dataset.eval_dir)
     train_loaders = {
         sequence_length: make_loader(
             train_source,
@@ -555,6 +575,7 @@ def main(cfg: DictConfig):
             shuffle=True,
             drop_remainder=True,
             seed=cfg.seed + sequence_length,
+            lengths=train_lengths_manifest,
         )
         for sequence_length in train_sequence_lengths
     }
@@ -581,6 +602,7 @@ def main(cfg: DictConfig):
                         shuffle=False,
                         drop_remainder=fsdp_enabled,
                         seed=cfg.seed,
+                        lengths=eval_lengths_manifest,
                     )
                 )
             )
@@ -592,6 +614,7 @@ def main(cfg: DictConfig):
             shuffle=False,
             drop_remainder=fsdp_enabled,
             seed=cfg.seed,
+            lengths=eval_lengths_manifest,
         )
         logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
 

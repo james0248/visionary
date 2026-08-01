@@ -1,4 +1,5 @@
 import io
+import json
 from typing import TypedDict
 
 import cv2
@@ -95,6 +96,31 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
         )
 
 
+class SubsetDataSource(grain.RandomAccessDataSource):
+    """A source restricted to the given record indices."""
+
+    def __init__(self, source: grain.RandomAccessDataSource, indices: list[int]):
+        self._source = source
+        self._indices = list(indices)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._source!r}, {len(self._indices)} records)"
+
+    def __len__(self):
+        return len(self._indices)
+
+    def __getitem__(self, idx: int):
+        return self._source[self._indices[idx]]
+
+
+def load_record_lengths(data_dir: str) -> list[int] | None:
+    """Frame counts per record, written by stitch_dynamics_records.py."""
+    path = epath.Path(data_dir) / "lengths.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
 class VideoDataSource(grain.RandomAccessDataSource):
     def __init__(self, data_dir: str):
         self._data_dir = epath.Path(data_dir).as_posix()
@@ -130,8 +156,9 @@ class RandomVideoCrop(grain.RandomMapTransform):
 
 
 class RandomDynamicsCrop(grain.RandomMapTransform):
-    def __init__(self, sequence_length: int):
+    def __init__(self, sequence_length: int, stride: int = 1):
         self.sequence_length = sequence_length
+        self.stride = stride
 
     def random_map(
         self,
@@ -141,22 +168,15 @@ class RandomDynamicsCrop(grain.RandomMapTransform):
         video = element["video"]
         actions = element["actions"]
         prev_action = element["prev_action"]
-        if len(video) < self.sequence_length:
-            raise ValueError(f"Sequence shorter than crop: {len(video)} < {self.sequence_length}")
-        if len(video) == self.sequence_length:
-            return DynamicsBatch(
-                video=video,
-                actions=align_actions_to_frames(actions, prev_action=prev_action),
-            )
-
-        start_idx = int(rng.integers(0, len(video) - self.sequence_length + 1))
-        stop_idx = start_idx + self.sequence_length
-        cropped_actions = actions[start_idx:stop_idx]
-        crop_prev_action = actions[start_idx - 1] if start_idx > 0 else prev_action
-        return DynamicsBatch(
-            video=video[start_idx:stop_idx],
-            actions=align_actions_to_frames(cropped_actions, prev_action=crop_prev_action),
-        )
+        span = (self.sequence_length - 1) * self.stride + 1
+        if len(video) < span:
+            raise ValueError(f"Sequence shorter than crop span: {len(video)} < {span}")
+        start_idx = int(rng.integers(0, len(video) - span + 1))
+        indices = start_idx + np.arange(self.sequence_length) * self.stride
+        aligned = actions[indices - 1]
+        if start_idx == 0:
+            aligned[0] = prev_action
+        return DynamicsBatch(video=video[indices], actions=aligned)
 
 
 def decode_video_window(
