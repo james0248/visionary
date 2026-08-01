@@ -43,7 +43,7 @@ dataset:
   eval_dir: data/so101/dyn/eval
   # every fourth frame, 7.5Hz effective
   stride: 4
-  batch_size: 16
+  batch_size: 32
   batch_length: 32
   alternating_lengths:
     enabled: true
