@@ -13,7 +13,7 @@ optimizer:
         warmup_steps: 1000
 log_interval: 100
 eval_steps: 1000
-total_steps: 200000
+total_steps: 500000
 overfit_single_batch: false
 exp_name: so101_dynamics_small
 tokenizer_exp_name: so101_tokenizer
