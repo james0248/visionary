@@ -31,6 +31,7 @@ TRC_ACCELERATOR_LIMITS = {
     ("v6e", "us-east1-d", True): 64,
     ("v6e", "us-east5-b", True): 64,
     ("v5e", "us-central1-a", True): 64,
+    ("v5e", "us-west1-c", True): 64,
 }
 
 DEFAULT_RUNTIME_VERSION = {
