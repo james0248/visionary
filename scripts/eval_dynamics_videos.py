@@ -156,6 +156,12 @@ def main() -> None:
     )
     parser.add_argument("--sample_steps", type=int, default=4)
     parser.add_argument("--stride", type=int, default=1)
+    parser.add_argument(
+        "--from_export",
+        action="store_true",
+        help="Load weights-only exports from <checkpoint_dir>/model/<step> instead "
+        "of the full train state.",
+    )
     parser.add_argument("--context_tau", type=float, default=0.9)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
@@ -240,15 +246,23 @@ def main() -> None:
         }
 
     first = sample_for(0)
-    # the model was initialised against the training batch_length, but the
-    # rollout only ever sees total_frames, so init at that length
-    model, params, step = restore_params(
-        cfg,
-        args.checkpoint_dir,
-        args.step,
-        {"video": first["video"], "actions": first["actions"]},
-    )
-    logger.info("Restored dynamics params from step %d", step)
+    if args.from_export:
+        export_cfg, params = restore_model_export_single_device(
+            args.checkpoint_dir, step=args.step
+        )
+        model = instantiate(export_cfg)
+        step = args.step
+        logger.info("Restored dynamics export from step %d", step)
+    else:
+        # the model was initialised against the training batch_length, but the
+        # rollout only ever sees total_frames, so init at that length
+        model, params, step = restore_params(
+            cfg,
+            args.checkpoint_dir,
+            args.step,
+            {"video": first["video"], "actions": first["actions"]},
+        )
+        logger.info("Restored dynamics params from step %d", step)
 
     tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(
         args.tokenizer_checkpoint_dir
