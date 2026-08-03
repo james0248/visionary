@@ -155,6 +155,7 @@ def main() -> None:
         "Scores that barely move mean the conditioning is being ignored.",
     )
     parser.add_argument("--sample_steps", type=int, default=4)
+    parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--context_tau", type=float, default=0.9)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
@@ -199,21 +200,24 @@ def main() -> None:
             key = (str(data["repo"]), int(data["episode"]), str(data["camera"]))
             record_start = int(data["start_index"])
 
+        stride = args.stride
+        usable_strided = (len(video) - 1) // stride + 1
         if roll_to_end:
-            usable = min(len(video), args.max_frames)
+            usable = min(usable_strided, args.max_frames)
             # bucket the length so jit compiles a few shapes, not one per record
             total = max(
                 usable // args.length_bucket * args.length_bucket,
                 args.context_frames + args.length_bucket,
             )
-            total = min(total, len(video))
+            total = min(total, usable_strided)
         else:
             total = fixed_total
+            if total > usable_strided:
+                raise ValueError(f"Record {index} too short: {len(video)} < span of {total}")
 
+        span = (total - 1) * stride + 1
         rng = np.random.default_rng([args.seed, index])
-        offset = int(rng.integers(0, max(len(video) - total, 0) + 1))
-        stop = offset + total
-        before = actions[offset - 1] if offset > 0 else prev_action
+        offset = int(rng.integers(0, max(len(video) - span, 0) + 1))
         if args.action_source == "shuffled":
             # a different episode's actions: still a plausible trajectory, just
             # the wrong one, so only a model that reads them will be hurt
@@ -221,12 +225,17 @@ def main() -> None:
             with np.load(io.BytesIO(latents[other])) as data:
                 donor = np.asarray(data["actions"], dtype=np.float32)
             donor = np.resize(donor, (len(actions), donor.shape[1]))
-            actions, before = donor, donor[max(offset - 1, 0)]
+            actions, prev_action = donor, donor[max(offset - 1, 0)]
+        indices = offset + np.arange(total) * stride
+        aligned = actions[indices - 1]
+        if offset == 0:
+            aligned[0] = prev_action
         return {
-            "video": np.asarray(video[offset:stop], dtype=np.float32)[None],
-            "actions": align_actions_to_frames(actions[offset:stop], prev_action=before)[None],
+            "video": np.asarray(video[indices], dtype=np.float32)[None],
+            "actions": np.asarray(aligned, dtype=np.float32)[None],
             "key": key,
             "absolute_start": record_start + offset,
+            "span": span,
             "total": total,
         }
 
@@ -323,9 +332,10 @@ def main() -> None:
                 raw = decode_video_window(
                     raw_index[sample["key"]],
                     sample["absolute_start"],
-                    total_frames,
+                    sample["span"],
                     tuple(preprocessor.resize_shape),
                 )
+                raw = raw[:: args.stride][:total_frames]
                 if len(raw) == total_frames:
                     reference, reference_kind = raw, "raw"
                 else:
