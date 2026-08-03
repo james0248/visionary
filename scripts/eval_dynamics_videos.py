@@ -157,6 +157,12 @@ def main() -> None:
     parser.add_argument("--sample_steps", type=int, default=4)
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument(
+        "--rollout_seed",
+        type=int,
+        default=0,
+        help="Offset added to the per-clip rollout noise seed; the crop stays fixed.",
+    )
+    parser.add_argument(
         "--from_export",
         action="store_true",
         help="Load weights-only exports from <checkpoint_dir>/model/<step> instead "
@@ -332,7 +338,7 @@ def main() -> None:
             params,
             sample["video"],
             sample["actions"],
-            index,
+            index + args.rollout_seed,
             total_frames - args.context_frames,
         )
         recon = to_u8(decode_all(jnp.asarray(sample["video"], dtype=jnp.float32))[0])
