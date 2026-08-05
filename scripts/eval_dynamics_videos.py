@@ -148,7 +148,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--action_source",
-        choices=("true", "none", "shuffled"),
+        choices=("true", "none", "shuffled", "gripper_open"),
         default="true",
         help="Probe how much the rollout depends on the actions. 'none' takes the "
         "model's unconditional path, 'shuffled' feeds another episode's actions. "
@@ -242,6 +242,10 @@ def main() -> None:
         aligned = actions[indices - 1]
         if offset == 0:
             aligned[0] = prev_action
+        if args.action_source == "gripper_open":
+            # hold the gripper at its starting command; every other joint
+            # follows the truth, so the grasp should never happen
+            aligned[:, -1] = aligned[0, -1]
         return {
             "video": np.asarray(video[indices], dtype=np.float32)[None],
             "actions": np.asarray(aligned, dtype=np.float32)[None],
