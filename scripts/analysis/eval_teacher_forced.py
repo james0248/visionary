@@ -62,6 +62,7 @@ def main() -> None:
     parser.add_argument("--fps", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--action_modes", default="real")
+    parser.add_argument("--offset_shift", type=int, default=0)
     args = parser.parse_args()
     action_modes = args.action_modes.split(",")
 
@@ -82,6 +83,7 @@ def main() -> None:
         span = (total - 1) * args.stride + 1
         rng = np.random.default_rng([args.seed, index])
         offset = int(rng.integers(0, max(len(video) - span, 0) + 1))
+        offset = min(offset + args.offset_shift * args.stride, max(len(video) - span, 0))
         indices = offset + np.arange(total) * args.stride
         aligned = actions[indices - 1]
         if offset == 0:
