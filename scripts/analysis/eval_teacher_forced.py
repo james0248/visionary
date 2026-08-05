@@ -48,7 +48,8 @@ def main() -> None:
     parser.add_argument("--checkpoint_dir", required=True)
     parser.add_argument("--tokenizer_checkpoint_dir", required=True)
     parser.add_argument("--data_dir", required=True)
-    parser.add_argument("--raw_shards_dir", required=True)
+    parser.add_argument("--raw_shards_dir")
+    parser.add_argument("--no_video", action="store_true")
     parser.add_argument("--output_dir", default="tf_videos")
     parser.add_argument("--output", default="tf_errors.json")
     parser.add_argument("--step", type=int)
@@ -60,15 +61,17 @@ def main() -> None:
     parser.add_argument("--sample_steps", type=int, default=4)
     parser.add_argument("--fps", type=int, default=8)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--action_modes", default="real")
     args = parser.parse_args()
+    action_modes = args.action_modes.split(",")
 
     cfg = load_train_config(args.checkpoint_dir)
     latents = grain.ArrayRecordDataSource(
         sorted(str(p) for p in Path(args.data_dir).glob("*.arecord"))
     )
-    raw_index = build_raw_index(args.raw_shards_dir)
+    raw_index = None if args.no_video else build_raw_index(args.raw_shards_dir)
 
-    def sample_for(index: int):
+    def sample_for(index: int, action_mode: str = "real"):
         with np.load(io.BytesIO(latents[index % len(latents)])) as data:
             video = np.asarray(data["frames"])
             actions = np.asarray(data["actions"], dtype=np.float32)
@@ -83,6 +86,12 @@ def main() -> None:
         aligned = actions[indices - 1]
         if offset == 0:
             aligned[0] = prev_action
+        if action_mode == "shuffled":
+            aligned = aligned[np.random.default_rng([99, index]).permutation(len(aligned))]
+        elif action_mode == "frozen":
+            aligned = np.repeat(aligned[:1], len(aligned), axis=0)
+        elif action_mode == "zero":
+            aligned = np.zeros_like(aligned)
         return {
             "video": np.asarray(video[indices], dtype=np.float32)[None],
             "actions": np.asarray(aligned, dtype=np.float32)[None],
@@ -170,8 +179,8 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     results = {}
-    for index in (int(i) for i in args.indices.split(",")):
-        sample = sample_for(index)
+    for index, mode in ((i, m) for i in (int(i) for i in args.indices.split(",")) for m in action_modes):
+        sample = sample_for(index, mode)
         video, actions, total = sample["video"], sample["actions"], sample["total"]
         truth = video[0]
 
@@ -191,16 +200,21 @@ def main() -> None:
             "tf_err": [float(np.linalg.norm(tf[t] - truth[t])) for t in frames],
             "noise_ref": [float(np.linalg.norm(0.1 * noise[t])) for t in frames],
             "latent_norm": [float(np.linalg.norm(truth[t])) for t in frames],
+            "persist_err": [float(np.linalg.norm(truth[t] - truth[t - 1])) for t in frames],
         }
-        results[index] = entry
+        results[f"{index}_{mode}"] = entry
         logger.info(
-            "clip %d | mean err: rollout %.2f  teacher-forced %.2f  0.1*noise %.2f  ||z|| %.2f",
+            "clip %d [%s] | mean err: rollout %.2f  teacher-forced %.2f  copy %.2f  (tf/copy %.3f)",
             index,
+            mode,
             np.mean(entry["rollout_err"]),
             np.mean(entry["tf_err"]),
-            np.mean(entry["noise_ref"]),
-            np.mean(entry["latent_norm"]),
+            np.mean(entry["persist_err"]),
+            np.mean(entry["tf_err"]) / np.mean(entry["persist_err"]),
         )
+
+        if args.no_video:
+            continue
 
         raw = decode_video_window(
             raw_index[sample["key"]], sample["absolute_start"], sample["span"],
@@ -215,7 +229,7 @@ def main() -> None:
                 row.extend([sep, panel])
             out_frames.append(np.concatenate(row, axis=1))
         imageio.mimsave(
-            output_dir / f"tf_{step}_{index:03d}_raw-tf-rollout.mp4", out_frames, fps=args.fps
+            output_dir / f"tf_{step}_{index:03d}_{mode}_raw-tf-rollout.mp4", out_frames, fps=args.fps
         )
 
     Path(args.output).write_text(json.dumps({"step": step, "results": results}, indent=2))
