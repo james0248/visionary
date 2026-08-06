@@ -253,3 +253,19 @@ model: Atari checkpoints from before it need `abe92ca`, as the README says.
   spikes, so the test must be relative to the episode's own p95.
 * **Estimates from one sample are wrong.** Download size was projected at 238 GB
   from a single episode's bytes/frame; the real total was 396 GB.
+* **The packed shards have a 250-frame keyframe interval, and clip sampling seeks
+  backward into it.** `pack_arecord.py` encodes with `libx264 -crf 18 -preset
+  veryfast` and never sets `-g`, so x264's default `keyint=250` applies; robot
+  footage has too few scene cuts to break those GOPs up early.
+  `decode_video_window` (`visionary/dataset.py`) seeks to the nearest *preceding*
+  keyframe and decodes forward, so drawing a 24-frame clip can decode on the order
+  of 250 frames to reach it — and at temporal stride 4 the window itself spans 96
+  source frames. Setting `-g` near the clip length should cut decode work
+  substantially for a modest size increase. **Measure before the next re-pack;
+  this is an estimate from the settings, not a benchmark.**
+* **Re-encoding is a second generation of loss, and it lands where the tokenizer
+  is already weakest.** The LeRobot source is AV1 and the packer re-encodes to
+  H.264. Mosquito noise on moving edges is exactly the temporally-varying
+  high-frequency signal that the encoder can bake into latents, which is the
+  decoder-null jitter failure (§6). Unquantified — if the pipeline is ever
+  re-packed, probe it rather than assuming CRF 18 is free.
