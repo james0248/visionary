@@ -255,7 +255,10 @@ def main() -> None:
             "total": total,
         }
 
-    first = sample_for(0)
+    selected = (
+        [int(i) for i in args.indices.split(",")] if args.indices else list(range(args.num_videos))
+    )
+    first = sample_for(selected[0])
     if args.from_export:
         export_cfg, params = restore_model_export_single_device(
             args.checkpoint_dir, step=args.step
@@ -330,9 +333,6 @@ def main() -> None:
     def to_u8(x: np.ndarray) -> np.ndarray:
         return np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8)
 
-    selected = (
-        [int(i) for i in args.indices.split(",")] if args.indices else list(range(args.num_videos))
-    )
     summary = []
     for position, index in enumerate(selected):
         sample = sample_for(index)
