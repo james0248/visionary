@@ -33,19 +33,14 @@ import jax.numpy as jnp
 import numpy as np
 from hydra.utils import instantiate
 
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from visionary.common.checkpoint import (
     restore_model_export_single_device,
     restore_preprocessor_export,
 )
 from visionary.dataset import decode_video_window
 from visionary.dynamics import DynamicsModel
+from visionary.eval.loading import build_raw_index, load_train_config, restore_params
 from visionary.tokenizer_preprocessor import TokenizerPreprocessor
-
-from eval_dynamics_videos import build_raw_index, load_train_config, restore_params
 
 logger = logging.getLogger(__name__)
 

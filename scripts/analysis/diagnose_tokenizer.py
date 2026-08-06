@@ -76,10 +76,7 @@ def main():
     parser.add_argument("--step", type=int)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_episodes", type=int, default=8)
-    parser.add_argument(
-        "--config",
-        default=str(Path(__file__).resolve().parent / "config" / "breakout_tokenizer.yaml"),
-    )
+    parser.add_argument("--config", required=True)
     args = parser.parse_args()
 
     run_cfg = OmegaConf.load(args.config)

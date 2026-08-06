@@ -27,9 +27,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_episodes", type=int, default=8)
     parser.add_argument("--mask_prob", type=float, default=0.1)
+    parser.add_argument("--config", required=True)
     args = parser.parse_args()
 
-    run_cfg = OmegaConf.load(Path(__file__).resolve().parent / "config" / "breakout_tokenizer.yaml")
+    run_cfg = OmegaConf.load(args.config)
     rng = np.random.default_rng(args.seed)
     shard_paths = sorted(Path(args.dataset_dir).glob("*.arecord"))
     shard_indices = rng.choice(
