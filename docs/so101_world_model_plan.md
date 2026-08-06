@@ -380,7 +380,7 @@ first reconstruction eval. Store raw NPZ frames at the tokenizer input size (or
 
 Add `cloud/so101_tokenizer.yaml` + `cloud/so101_dynamics.yaml` mirroring the
 per-game pairs, pointing `dataset.train_dir/eval_dir` at the GCS staged data and
-`checkpoint.manager.directory` at `gs://visionary-robot-bucket/so101/...`.
+`checkpoint.manager.directory` at `gs://visionary-uc1/so101/...`.
 
 ---
 
@@ -435,7 +435,7 @@ laptop (239 GB free). Instead:
 * **Laptop (now):** metadata survey (done, all 1,220) + develop on **Tier-1
   pilot** or a subset. A ~20-dataset pilot ≈ a few GB of NPZ.
 * **Cloud (scale):** stream-download videos on CPU workers → decode+resize →
-  write NPZ/ArrayRecord straight to **GCS** (`gs://visionary-robot-bucket/so101/`). The
+  write NPZ/ArrayRecord straight to **GCS** (`gs://visionary-uc1/so101/`). The
   *dynamics* dataset stores **latents**, not frames: 64×16 float16 ≈ 2 KB/frame
   → **~40 GB for all 19.5M frames**. That's the only artifact the dynamics
   trainer streams.
