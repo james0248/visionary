@@ -12,7 +12,7 @@ every local device. Actions are normalized to [-1, 1] with q01-q99 stats
 computed from the shards themselves unless --action_stats is given.
 
     uv run python scripts/data/save_dynamics_dataset_from_shards.py \
-        --checkpoint_dir gs://visionary-robot-bucket/so101/checkpoints/so101_tokenizer \
+        --checkpoint_dir gs://visionary-uc1/so101/checkpoints/tokenizer \
         --input_dir data/so101/shards --output_dir data/so101/dyn --frame_length 64
 """
 

@@ -16,8 +16,8 @@ log_interval: 100
 eval_steps: 1000
 total_steps: 1500000
 overfit_single_batch: false
-exp_name: so101_dynamics_small
-tokenizer_exp_name: so101_tokenizer
+exp_name: dynamics_small
+tokenizer_exp_name: tokenizer
 
 fsdp:
   enabled: auto
@@ -36,7 +36,7 @@ video_eval:
   fps: 8
   output_dir: artifacts/dynamics_eval/${exp_name}
   tokenizer:
-    checkpoint_dir: gs://visionary-robot-bucket/so101/checkpoints/${tokenizer_exp_name}
+    checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${tokenizer_exp_name}
     checkpoint_step: null
 
 dataset:
@@ -85,7 +85,7 @@ checkpoint:
   export_interval_steps: 100000
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
-    directory: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}
+    directory: gs://visionary-uc1/so101/checkpoints/${exp_name}
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
       save_interval_steps: 1000

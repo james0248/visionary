@@ -1,8 +1,8 @@
 # 138M strided (10Hz) dynamics model, from scratch on the existing data disk.
 project: visionary-491008
-exp_name: so101_dynamics_small
-tokenizer_exp_name: so101_tokenizer
-checkpoint_dir: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}
+exp_name: dynamics_small
+tokenizer_exp_name: tokenizer
+checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${exp_name}
 
 job:
   name: so101-dyn-small
@@ -24,8 +24,8 @@ training:
   overrides:
     - exp_name=${exp_name}
     - tokenizer_exp_name=${tokenizer_exp_name}
-    - dataset.train_dir=/mnt/data/dyn/train
-    - dataset.eval_dir=/mnt/data/dyn/eval
+    - dataset.train_dir=/mnt/data/dynamics/train
+    - dataset.eval_dir=/mnt/data/dynamics/eval
     - checkpoint.manager.directory=${checkpoint_dir}
 
 markers:

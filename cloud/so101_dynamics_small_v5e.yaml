@@ -1,10 +1,10 @@
 # v5e-4 fallback for the small run while the v6e queue is dry. Same
 # checkpoint dir -- only one of the two may run at a time.
 project: visionary-491008
-exp_name: so101_dynamics_small
-tokenizer_exp_name: so101_tokenizer
-checkpoint_dir: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}
-ops_dir: gs://visionary-robot-bucket/so101/checkpoints/${exp_name}/v5e
+exp_name: dynamics_small
+tokenizer_exp_name: tokenizer
+checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${exp_name}
+ops_dir: gs://visionary-uc1/so101/checkpoints/${exp_name}/v5e
 
 job:
   name: so101-dyn-small-v5e
@@ -26,8 +26,8 @@ training:
   overrides:
     - exp_name=${exp_name}
     - tokenizer_exp_name=${tokenizer_exp_name}
-    - dataset.train_dir=/mnt/data/dyn/train
-    - dataset.eval_dir=/mnt/data/dyn/eval
+    - dataset.train_dir=/mnt/data/dynamics/train
+    - dataset.eval_dir=/mnt/data/dynamics/eval
     - checkpoint.manager.directory=${checkpoint_dir}
     - fsdp.data_axis_size=4
     - dynamics.remat=true

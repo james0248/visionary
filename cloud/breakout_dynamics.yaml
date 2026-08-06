@@ -1,7 +1,7 @@
 project: visionary-491008
 exp_name: breakout_dynamics_skipframe
 tokenizer_exp_name: breakout_tokenizer_skipframe
-checkpoint_dir: gs://dream-atari-bucket/dream-arcade/checkpoints/${exp_name}
+checkpoint_dir: gs://visionary-uc1/atari/checkpoints/${exp_name}
 
 job:
   name: breakout-dynamics
@@ -23,7 +23,7 @@ training:
   overrides:
     - exp_name=${exp_name}
     - tokenizer_exp_name=${tokenizer_exp_name}
-    - video_eval.tokenizer.checkpoint_dir=gs://dream-atari-bucket/dream-arcade/checkpoints/${tokenizer_exp_name}
+    - video_eval.tokenizer.checkpoint_dir=gs://visionary-uc1/atari/checkpoints/${tokenizer_exp_name}
     - dataset.train_dir=/mnt/data/breakout_dynamics/train
     - dataset.eval_dir=/mnt/data/breakout_dynamics/eval
     - dynamics.num_actions=4

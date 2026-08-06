@@ -7,8 +7,8 @@ mp4: decoded ground truth on the left, `context_frames` of real context followed
 by generated frames on the right.
 
     uv run python scripts/eval_dynamics_videos.py \
-        --checkpoint_dir gs://visionary-robot-bucket/so101/checkpoints/so101_dynamics \
-        --tokenizer_checkpoint_dir gs://visionary-robot-bucket/so101/checkpoints/so101_tokenizer \
+        --checkpoint_dir gs://visionary-uc1/so101/checkpoints/dynamics_small_ft \
+        --tokenizer_checkpoint_dir gs://visionary-uc1/so101/checkpoints/tokenizer \
         --data_dir data/so101/dyn/eval --output_dir artifacts/dynamics_videos --num_videos 20
 """
 

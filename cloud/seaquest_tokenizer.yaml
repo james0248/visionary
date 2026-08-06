@@ -1,6 +1,6 @@
 project: visionary-491008
 exp_name: seaquest_tokenizer_skipframe
-checkpoint_dir: gs://dream-atari-bucket/dream-arcade/checkpoints/${exp_name}
+checkpoint_dir: gs://visionary-uc1/atari/checkpoints/${exp_name}
 
 job:
   name: seaquest-tokenizer

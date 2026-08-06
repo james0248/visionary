@@ -93,9 +93,9 @@ Create the demo artifacts from the repository root with:
 
 ```bash
 uv run python webgpu_app/export/export_dreamer4_onnx.py \
-  --tokenizer_dir gs://dream-atari-bucket/dream-arcade/checkpoints/breakout_tokenizer_small_2x \
+  --tokenizer_dir gs://visionary-uc1/atari/checkpoints/breakout_tokenizer_small_2x \
   --tokenizer_step 1000000 \
-  --dynamics_dir gs://dream-atari-bucket/dream-arcade/checkpoints/breakout_dynamics_small_2x \
+  --dynamics_dir gs://visionary-uc1/atari/checkpoints/breakout_dynamics_small_2x \
   --dynamics_step 1000000 \
   --out_dir webgpu_app/dream_arcade_assets/breakout \
   --seq_len 64 \
@@ -113,9 +113,9 @@ overwrite the WebGPU artifacts. The benchmark and demo use this directory by def
 
 ```bash
 uv run python webgpu_app/export/export_dreamer4_onnx.py \
-  --tokenizer_dir gs://dream-atari-bucket/dream-arcade/checkpoints/breakout_tokenizer_small_2x \
+  --tokenizer_dir gs://visionary-uc1/atari/checkpoints/breakout_tokenizer_small_2x \
   --tokenizer_step 1000000 \
-  --dynamics_dir gs://dream-atari-bucket/dream-arcade/checkpoints/breakout_dynamics_small_2x \
+  --dynamics_dir gs://visionary-uc1/atari/checkpoints/breakout_dynamics_small_2x \
   --dynamics_step 1000000 \
   --out_dir webgpu_app/dream_arcade_assets/breakout_wasm_default_mha \
   --export_target wasm \
