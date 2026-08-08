@@ -14,21 +14,21 @@ from einops import rearrange
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
-from visionary.common.buffers import (
+from buffers import (
     ReplayBuffer,
     get_action_dim,
     get_obs_shape,
 )
 from visionary.common.checkpoint import CheckpointManager
-from visionary.common.env import (
+from env import (
     ClipRewardEnv,
     EpisodicLifeEnv,
     FireResetEnv,
     has_fire_action,
     make_vec_env,
 )
-from visionary.common.rollout import record_rollout
-from visionary.common.train_state import TargetTrainState
+from rollout import record_rollout
+from train_state import TargetTrainState
 from visionary.common.wandb import WandbLogger
 
 logger = logging.getLogger(__name__)

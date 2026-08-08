@@ -13,8 +13,8 @@ from train_dqn import DQN
 from omegaconf import DictConfig
 
 from visionary.common.checkpoint import CheckpointManager
-from visionary.common.env import FireResetEnv, FrameRecorder, has_fire_action, make_vec_env
-from visionary.common.train_state import TargetTrainState
+from env import FireResetEnv, FrameRecorder, has_fire_action, make_vec_env
+from train_state import TargetTrainState
 
 logger = logging.getLogger(__name__)
 

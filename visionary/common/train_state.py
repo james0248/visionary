@@ -1,13 +1,6 @@
-from typing import Any
-
 import jax
 import jax.numpy as jnp
-from flax.core import FrozenDict
 from flax.training.train_state import TrainState
-
-
-class TargetTrainState(TrainState):
-    target_params: FrozenDict[str, Any]
 
 
 class TokenizerTrainState(TrainState):

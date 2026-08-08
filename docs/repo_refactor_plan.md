@@ -92,6 +92,13 @@ These are settled. Do not re-litigate them; they were decided explicitly.
 - §5.3 landed: `tokenizer{,_preprocessor}.py`, `dynamics.py`, `transformer.py`,
   `sigreg.py`, `export/onnx_wrappers.py` moved to `visionary/models/dreamer4/`;
   imports and yaml `_target_` strings rewritten repo-wide.
+- §5.1 landed: `scripts/dream-arcade` → `scripts/atari`, absorbed
+  `common/{env,buffers,rollout}.py` and `TargetTrainState` (now
+  `scripts/atari/train_state.py`); `TokenizerTrainState`/`DynamicsTrainState`
+  untouched. Verified no live TPU job before moving.
+- §6 leftovers fixed: `cloud/README.md` example refs, unused
+  `align_actions_to_frames` import. Plan complete except EnvPool (tracked in
+  §5.1 notes, needs Linux TPU VM).
 - `--config` made required on `diagnose_tokenizer.py` and
   `reconstruct_tokenizer.py` (both previously defaulted to
   `scripts/analysis/config/breakout_tokenizer.yaml`, which does not exist —
