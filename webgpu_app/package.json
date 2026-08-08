@@ -9,8 +9,7 @@
     "benchmark:webgpu:smoke": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium --grep @smoke",
     "benchmark:wasm:chrome": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium --grep @output_validation --playwright-channel chrome --webgpu-benchmark-provider wasm --webgpu-benchmark-warmup-runs 16 --webgpu-benchmark-timed-runs 96 --webgpu-benchmark-validation-frames 64 --webgpu-benchmark-min-fps 45",
     "benchmark:wasm:webkit": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=webkit --grep @output_validation --webgpu-benchmark-provider wasm",
-    "benchmark:wasm:all": "bun run benchmark:wasm:chrome && bun run benchmark:wasm:webkit",
-    "clean:generated": "bun scripts/clean_generated.ts"
+    "benchmark:wasm:all": "bun run benchmark:wasm:chrome && bun run benchmark:wasm:webkit"
   },
   "dependencies": {
     "onnxruntime-web": "^1.24.3"

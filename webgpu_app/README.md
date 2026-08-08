@@ -57,20 +57,3 @@ uv run --no-cache python webgpu_app/export/export_dreamer4_onnx.py --help
 uv run --no-cache python webgpu_app/export/specialize_full_cache_entry.py --help
 ```
 
-Raw-vs-optimized ONNX comparison needs a raw artifact snapshot generated from the same export run as the optimized assets:
-
-```sh
-uv run --no-cache python webgpu_app/export/compare_raw_optimized_onnx.py \
-  --raw_dir webgpu_app/assets_raw \
-  --optimized_dir webgpu_app/assets \
-  --manifest webgpu_app/assets/breakout_onnx_manifest.json
-```
-
-## Cleanup
-
-The cleanup command removes generated browser bundles, static-site output, Playwright reports, and benchmark JSON results. It intentionally leaves model assets alone.
-
-```sh
-cd webgpu_app
-bun run clean:generated
-```

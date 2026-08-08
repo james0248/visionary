@@ -180,9 +180,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional directory where the freshly exported ONNX files are copied before "
-            "any simplification, ORT optimization, or backend-specific graph rewrites. Use this "
-            "with webgpu_app/export/compare_raw_optimized_onnx.py as a behavior-preserving "
-            "optimization gate."
+            "any simplification, ORT optimization, or backend-specific graph rewrites."
         ),
     )
     parser.add_argument("--batch_size", type=int, default=1)
