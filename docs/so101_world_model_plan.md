@@ -463,7 +463,7 @@ a few hundred K frames is plenty).
 * **Phase 2 — Code changes.** Implement §6.1–6.6 behind `action_mode`. Unit-test
   the continuous `ActionEmbedding` shape/grad; keep Atari path green.
 * **Phase 3 — Train tokenizer (pilot).** `train_tokenizer.py` on pilot frames;
-  eval reconstructions (`scripts/analysis/reconstruct_tokenizer.py`). Tune
+  eval reconstructions (`scripts/analysis/diagnose_tokenizer.py --mode recon`). Tune
   `resize_shape`/`num_latents` until robot frames reconstruct cleanly.
 * **Phase 4 — Train dynamics (pilot).** `save_dynamics_dataset.py` (with
   normalization) → `train_dynamics.py`. Success = action-conditioned rollouts
