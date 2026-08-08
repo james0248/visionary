@@ -280,31 +280,44 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
     report.append(manifest)
 
 
-def bridge_episode_rows(raw):
-    rows = []
-    for meta_file in sorted(raw.glob("meta/episodes/chunk-*/*.parquet")):
-        rows.extend(read_parquet(meta_file).to_pylist())
-    return rows
+def bridge_episode_table(raw):
+    # stays columnar: materializing all 50k rows as dicts costs 2.5 GB per worker
+    import pyarrow as pa
+
+    return pa.concat_tables(
+        [read_parquet(f) for f in sorted(raw.glob("meta/episodes/chunk-*/*.parquet"))]
+    )
 
 
-def bridge_camera_keys(row):
+def bridge_camera_keys(names):
     return sorted(
         k.removeprefix("videos/").removesuffix("/chunk_index")
-        for k in row
+        for k in names
         if k.startswith("videos/") and k.endswith("/chunk_index")
     )
 
 
-def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_rows, data_cache, report):
+def bridge_units(table):
+    units = []
+    for cam in bridge_camera_keys(table.column_names):
+        chunks = table.column(f"videos/{cam}/chunk_index").to_numpy()
+        files = table.column(f"videos/{cam}/file_index").to_numpy()
+        pairs = np.unique(np.stack([chunks, files], axis=1), axis=0)
+        units.extend((cam, int(c), int(f)) for c, f in pairs)
+    return sorted(units)
+
+
+def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_table, data_cache, report):
+    import pyarrow as pa
+
     raw = Path(raw_dir)
     info = json.loads((raw / "meta" / "info.json").read_text())
     fps = int(round(info.get("fps", 5)))
     source = f"{cam.removeprefix('observation.images.')}_c{vchunk:03d}_f{vfile:03d}"
-    episodes = [
-        r for r in episode_rows
-        if r.get(f"videos/{cam}/chunk_index") == vchunk
-        and r.get(f"videos/{cam}/file_index") == vfile
-    ]
+    mask = (episode_table.column(f"videos/{cam}/chunk_index").to_numpy() == vchunk) & (
+        episode_table.column(f"videos/{cam}/file_index").to_numpy() == vfile
+    )
+    episodes = episode_table.filter(pa.array(mask)).to_pylist()
     if not episodes:
         return
     src = raw / "videos" / cam / f"chunk-{vchunk:03d}" / f"file-{vfile:03d}.mp4"
@@ -313,7 +326,7 @@ def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_rows, dat
     issues = []
     written = 0
     blank = 0
-    cam_index = bridge_camera_keys(episodes[0]).index(cam)
+    cam_index = bridge_camera_keys(episode_table.column_names).index(cam)
     for ep in episodes:
         ep_idx = int(ep["episode_index"])
         key = (ep["data/chunk_index"], ep["data/file_index"])
@@ -512,16 +525,8 @@ def bridge_main(args, report):
         cache.mkdir(parents=True, exist_ok=True)
         gcs_rsync(f"{args.raw}/bridge_v2/meta", cache / "meta")
         gcs_rsync(f"{args.raw}/bridge_v2/data", cache / "data")
-    episode_rows = bridge_episode_rows(cache)
-    cameras = bridge_camera_keys(episode_rows[0])
-    units = sorted(
-        {
-            (cam, r[f"videos/{cam}/chunk_index"], r[f"videos/{cam}/file_index"])
-            for cam in cameras
-            for r in episode_rows
-            if r.get(f"videos/{cam}/chunk_index") is not None
-        }
-    )
+    episode_table = bridge_episode_table(cache)
+    units = bridge_units(episode_table)
     todo = [u for i, u in enumerate(units) if i % args.num_shards == args.shard]
     print(f"bridge: {len(units)} units, {len(todo)} on this shard", flush=True)
     data_cache = {}
@@ -547,7 +552,7 @@ def bridge_main(args, report):
             out_dir = work / "out"
             out_dir.mkdir(parents=True)
             process_bridge_video(
-                cam, vchunk, vfile, work, out_dir, episode_rows, data_cache, report
+                cam, vchunk, vfile, work, out_dir, episode_table, data_cache, report
             )
             gcs_rsync(out_dir, dst_prefix)
             gcs_mark_done(dst_prefix)
