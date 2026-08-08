@@ -8,6 +8,9 @@ from pathlib import Path
 import numpy as np
 
 ENCODE_ARGS = [
+    # yuv420p needs even dimensions; a no-op unless a source has an odd width or height
+    "-vf",
+    "scale=trunc(iw/2)*2:trunc(ih/2)*2",
     "-c:v",
     "libx264",
     "-preset",
@@ -28,6 +31,7 @@ ENCODE_ARGS = [
 ]
 WRIST_HINTS = ("wrist", "gripper", "hand", "claw", "ego", "arm_cam")
 BLANK_BYTES_PER_FRAME = 300
+MAX_LOGGED_ISSUES = 50
 SHARD_MAX_BYTES = 2_000_000_000
 
 
@@ -209,6 +213,7 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
     tmp = Path(out_dir) / "_tmp.mp4"
     written = 0
     blank = 0
+    action_dims = set()
     for ep in episodes:
         ep_idx = ep["episode_index"]
         parquets = list(raw.glob(f"data/chunk-*/episode_{ep_idx:06d}.parquet"))
@@ -218,9 +223,7 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
         table = read_parquet(parquets[0])
         actions = stack_column(table, "action")
         state = stack_column(table, "observation.state")
-        if actions.shape[1] != 6:
-            issues.append(f"ep{ep_idx}: action_dim={actions.shape[1]}")
-            continue
+        action_dims.add(actions.shape[1])
         language = annotations.get(ep_idx) or (ep.get("tasks") or [""])[0]
         npz = frames_npz_bytes(actions, state)
         for cam_idx, cam in enumerate(cameras):
@@ -267,9 +270,11 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
         ],
         "entries": written,
         "blank_skipped": blank,
+        "action_dims": sorted(action_dims),
         "annotated_language": bool(annotations),
         "shards": shards,
-        "issues": issues,
+        "issue_count": len(issues),
+        "issues": issues[:MAX_LOGGED_ISSUES],
     }
     (Path(out_dir) / "manifest.json").write_text(json.dumps(manifest, indent=2))
     report.append(manifest)
@@ -368,7 +373,8 @@ def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_rows, dat
         "entries": written,
         "blank_skipped": blank,
         "shards": shards,
-        "issues": issues,
+        "issue_count": len(issues),
+        "issues": issues[:MAX_LOGGED_ISSUES],
     }
     (Path(out_dir) / "manifest.json").write_text(json.dumps(manifest, indent=2))
     report.append(manifest)
@@ -450,7 +456,8 @@ def process_soar_split(tfrecord_paths, split_name, out_dir, fps, report):
         "entries": written,
         "blank_skipped": blank,
         "shards": shards,
-        "issues": issues,
+        "issue_count": len(issues),
+        "issues": issues[:MAX_LOGGED_ISSUES],
     }
     (Path(out_dir) / "manifest.json").write_text(json.dumps(manifest, indent=2))
     report.append(manifest)
