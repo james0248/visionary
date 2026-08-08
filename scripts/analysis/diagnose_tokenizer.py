@@ -13,8 +13,8 @@ from visionary.common.checkpoint import (
     restore_preprocessor_export,
 )
 from visionary.dataset import RandomVideoCrop, VideoDataSource
-from visionary.tokenizer import Tokenizer
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.models.dreamer4.tokenizer import Tokenizer
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 
 def compute_mse(prediction: jax.Array, target: jax.Array) -> float:

@@ -14,8 +14,8 @@ from visionary.common.checkpoint import (
     restore_model_export_single_device,
     restore_preprocessor_export,
 )
-from visionary.tokenizer import Tokenizer
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.models.dreamer4.tokenizer import Tokenizer
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 
 def parse_args() -> argparse.Namespace:

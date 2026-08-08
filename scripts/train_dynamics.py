@@ -33,8 +33,8 @@ from visionary.dataset import (
     SubsetDataSource,
     load_record_lengths,
 )
-from visionary.dynamics import DynamicsModel
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.models.dreamer4.dynamics import DynamicsModel
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 

@@ -46,8 +46,8 @@ from visionary.common.checkpoint import (
     restore_preprocessor_export,
 )
 from visionary.dataset import AugmentVideoClip, decode_video_window
-from visionary.tokenizer import Tokenizer
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.models.dreamer4.tokenizer import Tokenizer
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 

@@ -14,13 +14,13 @@ from visionary.common.checkpoint import (
     restore_model_export_single_device,
     restore_preprocessor_export,
 )
-from visionary.dynamics import DynamicsModel
-from visionary.export.onnx_wrappers import (
+from visionary.models.dreamer4.dynamics import DynamicsModel
+from visionary.models.dreamer4.onnx_wrappers import (
     onnx_apply_dynamics_cached_sample_step,
     onnx_apply_dynamics_cached_step,
 )
-from visionary.tokenizer import Tokenizer
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.models.dreamer4.tokenizer import Tokenizer
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 
 MANIFEST_NAME = "breakout_onnx_manifest.json"

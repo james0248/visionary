@@ -3,7 +3,7 @@ import jax
 import jax.numpy as jnp
 
 from visionary.dataset import VideoDataset
-from visionary.transformer import (
+from visionary.models.dreamer4.transformer import (
     SpatioTemporalTransformer,
     create_spatial_rope,
     create_temporal_rope,

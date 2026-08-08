@@ -10,12 +10,12 @@ from einops import rearrange
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
-import visionary.dynamics as dynamics_module
-import visionary.tokenizer as tokenizer_module
-import visionary.transformer as transformer_module
-from visionary.dynamics import DynamicsModel
-from visionary.tokenizer import Tokenizer
-from visionary.transformer import SwiGLU, apply_rotary_embedding
+import visionary.models.dreamer4.dynamics as dynamics_module
+import visionary.models.dreamer4.tokenizer as tokenizer_module
+import visionary.models.dreamer4.transformer as transformer_module
+from visionary.models.dreamer4.dynamics import DynamicsModel
+from visionary.models.dreamer4.tokenizer import Tokenizer
+from visionary.models.dreamer4.transformer import SwiGLU, apply_rotary_embedding
 
 
 @dataclass(frozen=True)

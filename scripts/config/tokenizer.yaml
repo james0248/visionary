@@ -35,7 +35,7 @@ dataset:
     log_frames: 8
 
 tokenizer:
-  _target_: visionary.tokenizer.Tokenizer
+  _target_: visionary.models.dreamer4.tokenizer.Tokenizer
   num_layers: 8
   num_latents: 64
   num_heads: 8

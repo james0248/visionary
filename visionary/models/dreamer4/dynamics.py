@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from einops import rearrange
 
 from visionary.dataset import DynamicsBatch
-from visionary.transformer import (
+from visionary.models.dreamer4.transformer import (
     SpatioTemporalTransformer,
     create_temporal_rope,
 )

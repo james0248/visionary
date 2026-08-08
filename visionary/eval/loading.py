@@ -9,7 +9,7 @@ from omegaconf import OmegaConf
 
 from visionary.common.checkpoint import CheckpointManager
 from visionary.common.train_state import DynamicsTrainState
-from visionary.dynamics import DynamicsModel
+from visionary.models.dreamer4.dynamics import DynamicsModel
 
 
 def build_raw_index(shards_dir: str) -> dict[tuple[str, int, str], bytes]:

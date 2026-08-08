@@ -33,7 +33,7 @@ from visionary.common.checkpoint import (
     restore_preprocessor_export,
 )
 from visionary.dataset import decode_video_window
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 from eval_dynamics_videos import build_raw_index
 

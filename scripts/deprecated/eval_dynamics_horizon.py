@@ -29,7 +29,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from visionary.dataset import align_actions_to_frames
-from visionary.dynamics import DynamicsModel
+from visionary.models.dreamer4.dynamics import DynamicsModel
 
 from eval_dynamics_videos import load_train_config, restore_params
 

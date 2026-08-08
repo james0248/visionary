@@ -61,7 +61,7 @@ dataset:
     max_batches: 16
 
 dynamics:
-  _target_: visionary.dynamics.DynamicsModel
+  _target_: visionary.models.dreamer4.dynamics.DynamicsModel
   # 138M, near tokenizer parity
   num_layers: 12
   num_heads: 12
