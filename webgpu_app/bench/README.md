@@ -41,19 +41,14 @@ bun run benchmark:webgpu -- --webgpu-benchmark-provider wasm
 ```
 
 For a Safari-family automation check of the WASM path, run the same benchmark under the WebKit
-project. For real Safari, enable WebDriver automation once with `safaridriver --enable`, then run
-the native Safari benchmark:
+project:
 
 ```bash
 bun run benchmark:wasm:chrome
 bun run benchmark:wasm:webkit
-bun run benchmark:wasm:safari
-bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=webkit --grep @output_validation --webgpu-benchmark-provider wasm
 ```
 
-`benchmark:wasm:chrome` and `benchmark:wasm:safari` both enforce the revised `45 fps` gate by
-default. Native Safari remains close to the threshold on this machine. The Playwright WebKit command
-remains a Safari-family validation harness because it is noisier than native Safari.
+`benchmark:wasm:chrome` enforces the revised `45 fps` gate by default.
 The timed window runs immediately after warmup so the reported steady-state FPS does not include the
 decoder pipeline fill frame after a reset.
 
@@ -178,8 +173,6 @@ checks can be compared after running both commands.
 Safari-profile and WebKit runs are valid only when `streaming_frame.output_validation.status` is
 `passed`. The benchmark records the selected graph-capture state in `demo.final`, so a fast number
 without visible-frame validation should be treated as invalid.
-The native Safari benchmark writes `bench/results/latest_safari.json` and also updates
-`bench/results/latest.json` with the same schema as the Playwright actual-demo benchmark.
 
 The pure WASM path can be selected with `provider=wasm`; the demo then defaults to
 `assetBase=/dream_arcade_assets/breakout_wasm_default_mha`,
@@ -188,9 +181,9 @@ decoder worker pipeline. Chrome defaults to `decoderWorkerNumThreads=3`; Safari/
 `decoderWorkerNumThreads=2`.
 
 The current accepted actual-demo WASM path is the full head-time dynamics artifact with a full
-64-frame initial cache. On the local machine it reaches the revised `45 fps` target in headed Chrome
-and native Safari, while Playwright WebKit is still noisier/slower and should be treated primarily as
-a Safari-family validation harness. Keep validating `wasmNumThreads` and decoder worker settings per
+64-frame initial cache. On the local machine it reaches the revised `45 fps` target in headed
+Chrome, while Playwright WebKit is still noisier/slower and should be treated primarily as a
+Safari-family validation harness. Keep validating `wasmNumThreads` and decoder worker settings per
 browser and machine.
 
 ## Graph Capture

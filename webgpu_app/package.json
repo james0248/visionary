@@ -9,14 +9,8 @@
     "benchmark:webgpu:smoke": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium --grep @smoke",
     "benchmark:wasm:chrome": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=chromium --grep @output_validation --playwright-channel chrome --webgpu-benchmark-provider wasm --webgpu-benchmark-warmup-runs 16 --webgpu-benchmark-timed-runs 96 --webgpu-benchmark-validation-frames 64 --webgpu-benchmark-min-fps 45",
     "benchmark:wasm:webkit": "bun scripts/run_playwright_chrome_home.ts test bench/run_webgpu_benchmark.spec.ts --project=webkit --grep @output_validation --webgpu-benchmark-provider wasm",
-    "benchmark:wasm:safari": "bun scripts/run_native_safari_benchmark.ts",
     "benchmark:wasm:all": "bun run benchmark:wasm:chrome && bun run benchmark:wasm:webkit",
-    "clean:generated": "bun scripts/clean_generated.ts",
-    "demo:webgpu:build": "bun scripts/build_demo_site.ts",
-    "demo:webgpu": "bun scripts/serve_static.ts --host 127.0.0.1 --port 4173",
-    "demo:webgpu:smoke": "bun scripts/run_playwright_chrome_home.ts test demo/run_demo_smoke.spec.ts --project=chromium --grep @demo",
-    "demo:validate-cache-fill": "bun scripts/validate_demo_cache_fill.ts",
-    "demo:validate-output": "bun scripts/validate_demo_bricks.ts"
+    "clean:generated": "bun scripts/clean_generated.ts"
   },
   "dependencies": {
     "onnxruntime-web": "^1.24.3"

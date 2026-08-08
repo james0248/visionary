@@ -106,9 +106,7 @@ function shouldBuildBrowserEntryPoints(args: string[]) {
   return args.some(
     (arg) =>
       arg === 'bench/run_webgpu_benchmark.spec.ts' ||
-      arg === 'demo/run_demo_smoke.spec.ts' ||
-      arg.endsWith('/bench/run_webgpu_benchmark.spec.ts') ||
-      arg.endsWith('/demo/run_demo_smoke.spec.ts'),
+      arg.endsWith('/bench/run_webgpu_benchmark.spec.ts'),
   );
 }
 

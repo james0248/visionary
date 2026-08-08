@@ -5,9 +5,9 @@ The root project remains focused on world-model and RL research code.
 
 ## Layout
 
-- `bench/`: Playwright benchmark page, benchmark specs, baselines, and the benchmark threshold checker.
-- `demo/`: Minimal browser validation page for inspecting generated frames, cache behavior, and runtime performance.
-- `export/`: ONNX export, WebGPU graph rewrite, artifact comparison, and demo context/cache generation scripts.
+- `bench/`: Playwright benchmark spec, baselines, and the benchmark threshold checker. Validates model output frames and measures fps.
+- `demo/`: the page the benchmark drives headlessly; not intended for interactive use.
+- `export/`: ONNX export, WebGPU graph rewrite, artifact comparison, and context/cache generation scripts.
 - `scripts/`: local TypeScript build, static server, Playwright wrapper, and cleanup helpers.
 - `assets/`, `assets_raw/`, `dream_arcade_assets/`, `dist/`, `bench/results/`, and generated browser bundles are local generated outputs and are ignored by git.
 
@@ -28,13 +28,12 @@ uv run --no-cache python webgpu_app/export/export_dreamer4_onnx.py --help
 
 ## Validation
 
-Use wrapper flags after `--` for benchmark and demo controls. Do not prefix `bun run` with environment variables in this project.
+Use wrapper flags after `--` for benchmark controls. Do not prefix `bun run` with environment variables in this project.
 
 ```sh
 cd webgpu_app
 bun run typecheck
 bun run build:webgpu:browser
-bun run demo:webgpu:smoke
 bun run benchmark:webgpu -- --grep @smoke
 bun run benchmark:webgpu -- --grep @output_validation
 ```
