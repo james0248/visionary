@@ -1,0 +1,7284 @@
+{
+ "00ri/so100_battery": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "00ri/so100_battery_bin_center": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "1909398036ljy/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "1909398036ljy/so100_test1": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "356c/so100_duck_reposition_1": {
+  "fixed": [
+   "overhead",
+   "side"
+  ],
+  "moving": [
+   "body"
+  ],
+  "chosen": "overhead",
+  "borderline": []
+ },
+ "356c/so100_nut_sort_1": {
+  "fixed": [
+   "overhead",
+   "side"
+  ],
+  "moving": [
+   "body"
+  ],
+  "chosen": "overhead",
+  "borderline": []
+ },
+ "356c/so100_nut_test_1": {
+  "fixed": [
+   "overhead"
+  ],
+  "moving": [
+   "side"
+  ],
+  "chosen": "overhead",
+  "borderline": []
+ },
+ "356c/so100_nut_test_11": {
+  "fixed": [
+   "body",
+   "overhead",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "overhead",
+  "borderline": []
+ },
+ "356c/so100_rope_reposition_1": {
+  "fixed": [
+   "overhead",
+   "side"
+  ],
+  "moving": [
+   "body"
+  ],
+  "chosen": "overhead",
+  "borderline": []
+ },
+ "7jep7/rook_to_d4_v5": {
+  "fixed": [],
+  "moving": [
+   "follower_wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "7jep7/rook_to_d4_v6": {
+  "fixed": [],
+  "moving": [
+   "follower_wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "AK51/so100_test4": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "AMRUBARD/so100_make_coffeetest6": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": [
+   "phone"
+  ]
+ },
+ "Aadhavan/so101_bio_final": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "robocam"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "Aadhavan/so101_test1": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Aaron757/so100_test7": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "AndrejOrsula/lerobot_double_ball_stacking": {
+  "fixed": [
+   "realsense"
+  ],
+  "moving": [
+   "side"
+  ],
+  "chosen": "realsense",
+  "borderline": []
+ },
+ "AndrejOrsula/lerobot_double_ball_stacking_random": {
+  "fixed": [
+   "realsense"
+  ],
+  "moving": [
+   "side"
+  ],
+  "chosen": "realsense",
+  "borderline": []
+ },
+ "AndrejOrsula/lerobot_triple_ball_stacking": {
+  "fixed": [
+   "realsense"
+  ],
+  "moving": [
+   "side"
+  ],
+  "chosen": "realsense",
+  "borderline": []
+ },
+ "Angry-Lasagna/so101_dice_circle_v1": {
+  "fixed": [
+   "side",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "Artdelia/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "AshBastian9/so101_init_5episodes": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ashton3/lerobot-aloha": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/c-4g_tC-T_fC-T_d-250525_v-1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/c-4g_tC-T_fC-T_d-280525_v-1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/c-4g_tC-T_fC-T_d-290525_v-1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/config-4grid_topCam-T_frontCam-T_d-160525_v-1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/so100_pickupOrangeCyl": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/so100_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/so100_ticTacToe": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/so100_ticTacToe_GP1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/so100_ticTacToe_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Ayush-Sharan-1/so100_ticTacToe_v3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Bapt120/so101_cup8": {
+  "fixed": [
+   "arm"
+  ],
+  "moving": [],
+  "chosen": "arm",
+  "borderline": []
+ },
+ "Bartm3/dice2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Bartm3/dice4": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Bartm3/tape_to_bin": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Bartm3/tape_to_bin2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "BasedLukas/so101_test_8": {
+  "fixed": [
+   "pov"
+  ],
+  "moving": [
+   "overhead"
+  ],
+  "chosen": "pov",
+  "borderline": []
+ },
+ "Beegbrain/moss_open_drawer_teabox": {
+  "fixed": [
+   "back",
+   "front"
+  ],
+  "moving": [],
+  "chosen": "front",
+  "borderline": []
+ },
+ "Beegbrain/moss_stack_cubes": {
+  "fixed": [
+   "back",
+   "front"
+  ],
+  "moving": [],
+  "chosen": "front",
+  "borderline": [
+   "back"
+  ]
+ },
+ "Beegbrain/pick_lemon_and_drop_in_bowl": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Beegbrain/so100_stack_green_cube": {
+  "fixed": [
+   "obs_image_1"
+  ],
+  "moving": [
+   "obs_image_2"
+  ],
+  "chosen": "obs_image_1",
+  "borderline": [
+   "obs_image_1"
+  ]
+ },
+ "Beegbrain/stack_green_cube_blue": {
+  "fixed": [
+   "obs_image_2"
+  ],
+  "moving": [
+   "obs_image_1"
+  ],
+  "chosen": "obs_image_2",
+  "borderline": [
+   "obs_image_2"
+  ]
+ },
+ "Beegbrain/sweep_tissue_cube": {
+  "fixed": [
+   "realsense_top"
+  ],
+  "moving": [
+   "realsense_side"
+  ],
+  "chosen": "realsense_top",
+  "borderline": [
+   "realsense_top"
+  ]
+ },
+ "BobBobbson/so100_First_Gripper_Test": {
+  "fixed": [
+   "obs_gripper_viz"
+  ],
+  "moving": [
+   "overhead",
+   "wrist"
+  ],
+  "chosen": "obs_gripper_viz",
+  "borderline": [
+   "overhead"
+  ]
+ },
+ "BobBobbson/so100_test_FIRST_DATA": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "BranoSandy/so100_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "BranoSandy/so100_test_cap_20": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Chojins/chess_game_000_white_red": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Chojins/chess_game_001_blue_stereo": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Chojins/chess_game_001_blue_stereo_flip": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Chojins/chess_game_001_red_stereo": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Chojins/chess_game_009_white": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Cidoyi/so100_all_notes_1": {
+  "fixed": [
+   "keyboard_camera"
+  ],
+  "moving": [],
+  "chosen": "keyboard_camera",
+  "borderline": []
+ },
+ "Congying1112/so100_place_blue_bottle_with_single_camera": {
+  "fixed": [],
+  "moving": [
+   "onhand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "Congying1112/so100_place_blue_bottle_with_two_cameras": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "onhand"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "Congying1112/so100_place_blue_bottle_with_two_cameras2": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "onhand"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "Cornito/so101_chess17": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Cornito/so101_tea2": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Cornito/so101_test3": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "CrawlAiHuggingFace/multiplied_so101_first": {
+  "fixed": [
+   "side",
+   "topdown"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "topdown",
+  "borderline": []
+ },
+ "CrawlAiHuggingFace/multiplied_so101_pen_mug_10_1": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "CrawlAiHuggingFace/multiplied_so101_test": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "CrawlAiHuggingFace/multiplied_so101_test_8": {
+  "fixed": [
+   "pov"
+  ],
+  "moving": [
+   "overhead"
+  ],
+  "chosen": "pov",
+  "borderline": []
+ },
+ "DAbraham/5Position": {
+  "fixed": [
+   "context"
+  ],
+  "moving": [
+   "arm",
+   "base"
+  ],
+  "chosen": "context",
+  "borderline": [
+   "context"
+  ]
+ },
+ "Dangvi/so100_dataset": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "wristcam"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "Dangvi/soarm100_data": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "wristcam"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "Dangvi/soarm100_data2": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "wristcam"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "DanqingZ/new_tic_tac_toe_4": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/pick_pink_1": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "DanqingZ/pick_yellow_3": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "DanqingZ/so100_test_pick_green_5": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "DanqingZ/so100_test_pick_green_6": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "DanqingZ/so100_test_yellow_cuboid_2": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "DanqingZ/so100_test_yellow_cuboid_4": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "DanqingZ/tic_tac_toe_1_0615_2": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_1_1": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_1_2": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_1_raw_1": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_1_raw_4": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_2_raw_2": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_4_raw_2": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_5_raw_5": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_6_raw_5": {
+  "fixed": [
+   "on_robot",
+   "phone",
+   "side_view"
+  ],
+  "moving": [],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_7_raw_2": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_8_raw_3": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_grid_2_raw_1": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": [
+   "side_view"
+  ]
+ },
+ "DanqingZ/tic_tac_toe_grid_3": {
+  "fixed": [
+   "on_robot",
+   "phone",
+   "side_view"
+  ],
+  "moving": [],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_grid_4_raw": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_grid_4_raw_1": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": [
+   "side_view"
+  ]
+ },
+ "DanqingZ/tic_tac_toe_grid_6_raw_2": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_grid_6_raw_4": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_grid_7_raw_2": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": [
+   "side_view"
+  ]
+ },
+ "DanqingZ/tic_tac_toe_grid_8": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DanqingZ/tic_tac_toe_grid_9_raw": {
+  "fixed": [
+   "phone",
+   "side_view"
+  ],
+  "moving": [
+   "on_robot"
+  ],
+  "chosen": "side_view",
+  "borderline": []
+ },
+ "DavidJones03/lerobot": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "DavidYeh0709/so100_david_0610_2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "DoggyDoggyWhatNow/so101_squirtle": {
+  "fixed": [
+   "overhead"
+  ],
+  "moving": [
+   "arm"
+  ],
+  "chosen": "overhead",
+  "borderline": [
+   "overhead"
+  ]
+ },
+ "DorayakiLin/so100_pick_charger_on_tissue": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "DorayakiLin/so100_pick_cube_in_box": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "DorayakiLin/so100_stack_cube": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "DorayakiLin/yzw_so100_stack_cube_v4": {
+  "fixed": [
+   "third",
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "FAlatyr/so101_test100": {
+  "fixed": [
+   "camera"
+  ],
+  "moving": [],
+  "chosen": "camera",
+  "borderline": []
+ },
+ "Fergusonf/so100_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "Gano007/so100_doliprane": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Gano007/so100_gano": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Gano007/so100_lolo": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Gano007/so100_medic": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Gano007/so100_second": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Gano007/so100_testfull": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Haribot099/so101_60": {
+  "fixed": [
+   "phone",
+   "wrist"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "HarrisonLee24/so100_test": {
+  "fixed": [
+   "global_cam"
+  ],
+  "moving": [
+   "hand_eye_cam"
+  ],
+  "chosen": "global_cam",
+  "borderline": [
+   "global_cam"
+  ]
+ },
+ "HelloCephalopod/block_pickup_14": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Hennadiy/so100_50": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "claw"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Hugo-Castaing/LAR_DEMO": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "HuoYixiao/so101_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "JackLiuX/so100_test_candy": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "JackLiuX/so100_test_candy_new": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Jeevesh2009/so101_gray_block_lowvar_test": {
+  "fixed": [
+   "side",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "Jeevesh2009/so101_gray_block_midvar_test": {
+  "fixed": [
+   "side",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "Jeevesh2009/so101_gray_block_pickup_test": {
+  "fixed": [
+   "side",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "Jeevesh2009/so101_new_test": {
+  "fixed": [
+   "realsense1",
+   "realsense2"
+  ],
+  "moving": [],
+  "chosen": "realsense1",
+  "borderline": []
+ },
+ "Jeevesh2009/so101_test": {
+  "fixed": [
+   "realsense1",
+   "realsense2"
+  ],
+  "moving": [],
+  "chosen": "realsense1",
+  "borderline": []
+ },
+ "Jiafei1224/so100_cubestack2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "Jiafei1224/so100_test6": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Jiangeng/so100_413": {
+  "fixed": [
+   "wrist_left"
+  ],
+  "moving": [
+   "top"
+  ],
+  "chosen": "wrist_left",
+  "borderline": [
+   "top"
+  ]
+ },
+ "JimmyPeng02/so100_test_6": {
+  "fixed": [
+   "realsense1"
+  ],
+  "moving": [],
+  "chosen": "realsense1",
+  "borderline": []
+ },
+ "Jinheng0130/Catch": {
+  "fixed": [
+   "flower",
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Jinheng0130/Lay": {
+  "fixed": [
+   "flower",
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Jinheng0130/Look": {
+  "fixed": [
+   "flower",
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "JongwonP/so101_test2": {
+  "fixed": [],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "Kunalmod/so101_groot": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "base",
+  "borderline": []
+ },
+ "Kunalmod/so101_test": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "base",
+  "borderline": []
+ },
+ "Kunalmod/so101_test_7": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "base",
+  "borderline": []
+ },
+ "LT1212/dataset_catch_the_pene": {
+  "fixed": [
+   "logic_camera"
+  ],
+  "moving": [
+   "left_follower"
+  ],
+  "chosen": "logic_camera",
+  "borderline": []
+ },
+ "LeRobot-worldwide-hackathon/174-Mate-so101_dataset6": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "LeRobot-worldwide-hackathon/189-GMI-AI-GMISET1": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "LeRobot-worldwide-hackathon/190-RecycloBots-recyclobots": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "LeRobot-worldwide-hackathon/191-Dum-E-so100-fries": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "LeRobot-worldwide-hackathon/246-Golf": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "usbcam"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "LemonadeDai/so100_coca": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "Loki0929/so100_duck": {
+  "fixed": [
+   "third",
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "Loki0929/so100_lan": {
+  "fixed": [
+   "laptop",
+   "third"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Louisnbt/so100_test9": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "M3thRocks/so101_test13": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "M3thRocks/so101_test2": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "front",
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": [
+   "front",
+   "top"
+  ]
+ },
+ "MaChengyang/so100_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "ManTang034/so101_test": {
+  "fixed": [],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "Mazytomo/so101_test": {
+  "fixed": [
+   "head"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "head",
+  "borderline": []
+ },
+ "Micksavioz/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Mohamedal/put_banana": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/put_banana_bowl_dis": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/put_banana_bowl_last_test": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/put_banana_bowl_new_data": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/put_cube_bowl": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/put_lemon_bowl_data": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/put_peach_bowl_dis": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/put_plum_bowl_dis": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/so100_put_bananda_bowl_newda": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/so100_put_plum_bowl_new_data": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "Mohamedal/so100_test_peach_ddata": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "MrAnton/so101_test": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "MsJNeko/so101_prac2": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Mwuqiu/Pick_up_the_Yellow_Duck_Careless": {
+  "fixed": [
+   "topview"
+  ],
+  "moving": [
+   "wristview"
+  ],
+  "chosen": "topview",
+  "borderline": []
+ },
+ "Mwuqiu/Pick_up_the_Yellow_Duck_Precise": {
+  "fixed": [
+   "topview",
+   "wristview"
+  ],
+  "moving": [],
+  "chosen": "topview",
+  "borderline": []
+ },
+ "Mwuqiu/So100_Four_Tasks": {
+  "fixed": [
+   "topview"
+  ],
+  "moving": [
+   "wristview"
+  ],
+  "chosen": "topview",
+  "borderline": []
+ },
+ "Mwuqiu/pickup_ducks": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Mwuqiu/so100_0408": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "Mwuqiu/so100_0408_muti": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Mwuqiu/so100_point_first_0422": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Mwuqiu/so100_point_first_ns": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Mwuqiu/so100_pointit_0422": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Odog16/so100_cube_drop_pick_v1": {
+  "fixed": [
+   "workspace"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "workspace",
+  "borderline": []
+ },
+ "Odog16/so100_test_2": {
+  "fixed": [
+   "workspace"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "workspace",
+  "borderline": [
+   "workspace"
+  ]
+ },
+ "Odog16/so100_test_2.1": {
+  "fixed": [
+   "workspace"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "workspace",
+  "borderline": [
+   "workspace"
+  ]
+ },
+ "RASPIAUDIO/so100_test7": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "crane"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "RaulSaya/Bylogic0": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "RaulSaya/so101_pickandplacebylogic": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "ReubenLim/lerobot_hackathon": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "ReubenLim/so101_ball_in_cup": {
+  "fixed": [
+   "front",
+   "overhead",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "front",
+  "borderline": []
+ },
+ "ReubenLim/so101_lerobot_hackathon": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "ReubenLim/so101_tape_in_square": {
+  "fixed": [
+   "birdeye",
+   "thirdperson"
+  ],
+  "moving": [],
+  "chosen": "thirdperson",
+  "borderline": []
+ },
+ "RickRain/so101_test": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "webcam",
+  "borderline": [
+   "webcam"
+  ]
+ },
+ "RickRain/so101_test_single_lego": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "webcam",
+  "borderline": [
+   "webcam"
+  ]
+ },
+ "Rorschach4153/so101_30_1": {
+  "fixed": [
+   "side",
+   "topdown"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "topdown",
+  "borderline": []
+ },
+ "Rorschach4153/so101_30_fold": {
+  "fixed": [
+   "side",
+   "topdown"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "topdown",
+  "borderline": [
+   "side"
+  ]
+ },
+ "Rorschach4153/so101_60_new": {
+  "fixed": [
+   "side",
+   "topdown"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "topdown",
+  "borderline": []
+ },
+ "Ruth011/jetson_orin_nano_super_1": {
+  "fixed": [
+   "front",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "front",
+  "borderline": []
+ },
+ "Ruth011/smolvla_test1__so100_pick_place_dataset": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "SGQA/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "SahilChande/so100_pick_carrot": {
+  "fixed": [
+   "top_camera"
+  ],
+  "moving": [
+   "arm_camera"
+  ],
+  "chosen": "top_camera",
+  "borderline": []
+ },
+ "Selinaliu1030/egg_0806": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Setchii/so100_grab_ball": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "SharkDan/so100_test_f1": {
+  "fixed": [
+   "new_camera",
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "SharkDan/so100_test_f3c": {
+  "fixed": [
+   "new_camera",
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Stevenyu8888/so101_3d_grab": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "Tank-123/so101_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Tank-123/so101_testdata_0820": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Thorns07/so100_test": {
+  "fixed": [
+   "laptop1"
+  ],
+  "moving": [
+   "eyeonhand"
+  ],
+  "chosen": "laptop1",
+  "borderline": [
+   "laptop1"
+  ]
+ },
+ "Thorns07/so100_test_diffusion_grasp": {
+  "fixed": [
+   "laptop1"
+  ],
+  "moving": [
+   "eyeonhand"
+  ],
+  "chosen": "laptop1",
+  "borderline": [
+   "laptop1"
+  ]
+ },
+ "Trelis/so100_test2": {
+  "fixed": [
+   "context"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "context",
+  "borderline": []
+ },
+ "TzuShian/so100_250527": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "TzuShian/so100_chess_test2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "TzuShian/so100_chess_test3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "UCleQmAR/so101_data": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "UCleQmAR/so101_data2": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "UCleQmAR/so101_data_right_long10": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "UCleQmAR/so101_data_right_mid10": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "UCleQmAR/so101_gasp_mesuring_tape": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "UN-kk/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "VoicAndrei/so100_banana_to_plate_only": {
+  "fixed": [
+   "right"
+  ],
+  "moving": [
+   "top"
+  ],
+  "chosen": "right",
+  "borderline": []
+ },
+ "VoicAndrei/so100_cubes_noaptea_companiilor": {
+  "fixed": [
+   "side",
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "VoicAndrei/so100_cubes_noaptea_companiilor_2": {
+  "fixed": [
+   "side",
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "VoicAndrei/so100_green_blocks": {
+  "fixed": [
+   "right",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": [
+   "top"
+  ]
+ },
+ "VoicAndrei/so100_kitchen": {
+  "fixed": [
+   "side",
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "VoicAndrei/so100_test_blocks": {
+  "fixed": [
+   "right",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "WalonWal/so100_test": {
+  "fixed": [
+   "webcam",
+   "webcam2"
+  ],
+  "moving": [],
+  "chosen": "webcam2",
+  "borderline": []
+ },
+ "Waykzen/raju": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "Waykzen/raju2": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "XXRRSSRR/so100_v3_num_episodes_50": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "Xiewei1211/Grab_panda_2": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "Yan1205/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "Yanis7777/so100_duck": {
+  "fixed": [
+   "wrist_camera"
+  ],
+  "moving": [
+   "overhead_camera"
+  ],
+  "chosen": "wrist_camera",
+  "borderline": [
+   "overhead_camera"
+  ]
+ },
+ "Zak-Y/so100_test": {
+  "fixed": [
+   "left_follower"
+  ],
+  "moving": [
+   "right_follower"
+  ],
+  "chosen": "left_follower",
+  "borderline": []
+ },
+ "aaaRick/so100_test613sec": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "aaronsu11/so100_instrument": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "aaronsu11/so100_lego": {
+  "fixed": [
+   "top_camera"
+  ],
+  "moving": [
+   "arm_camera"
+  ],
+  "chosen": "top_camera",
+  "borderline": []
+ },
+ "aaronsu11/so100_pick": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "acrampette/so100test_05": {
+  "fixed": [],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "acrampette/third_arm_01": {
+  "fixed": [
+   "wrist"
+  ],
+  "moving": [],
+  "chosen": "wrist",
+  "borderline": []
+ },
+ "acrampette/third_arm_02": {
+  "fixed": [],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "adrienloizeau/pig3_seg": {
+  "fixed": [
+   "seg",
+   "webcam"
+  ],
+  "moving": [
+   "robot"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "advpatel/handshake_data": {
+  "fixed": [
+   "tripod"
+  ],
+  "moving": [
+   "arm_cam"
+  ],
+  "chosen": "tripod",
+  "borderline": []
+ },
+ "ahad-j/chess-a6-to-d6": {
+  "fixed": [],
+  "moving": [
+   "eye-in-hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "ahad-j/chess-b5-to-b6": {
+  "fixed": [],
+  "moving": [
+   "eye-in-hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "ahad-j/chess-b5-to-c7": {
+  "fixed": [],
+  "moving": [
+   "eye-in-hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "ahad-j/chess-c5-to-b6": {
+  "fixed": [],
+  "moving": [
+   "eye-in-hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "ahad-j/chess-d6-to-d5": {
+  "fixed": [],
+  "moving": [
+   "eye-in-hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "ahad-j/chess_a8_to_d8": {
+  "fixed": [],
+  "moving": [
+   "eye-in-hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "akira-sasaki/akabeko_instruct_v1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "akira-sasaki/akabeko_instruct_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "akira-sasaki/gr00t_red_block": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "hand"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "akira-sasaki/so100_somlvla": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "alan-123456/test3": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop",
+   "phone"
+  ]
+ },
+ "alan-123456/test_plus": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "alan-123456/test_red_final": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "alexis779/so100_ball_cup": {
+  "fixed": [],
+  "moving": [
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "allenchienxxx/so100_block_bin": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "allenchienxxx/so100_block_mug": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "andlyu/newiii_salad": {
+  "fixed": [
+   "arm",
+   "base_right",
+   "gripper"
+  ],
+  "moving": [
+   "base"
+  ],
+  "chosen": "base_right",
+  "borderline": [
+   "base",
+   "gripper"
+  ]
+ },
+ "andy309/so100_0311_1152": {
+  "fixed": [
+   "back",
+   "top"
+  ],
+  "moving": [
+   "wrist_right"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "andy309/so100_0313_no_wrist_camera": {
+  "fixed": [
+   "back",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "anichris/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "apayan/so100_ball2": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "top",
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "apayan/so100_ball8": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "front",
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "apayan/so100_dice4": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "top",
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "apayan/so100_dice5": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "top",
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": [
+   "front"
+  ]
+ },
+ "apayan/so100_key3": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "top",
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "apayan/so100_key4": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "top",
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "apayan/so100_key6": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "top",
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "apayan/so100_last3": {
+  "fixed": [
+   "wrist"
+  ],
+  "moving": [
+   "front",
+   "top"
+  ],
+  "chosen": "wrist",
+  "borderline": []
+ },
+ "apayan/so100_set1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "apayan/so100_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "arulloomba/so100_test_20250425_151531": {
+  "fixed": [
+   "detatched_arm"
+  ],
+  "moving": [
+   "attached_arm"
+  ],
+  "chosen": "detatched_arm",
+  "borderline": []
+ },
+ "arulloomba/so100_test_4": {
+  "fixed": [
+   "detatched_arm"
+  ],
+  "moving": [
+   "attached_arm"
+  ],
+  "chosen": "detatched_arm",
+  "borderline": []
+ },
+ "arulloomba/so100_test_5": {
+  "fixed": [
+   "detatched_arm"
+  ],
+  "moving": [
+   "attached_arm"
+  ],
+  "chosen": "detatched_arm",
+  "borderline": []
+ },
+ "asafxrev/so100_jenga_": {
+  "fixed": [],
+  "moving": [
+   "follower_cam"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "asafxrev/so100_jenga_box_simple": {
+  "fixed": [
+   "follower_cam"
+  ],
+  "moving": [],
+  "chosen": "follower_cam",
+  "borderline": []
+ },
+ "b-sky-lab/act_so101_pick_white_01": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "b-sky-lab/act_so101_pick_white_02": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "badwolf256/so100_twin_cam_duck": {
+  "fixed": [
+   "realsense"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "realsense",
+  "borderline": []
+ },
+ "badwolf256/so100_twin_cam_duck_v2": {
+  "fixed": [
+   "realsense"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "realsense",
+  "borderline": []
+ },
+ "badwolf256/so100_twin_cam_duck_v3": {
+  "fixed": [
+   "realsense"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "realsense",
+  "borderline": []
+ },
+ "bap13/so101_test": {
+  "fixed": [
+   "context"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "context",
+  "borderline": []
+ },
+ "bap13/so101_test_3": {
+  "fixed": [
+   "wrist"
+  ],
+  "moving": [
+   "context"
+  ],
+  "chosen": "wrist",
+  "borderline": []
+ },
+ "baptiste-04/so100_playX": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "baptiste-04/so100_test_v6": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "bensprenger/left_arm_yellow_brick_in_box_v0": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "bensprenger/left_arm_yellow_brick_in_box_with_purple_noise_v0": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "bjb7/so101_berm_build_test_1": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "bjb7/so101_berm_build_test_2": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_1": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_10": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_11": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_12": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_13": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_14": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_15": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_2": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_3": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_4": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_5": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_6": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_7": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_8": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_mug_10_9": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_4",
+  "borderline": []
+ },
+ "bjb7/so101_pen_touch_test_1": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "bjb7/so101_pen_touch_test_2": {
+  "fixed": [
+   "camera_2",
+   "camera_4"
+  ],
+  "moving": [],
+  "chosen": "camera_2",
+  "borderline": []
+ },
+ "bobdingli/so101_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "boyangs235/so100-Pick-Place_dataset_Put-square-in-bowl": {
+  "fixed": [
+   "depth",
+   "gripper",
+   "static",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": [
+   "depth"
+  ]
+ },
+ "boyangs235/so100-Put_square_into_area": {
+  "fixed": [
+   "depth",
+   "static",
+   "top"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "brus123/so100_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "burgalon/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "burgalon/so100_test_camera_top": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "bursomi/so101_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "campa-rabb/so100_50ep": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "carlosdp/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "carlosdp/so100_test_attempt3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "cezarsolo/so100_data": {
+  "fixed": [
+   "perspective"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "perspective",
+  "borderline": []
+ },
+ "cezarsolo/so100_newdata": {
+  "fixed": [
+   "perspective"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "perspective",
+  "borderline": []
+ },
+ "charleyong/so100_cubes_put_box": {
+  "fixed": [
+   "stationary"
+  ],
+  "moving": [],
+  "chosen": "stationary",
+  "borderline": []
+ },
+ "charleyong/so100_tic_tac_toe_autoend": {
+  "fixed": [
+   "stationary"
+  ],
+  "moving": [],
+  "chosen": "stationary",
+  "borderline": []
+ },
+ "charleyong/so100_tic_tac_toe_updated": {
+  "fixed": [
+   "stationary"
+  ],
+  "moving": [],
+  "chosen": "stationary",
+  "borderline": []
+ },
+ "charleyong/so100_y_cube": {
+  "fixed": [],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "charleyong/so100_y_cube_3cam": {
+  "fixed": [
+   "left_stationary",
+   "right_stationary"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "right_stationary",
+  "borderline": []
+ },
+ "charleyong/so100_ycube_put_box": {
+  "fixed": [
+   "left_stationary",
+   "right_stationary"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "right_stationary",
+  "borderline": []
+ },
+ "chmadran/so100_home_dataset": {
+  "fixed": [
+   "laptop",
+   "logitech",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "cjlqwe/so100_51_70": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "cjlqwe/so100_71_100": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "cjlqwe/so100_test1": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "cjlqwe/so100_test2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "cwhite098/benchy4": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "cyoung96/so100_test": {
+  "fixed": [],
+  "moving": [
+   "arm_camera",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": [
+   "phone"
+  ]
+ },
+ "danaaubakirova/so100_task_1": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "danaaubakirova/so100_task_2": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "danaaubakirova/so100_task_3": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "danaaubakirova/so100_v2_task_1": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "danaaubakirova/so100_v2_task_2": {
+  "fixed": [
+   "top",
+   "wrist"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "danaaubakirova/so100_v2_task_3": {
+  "fixed": [
+   "top",
+   "wrist"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "deepinsand/so100_test2": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "arm"
+  ],
+  "chosen": "webcam",
+  "borderline": [
+   "webcam"
+  ]
+ },
+ "djkesu/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "dongseon/so100_04261": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dongseon/so100_0429": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dongseon/so100_0501": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dongseon/so100_0503": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dongseon/so100_0505": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dongseon/so100_0510": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dongseon/so100_test11": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dongseon/so100_test7": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dongseon/so100_test8": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dongseon/so100_test9": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "drjaisree25/carrot_data": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "webcam"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "drjaisree25/carrot_data_0": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "webcam"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "drjaisree25/onion_data": {
+  "fixed": [
+   "webcam0"
+  ],
+  "moving": [
+   "armcam"
+  ],
+  "chosen": "webcam0",
+  "borderline": []
+ },
+ "drjaisree25/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "webcam"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "dsfsg/bring_bottle": {
+  "fixed": [
+   "laptop",
+   "phone2"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dsfsg/grasp_pen_and_bottle": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [
+   "phone2"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "dsfsg/grasp_pens": {
+  "fixed": [
+   "laptop",
+   "phone2"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop",
+   "phone2"
+  ]
+ },
+ "dsfsg/so100_test2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dsfsg/so100_test3": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": [
+   "phone"
+  ]
+ },
+ "dulics/so100_strawberry_bear": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "dweiQAQ/so101_test_1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "easonjcc/so100_test-02": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "easonjcc/so100_test-04": {
+  "fixed": [
+   "c1",
+   "c3"
+  ],
+  "moving": [
+   "c2"
+  ],
+  "chosen": "c3",
+  "borderline": []
+ },
+ "easonjcc/so100_test-05": {
+  "fixed": [
+   "eye",
+   "front-l",
+   "front-r"
+  ],
+  "moving": [
+   "hand"
+  ],
+  "chosen": "front-r",
+  "borderline": []
+ },
+ "easonjcc/so100_test-1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "ecoqba/so100_test1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "edgarkim/so100_test_edgar_2": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "edgarkim/so100_test_edgar_block": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "edgarkim/so100_test_edgar_blue_block_1": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "emmanuel-v/so101_test_03": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "base",
+  "borderline": [
+   "base"
+  ]
+ },
+ "enpeicv/so101_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "fbeltrao/so101_unplug_cable_2": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "fil1021/so100_test_0419": {
+  "fixed": [
+   "background",
+   "gripper"
+  ],
+  "moving": [],
+  "chosen": "background",
+  "borderline": []
+ },
+ "francescocrivelli/so100_test_5": {
+  "fixed": [
+   "workspace"
+  ],
+  "moving": [
+   "endeffector"
+  ],
+  "chosen": "workspace",
+  "borderline": [
+   "endeffector"
+  ]
+ },
+ "fuka02/so101_test_0723_1": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "fuka02/so101_test_0723_2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "fuka02/so101_test_0723_3": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "ganker5/so100_dataline_20250331": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "ganker5/so100_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "ganondorofu/so101_3cam_ml": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [
+   "monitor"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "ganondorofu/so101_gpulearntest": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "gavrelina/pingpong-dunk-lr": {
+  "fixed": [
+   "main"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "main",
+  "borderline": []
+ },
+ "guanfengliu/grab_brush_diff_bin_orient": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "guanfengliu/grab_brush_diff_bin_orient2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "gustavkeppler/so101_test": {
+  "fixed": [
+   "wrist"
+  ],
+  "moving": [],
+  "chosen": "wrist",
+  "borderline": []
+ },
+ "gxy1111/so100_rotate": {
+  "fixed": [
+   "eye"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "eye",
+  "borderline": []
+ },
+ "gxy1111/so100_soft": {
+  "fixed": [
+   "eye"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "eye",
+  "borderline": []
+ },
+ "gxy1111/so100_tape2": {
+  "fixed": [
+   "eye"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "eye",
+  "borderline": []
+ },
+ "hawnsoung/so101_test_coff_5": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "hhh6/so101_test6": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "hhh6/so101_test8": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "hhh6/so101_test9": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "hkphoooey/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "howld/so100_grab_lego": {
+  "fixed": [
+   "zrgb"
+  ],
+  "moving": [
+   "eyeinhand"
+  ],
+  "chosen": "zrgb",
+  "borderline": []
+ },
+ "hrhraj/25513_bbox_dataset": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "hrhraj/act_dice_dataset_25514": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "hrhraj/calibrated_fresh_dataset": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "hrhraj/groundingdino_single_camera": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "hrhraj/so100_dice_red_v1": {
+  "fixed": [
+   "gripper",
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop",
+   "phone"
+  ]
+ },
+ "hrhraj/so100_dice_red_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "hrhraj/so100_dice_yellow": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "hrhraj/so100_lego_figure_with_boxes": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "hrhraj/so100_objects_car_v1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "hrhraj/so100_objects_v1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "hrhraj/so100_red_dice_with_boxes": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "hrhraj/so100_toy_red_car_with_boxes": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "gripper",
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "hrhraj/train_so100_dice_red": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "idreesrazak/so100_train_data": {
+  "fixed": [],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "igaewa/so100_test_v2": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "igaewa/so101_smolvla_50_epochs": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "imsyed00/so100_banana_pickplace_1": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "isadev/bougies2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "isadev/bougies3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "jackywu200512/so101_test": {
+  "fixed": [
+   "cam_high"
+  ],
+  "moving": [],
+  "chosen": "cam_high",
+  "borderline": []
+ },
+ "jccj/so100_block_in_cup": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "jclinton1/wedgit_stack_single": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "jclinton1/wedgit_stack_single_dual_cam": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "jdgalviss/so101_test": {
+  "fixed": [],
+  "moving": [
+   "context",
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": [
+   "context",
+   "wrist"
+  ]
+ },
+ "jdgalviss/so101_test_bottle": {
+  "fixed": [
+   "context"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "context",
+  "borderline": []
+ },
+ "jiajun001/eraser00_2": {
+  "fixed": [
+   "side"
+  ],
+  "moving": [
+   "hand"
+  ],
+  "chosen": "side",
+  "borderline": [
+   "side"
+  ]
+ },
+ "jiajun001/eraser00_3": {
+  "fixed": [
+   "front",
+   "side"
+  ],
+  "moving": [
+   "hand"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "jiajun001/eraser01_3": {
+  "fixed": [
+   "hand"
+  ],
+  "moving": [
+   "front",
+   "side"
+  ],
+  "chosen": "hand",
+  "borderline": [
+   "hand",
+   "side"
+  ]
+ },
+ "jiajun001/eraser20-1": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "hand",
+   "side"
+  ],
+  "chosen": "front",
+  "borderline": [
+   "side"
+  ]
+ },
+ "jiajun001/put13-2": {
+  "fixed": [
+   "front",
+   "side"
+  ],
+  "moving": [
+   "hand"
+  ],
+  "chosen": "front",
+  "borderline": [
+   "side"
+  ]
+ },
+ "jiroh2000/so100_test": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "jiroh2000/so100_test_001a": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "jiroh2000/so100_test_002": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "jiroh2000/so100_test_003": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "jiroh2000/so100_test_02": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "jiroh2000/so100_test_04": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "jiroh2000/so100_test_a001": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "jiuyal2/so100_marker": {
+  "fixed": [
+   "iphone"
+  ],
+  "moving": [
+   "so100"
+  ],
+  "chosen": "iphone",
+  "borderline": []
+ },
+ "jiuyal2/so100_marker_new_camera_pose_new": {
+  "fixed": [
+   "iphone"
+  ],
+  "moving": [
+   "so100"
+  ],
+  "chosen": "iphone",
+  "borderline": []
+ },
+ "jiuyal2/so100_marker_new_camera_pose_new_red": {
+  "fixed": [
+   "iphone"
+  ],
+  "moving": [
+   "so100"
+  ],
+  "chosen": "iphone",
+  "borderline": []
+ },
+ "joaoocruz00/so100_makeitD1": {
+  "fixed": [
+   "laptop",
+   "realsensergb"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "jonhpark/so101_pick_place": {
+  "fixed": [
+   "front",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "front",
+  "borderline": []
+ },
+ "joonsu0109/so100_pickup_green_lego": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "joooonhocho/so100_doll_in_bowl_2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "joooonhocho/so100_test_2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "julyfun/so100_pick_and_place_50": {
+  "fixed": [],
+  "moving": [
+   "hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "julyfun/so100_pick_and_place_v2_50": {
+  "fixed": [],
+  "moving": [
+   "hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "julyfun/so100_pick_and_place_v4_50": {
+  "fixed": [],
+  "moving": [
+   "hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "juni3227/so100_test03": {
+  "fixed": [
+   "airial"
+  ],
+  "moving": [
+   "right_follower"
+  ],
+  "chosen": "airial",
+  "borderline": []
+ },
+ "juni3227/so100_test05": {
+  "fixed": [
+   "airial"
+  ],
+  "moving": [
+   "right_follower"
+  ],
+  "chosen": "airial",
+  "borderline": [
+   "airial"
+  ]
+ },
+ "juni3227/so100_test06": {
+  "fixed": [
+   "airial"
+  ],
+  "moving": [
+   "right_follower"
+  ],
+  "chosen": "airial",
+  "borderline": [
+   "airial"
+  ]
+ },
+ "juni3227/so100_test07": {
+  "fixed": [
+   "airial"
+  ],
+  "moving": [
+   "right_follower"
+  ],
+  "chosen": "airial",
+  "borderline": []
+ },
+ "juni3227/so100_test_005_practice": {
+  "fixed": [
+   "left",
+   "top"
+  ],
+  "moving": [
+   "robotarm00"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "juni3227/so100_test_cap01": {
+  "fixed": [
+   "airial"
+  ],
+  "moving": [
+   "right_follower"
+  ],
+  "chosen": "airial",
+  "borderline": []
+ },
+ "juni3227/so100_test_cap02_sideway": {
+  "fixed": [
+   "airial"
+  ],
+  "moving": [
+   "right_follower"
+  ],
+  "chosen": "airial",
+  "borderline": []
+ },
+ "jyang-ca/so101_test_domino": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "orbbec"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "jyang-ca/so101_test_grab_place_v2": {
+  "fixed": [
+   "orbbec",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": [
+   "orbbec"
+  ]
+ },
+ "kaiserbuffle/hanoiv2": {
+  "fixed": [
+   "wrist"
+  ],
+  "moving": [
+   "base"
+  ],
+  "chosen": "wrist",
+  "borderline": []
+ },
+ "kaiserbuffle/hanoiv4": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "base",
+  "borderline": [
+   "wrist"
+  ]
+ },
+ "kaiserbuffle/hanoiv5": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "base",
+  "borderline": [
+   "wrist"
+  ]
+ },
+ "kaiserbuffle/hanoiv6": {
+  "fixed": [
+   "wrist"
+  ],
+  "moving": [
+   "base"
+  ],
+  "chosen": "wrist",
+  "borderline": []
+ },
+ "kantine/flip_A0": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kantine/flip_A1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kantine/flip_A2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kantine/flip_A3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "kantine/kapla_tower_2_expert": {
+  "fixed": [
+   "logitech_1"
+  ],
+  "moving": [],
+  "chosen": "logitech_1",
+  "borderline": [
+   "logitech_1"
+  ]
+ },
+ "kantine/kapla_tower_3_expert": {
+  "fixed": [
+   "logitech_1",
+   "logitech_2"
+  ],
+  "moving": [],
+  "chosen": "logitech_2",
+  "borderline": [
+   "logitech_1"
+  ]
+ },
+ "kantine/piling_glasses": {
+  "fixed": [
+   "logitech_1",
+   "logitech_2"
+  ],
+  "moving": [],
+  "chosen": "logitech_2",
+  "borderline": [
+   "logitech_1"
+  ]
+ },
+ "kantine/soldering_2": {
+  "fixed": [
+   "logitech_1",
+   "logitech_2"
+  ],
+  "moving": [],
+  "chosen": "logitech_1",
+  "borderline": [
+   "logitech_2"
+  ]
+ },
+ "kantine/soldering_3": {
+  "fixed": [
+   "logitech_1",
+   "logitech_2"
+  ],
+  "moving": [],
+  "chosen": "logitech_1",
+  "borderline": [
+   "logitech_2"
+  ]
+ },
+ "kantine/stacking_cups": {
+  "fixed": [
+   "logitech_1",
+   "logitech_2"
+  ],
+  "moving": [],
+  "chosen": "logitech_2",
+  "borderline": [
+   "logitech_1"
+  ]
+ },
+ "kevin-nd/so100_test_2": {
+  "fixed": [
+   "side",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "kivod/so100_test2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "ktkd/so101_office_test_20250802": {
+  "fixed": [
+   "rs_415_rgb",
+   "rs_435_rgb"
+  ],
+  "moving": [],
+  "chosen": "rs_435_rgb",
+  "borderline": []
+ },
+ "ktkd/so101_test": {
+  "fixed": [
+   "rs_rgb"
+  ],
+  "moving": [],
+  "chosen": "rs_rgb",
+  "borderline": []
+ },
+ "kumarhans/simBoxPushTest": {
+  "fixed": [
+   "ego_cam"
+  ],
+  "moving": [
+   "wrist_cam"
+  ],
+  "chosen": "ego_cam",
+  "borderline": []
+ },
+ "kumarhans/so100_push_box_real1": {
+  "fixed": [
+   "wrist_cam"
+  ],
+  "moving": [
+   "ego_cam"
+  ],
+  "chosen": "wrist_cam",
+  "borderline": [
+   "ego_cam"
+  ]
+ },
+ "kyomangold/so100_ttt_A1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_A1_single": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_A1_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_A2_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_A3_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_B1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_B1_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_B2_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_B2_v3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_B3_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_C1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_C1_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_C2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_C2_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_C3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "kyomangold/so100_ttt_C3_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "labme/so101_multicameras": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "camera2"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "lbxa/tiny": {
+  "fixed": [
+   "front",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "front",
+  "borderline": []
+ },
+ "lime66/so100_test": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "lirislab/clear_square": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "lirislab/clear_square_orig": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "lirislab/fold_bottom_right": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": [
+   "realsense_side"
+  ]
+ },
+ "lirislab/lemon_into_bowl": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "lirislab/open_top_drawer_teabox": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "lirislab/push_cup_target": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "lirislab/put_banana_bowl": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "lirislab/put_caps_into_teabox": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "lirislab/put_coffee_cap_teabox": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "lirislab/stack_two_red_cubes": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "lirislab/sweep_tissue_cube": {
+  "fixed": [
+   "realsense_top"
+  ],
+  "moving": [
+   "realsense_side"
+  ],
+  "chosen": "realsense_top",
+  "borderline": [
+   "realsense_top"
+  ]
+ },
+ "lirislab/unfold_bottom_right": {
+  "fixed": [
+   "realsense_side",
+   "realsense_top"
+  ],
+  "moving": [],
+  "chosen": "realsense_top",
+  "borderline": []
+ },
+ "liuhuanjim013/so100_block": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "hand"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "liuhuanjim013/so100_th_1": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "hand"
+  ],
+  "chosen": "top",
+  "borderline": [
+   "top"
+  ]
+ },
+ "liustar1989/so100_test8": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "liyitenga/so100_pick_dabaitu1": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "love3165303/so100_pick2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "love3165303/so100_pick3": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "love3165303/so100_pick6": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "love3165303/so100_pick_all_lego": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "left_wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "love3165303/so100_pick_ball_colors1": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "left_wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "love3165303/so100_pick_ball_colors2": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "left_wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "love3165303/so100_pick_ball_colors3": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "love3165303/so100_pick_multi_tape1": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "left_wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "lqzjbs/data_testssss6": {
+  "fixed": [
+   "logic_camera"
+  ],
+  "moving": [
+   "left_follower"
+  ],
+  "chosen": "logic_camera",
+  "borderline": []
+ },
+ "lt-s/so100_train_move_six_blocks_tray_to_matching_dishes": {
+  "fixed": [
+   "center_cam",
+   "right_cam"
+  ],
+  "moving": [],
+  "chosen": "center_cam",
+  "borderline": []
+ },
+ "lt-s/so100_train_move_six_blocks_tray_to_matching_dishes_flip": {
+  "fixed": [
+   "center_cam",
+   "right_cam"
+  ],
+  "moving": [],
+  "chosen": "center_cam",
+  "borderline": []
+ },
+ "luke250305/play_dice_250311.1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "luo99999999/so101": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "luriss/so100_pick_and_place_box_task_0429_1": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "luriss/so100_pick_and_place_box_task_0430": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "luriss/so100_pick_and_place_box_task_0430_1": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "magnusk/so100_blocktest_50": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "maitereo/so100_bag_placement_20250426": {
+  "fixed": [
+   "tabletop"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "tabletop",
+  "borderline": []
+ },
+ "masato-ka/so100_cutlery_handling": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "masato-ka/so100_cutlery_handling_simple": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "masato-ka/so100_grasp_lego": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "masato-ka/so100_grasp_snack": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "masato-ka/so100_lego_sort": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "masato-ka/stacking_block_wrist": {
+  "fixed": [
+   "images.front"
+  ],
+  "moving": [
+   "images.wrist.right"
+  ],
+  "chosen": "images.front",
+  "borderline": []
+ },
+ "mathieutk/so100_goba": {
+  "fixed": [
+   "red"
+  ],
+  "moving": [
+   "grap"
+  ],
+  "chosen": "red",
+  "borderline": []
+ },
+ "mathieutk/so100_gobc": {
+  "fixed": [
+   "red"
+  ],
+  "moving": [
+   "grap"
+  ],
+  "chosen": "red",
+  "borderline": []
+ },
+ "maujim/TraveltoJam4": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "maujim/place_bagel_on_jig": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "maujim/place_bagel_on_jig3": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "maux/so100_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "meetrais/ball_in_the_box": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "mfyu/so101_red_obj_white_box_nums_10_0731": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "mfyu/so101_white_box_3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "mfyu/so101_white_box_green_nums_20_0729": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "mfyu/so101_white_box_green_nums_20_0730": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "mfyu/so101_white_box_nums_20": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "mldev19/so100_brick": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "nguyen-v/so100_test_white_plug": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "nhorner/chess_a8_to_d8": {
+  "fixed": [],
+  "moving": [
+   "eye-in-hand"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "nicholasluschaeffler/dataset50_1": {
+  "fixed": [
+   "front",
+   "right"
+  ],
+  "moving": [],
+  "chosen": "front",
+  "borderline": []
+ },
+ "northhycao/grasp_cubes_noleader": {
+  "fixed": [
+   "realsense_side"
+  ],
+  "moving": [
+   "realsense_top"
+  ],
+  "chosen": "realsense_side",
+  "borderline": [
+   "realsense_side",
+   "realsense_top"
+  ]
+ },
+ "nz-nz/so101_test": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "wrist.right"
+  ],
+  "chosen": "top",
+  "borderline": [
+   "top"
+  ]
+ },
+ "odellus/so100_grasp": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "orsoromeo/so101_pick_and_place": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "orsoromeo/so101_test22": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "ortiztx/so101_training30_v1": {
+  "fixed": [
+   "front",
+   "top"
+  ],
+  "moving": [],
+  "chosen": "front",
+  "borderline": []
+ },
+ "paszea/so100_lego": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "paszea/so100_lego_mix": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "paszea/so100_whale_2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "paszea/so100_whale_grab": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "pbvr/so101_test002": {
+  "fixed": [
+   "side",
+   "topdown"
+  ],
+  "moving": [
+   "handeye"
+  ],
+  "chosen": "topdown",
+  "borderline": []
+ },
+ "pbvr/so101_test003": {
+  "fixed": [
+   "side",
+   "topdown"
+  ],
+  "moving": [
+   "handeye"
+  ],
+  "chosen": "topdown",
+  "borderline": []
+ },
+ "pdd46465/so101_test3": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "peerlesssa/so100_test-1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "pierfabre/CowCleanRandom": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "robot"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "pierfabre/chicken": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "robot"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "pierfabre/cow2": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "robot"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "pierfabre/pig2": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "robot"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "pierfabre/pig3": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "robot"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "pierfabre/sheep": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "robot"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "pietroom/actualeasytask": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "pietroom/first_task_short": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "pietroom/holdthis": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "laptop",
+   "phone"
+  ]
+ },
+ "pietroom/second_task": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "pingev/so100_test_2025-03-15-2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "pranavsaroha/so100_med_cubes_0608": {
+  "fixed": [
+   "overhead",
+   "side_camera"
+  ],
+  "moving": [
+   "left_wrist"
+  ],
+  "chosen": "overhead",
+  "borderline": [
+   "overhead"
+  ]
+ },
+ "pranavsaroha/so100_medicine_0602": {
+  "fixed": [
+   "side_camera"
+  ],
+  "moving": [
+   "left_wrist",
+   "overhead"
+  ],
+  "chosen": "side_camera",
+  "borderline": []
+ },
+ "pranavsaroha/so100_medicine_0605": {
+  "fixed": [
+   "side_camera"
+  ],
+  "moving": [
+   "left_wrist",
+   "overhead"
+  ],
+  "chosen": "side_camera",
+  "borderline": []
+ },
+ "produc-xuan/so100_guess-who_24_new": {
+  "fixed": [],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": null,
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "ps5387/shake_lerobot3": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "psg777/glue3": {
+  "fixed": [
+   "bird"
+  ],
+  "moving": [
+   "base",
+   "gripper"
+  ],
+  "chosen": "bird",
+  "borderline": []
+ },
+ "psg777/so100test1": {
+  "fixed": [
+   "bird"
+  ],
+  "moving": [
+   "base",
+   "gripper"
+  ],
+  "chosen": "bird",
+  "borderline": []
+ },
+ "ptizzza/so101_green_pompom": {
+  "fixed": [
+   "realsense_rgb"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "realsense_rgb",
+  "borderline": []
+ },
+ "ptizzza/so101_pompom": {
+  "fixed": [
+   "realsense_depth",
+   "realsense_rgb"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "realsense_depth",
+  "borderline": []
+ },
+ "ptizzza/so101_pompom1": {
+  "fixed": [
+   "realsense_depth",
+   "realsense_rgb"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "realsense_depth",
+  "borderline": []
+ },
+ "ptizzza/so101_pompom_orange": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "ptizzza/so101_test2": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "ptizzza/so101_test3": {
+  "fixed": [
+   "wrist"
+  ],
+  "moving": [],
+  "chosen": "wrist",
+  "borderline": []
+ },
+ "qiujun/so101_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop",
+   "phone"
+  ]
+ },
+ "qiujun/so101_test_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop",
+   "phone"
+  ]
+ },
+ "raghav-katta-1/lerobot2": {
+  "fixed": [
+   "cam"
+  ],
+  "moving": [],
+  "chosen": "cam",
+  "borderline": []
+ },
+ "reedscot/so100_test4": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "rgarreta/so100_dataset1": {
+  "fixed": [],
+  "moving": [
+   "front",
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "roboticshack/team-7-right-arm-grasp-tape": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "roboticshack/team13-three-balls-stacking": {
+  "fixed": [
+   "realsense"
+  ],
+  "moving": [
+   "side"
+  ],
+  "chosen": "realsense",
+  "borderline": []
+ },
+ "roboticshack/team13-two-balls-stacking": {
+  "fixed": [
+   "realsense"
+  ],
+  "moving": [
+   "side"
+  ],
+  "chosen": "realsense",
+  "borderline": []
+ },
+ "rocach94/so101_bin_and_wheel_is_changing_dynamically": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "rocach94/so101_data1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "rocach94/so101_data2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "rocach94/so101_dataset_v1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "rocach94/so101_dataset_v2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "rocach94/so101_dataset_v3_with_wall": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "romanovvv1987/so100_start_test_2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "webcam"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "romanovvv1987/so100_test3": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "romanovvv1987/so100_test_act": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "webcam"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "rs545837/so100_test": {
+  "fixed": [
+   "context"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "context",
+  "borderline": []
+ },
+ "ruanwz/so101_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "ryanpennings/so100_pegcrate_c2": {
+  "fixed": [
+   "topcamera"
+  ],
+  "moving": [
+   "wristcamera"
+  ],
+  "chosen": "topcamera",
+  "borderline": [
+   "wristcamera"
+  ]
+ },
+ "ryanpennings/so100_pegcrate_c3": {
+  "fixed": [
+   "topcamera"
+  ],
+  "moving": [
+   "wristcamera"
+  ],
+  "chosen": "topcamera",
+  "borderline": []
+ },
+ "ryanpennings/so100_pegcrate_d1b": {
+  "fixed": [
+   "topcamera"
+  ],
+  "moving": [
+   "frontcamera",
+   "wristcamera"
+  ],
+  "chosen": "topcamera",
+  "borderline": []
+ },
+ "salhotra/so100_wrist_test1": {
+  "fixed": [],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "samanthalhy/so100_herding_1": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop",
+   "phone"
+  ]
+ },
+ "samanthalhy/so100_test_1": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "phone",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "samanthalhy/so100_test_2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "samanthalhy/so100_test_3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "samanthalhy/so100_test_3_diff": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "samsitol/so100_PnP": {
+  "fixed": [
+   "head"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "head",
+  "borderline": [
+   "head"
+  ]
+ },
+ "samsitol/so100_PnP01": {
+  "fixed": [
+   "head",
+   "wrist"
+  ],
+  "moving": [],
+  "chosen": "head",
+  "borderline": [
+   "head"
+  ]
+ },
+ "samsitol/so100_PnPacorn": {
+  "fixed": [
+   "head"
+  ],
+  "moving": [
+   "base",
+   "wrista",
+   "wristb"
+  ],
+  "chosen": "head",
+  "borderline": []
+ },
+ "samsitol/so100_PnPblock": {
+  "fixed": [],
+  "moving": [
+   "base",
+   "head",
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": [
+   "head"
+  ]
+ },
+ "samsitol/so100_PnPfixed": {
+  "fixed": [
+   "head"
+  ],
+  "moving": [
+   "base",
+   "wrist"
+  ],
+  "chosen": "head",
+  "borderline": []
+ },
+ "samsitol/so100_PnPred": {
+  "fixed": [],
+  "moving": [
+   "base",
+   "head",
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": [
+   "head"
+  ]
+ },
+ "samsitol/so100_boarduni": {
+  "fixed": [
+   "head"
+  ],
+  "moving": [
+   "base",
+   "wrista",
+   "wristb"
+  ],
+  "chosen": "head",
+  "borderline": []
+ },
+ "samsitol/so100_peg01": {
+  "fixed": [
+   "wrist"
+  ],
+  "moving": [
+   "base",
+   "head"
+  ],
+  "chosen": "wrist",
+  "borderline": [
+   "wrist"
+  ]
+ },
+ "samsitol/so100_test": {
+  "fixed": [
+   "head"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "head",
+  "borderline": []
+ },
+ "samsitol/so101_block1": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "base",
+  "borderline": []
+ },
+ "samsitol/so101_cube": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "base",
+  "borderline": []
+ },
+ "samsitol/so101_test5": {
+  "fixed": [
+   "head",
+   "wrist"
+  ],
+  "moving": [],
+  "chosen": "head",
+  "borderline": []
+ },
+ "seogenis/augmented_so101_test": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "seonixx/so100_test_v3": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "wrist.left"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "seonixx/so100_test_v3_small_1c": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [],
+  "chosen": "top",
+  "borderline": []
+ },
+ "sergiov2000/so100_ball_leader_40": {
+  "fixed": [
+   "above"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/so100_dataset5": {
+  "fixed": [
+   "blackboard",
+   "lego"
+  ],
+  "moving": [],
+  "chosen": "blackboard",
+  "borderline": []
+ },
+ "sergiov2000/so100_leader_arm_pick_ball_40": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/so100_leader_arm_push_ball_40": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/so100_leader_arm_stack_ball_40": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/so100_lego_and_ball_40_ball": {
+  "fixed": [
+   "above"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/so100_lego_and_ball_40_lego": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/so100_lego_leader_40": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/so100_movella_pick_ball_C3": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/so100_movella_pick_ball_D3": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/test_5_rubik_cube": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/test_green_10_episodes": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/test_red_50_episodes": {
+  "fixed": [
+   "above"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/test_yellow_50_episodes": {
+  "fixed": [
+   "above",
+   "side"
+  ],
+  "moving": [],
+  "chosen": "above",
+  "borderline": []
+ },
+ "sergiov2000/yellow_20_episodes": {
+  "fixed": [
+   "blackboard"
+  ],
+  "moving": [],
+  "chosen": "blackboard",
+  "borderline": [
+   "blackboard"
+  ]
+ },
+ "shawntan72/pick_and_place_pill_bottle_3": {
+  "fixed": [
+   "overhead"
+  ],
+  "moving": [
+   "gripper"
+  ],
+  "chosen": "overhead",
+  "borderline": [
+   "overhead"
+  ]
+ },
+ "shylee/so100_2cam": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "shylee/so100_2camRubber": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "shylee/so100_cube": {
+  "fixed": [
+   "frontcam",
+   "wristcam"
+  ],
+  "moving": [
+   "topcam"
+  ],
+  "chosen": "frontcam",
+  "borderline": []
+ },
+ "shylee/so100_cup": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "shylee/so100_gauze": {
+  "fixed": [
+   "frontcam",
+   "wristcam"
+  ],
+  "moving": [
+   "topcam"
+  ],
+  "chosen": "frontcam",
+  "borderline": []
+ },
+ "shylee/so100_pengrip": {
+  "fixed": [
+   "frontcam",
+   "topcam"
+  ],
+  "moving": [
+   "wristcam"
+  ],
+  "chosen": "frontcam",
+  "borderline": [
+   "topcam"
+  ]
+ },
+ "shylee/so100_pengripA": {
+  "fixed": [
+   "frontcam",
+   "topcam"
+  ],
+  "moving": [
+   "wristcam"
+  ],
+  "chosen": "frontcam",
+  "borderline": [
+   "topcam"
+  ]
+ },
+ "shylee/so100_pengripB": {
+  "fixed": [
+   "frontcam",
+   "topcam"
+  ],
+  "moving": [
+   "wristcam"
+  ],
+  "chosen": "frontcam",
+  "borderline": []
+ },
+ "shylee/so100_pengripF": {
+  "fixed": [
+   "frontcam",
+   "topcam"
+  ],
+  "moving": [
+   "wristcam"
+  ],
+  "chosen": "frontcam",
+  "borderline": []
+ },
+ "shylee/so100_pengripG": {
+  "fixed": [
+   "frontcam",
+   "topcam"
+  ],
+  "moving": [
+   "wristcam"
+  ],
+  "chosen": "frontcam",
+  "borderline": [
+   "topcam"
+  ]
+ },
+ "shylee/so100_testpi0data": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "sincostangerines/purple_dice": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "sincostangerines/six_dice": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "sincostangerines/stack_cubes_100": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "sincostangerines/stack_cubes_20": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "sincostangerines/stack_cubes_p1": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "sincostangerines/stack_cubes_p2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "sincostangerines/stack_cubes_p3": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "sixpigs1/so100_pick_cube_in_box": {
+  "fixed": [
+   "above",
+   "rightfront"
+  ],
+  "moving": [],
+  "chosen": "rightfront",
+  "borderline": []
+ },
+ "siyavash/so101_test": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "slowturtle99/so100_dataset": {
+  "fixed": [
+   "head_camera"
+  ],
+  "moving": [
+   "wrist_camera"
+  ],
+  "chosen": "head_camera",
+  "borderline": []
+ },
+ "slowturtle99/so100_dataset_2": {
+  "fixed": [
+   "head_camera",
+   "wrist_camera"
+  ],
+  "moving": [],
+  "chosen": "head_camera",
+  "borderline": []
+ },
+ "slowturtle99/so100_pick_place": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "slowturtle99/so100_pick_place_blocks": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "slowturtle99/so100_test": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [],
+  "chosen": "webcam",
+  "borderline": []
+ },
+ "speedyyoshi/so100_grasp_pink_block": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "sshh11/so100_orange_50ep_1": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "sshh11/so100_orange_50ep_2": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "sshh11/so100_orange_50ep_2cam_2": {
+  "fixed": [
+   "laptop2"
+  ],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": "laptop2",
+  "borderline": []
+ },
+ "stevenoh2003/so100_usb_1": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "sucrammal/plant_pour_data": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "sunq/so101_test": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "base",
+  "borderline": []
+ },
+ "szfforever/so101_60hz": {
+  "fixed": [
+   "side",
+   "topdown"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "topdown",
+  "borderline": []
+ },
+ "szfforever/so101_first": {
+  "fixed": [
+   "side",
+   "topdown"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "topdown",
+  "borderline": []
+ },
+ "szfforever/so101_sec": {
+  "fixed": [
+   "side",
+   "topdown",
+   "wrist"
+  ],
+  "moving": [],
+  "chosen": "topdown",
+  "borderline": []
+ },
+ "taiobot/so101_test": {
+  "fixed": [],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "taiobot/so101_test8": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "taxitain/so100_obj_to_bin_top0_180": {
+  "fixed": [
+   "side1",
+   "top0"
+  ],
+  "moving": [],
+  "chosen": "top0",
+  "borderline": []
+ },
+ "taxitain/so100_obj_to_bin_v2": {
+  "fixed": [
+   "side1",
+   "top0"
+  ],
+  "moving": [],
+  "chosen": "top0",
+  "borderline": []
+ },
+ "tenkau/SO101-Stack3Blocks": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [
+   "phone"
+  ],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "tenkau/so101_block_stack": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "tenkau/so101_block_stack_kanzenrikai": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "tenkau/so101_color_block": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "tfoldi/glasses_exp_5": {
+  "fixed": [
+   "side",
+   "top"
+  ],
+  "moving": [
+   "arm"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "tim19970907/so100_test0609005": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "tobdeu/so100_block_to_bin": {
+  "fixed": [
+   "top_view"
+  ],
+  "moving": [
+   "gripper_view"
+  ],
+  "chosen": "top_view",
+  "borderline": []
+ },
+ "un1c0rnio/so101_box_pencil2": {
+  "fixed": [
+   "extside"
+  ],
+  "moving": [
+   "base"
+  ],
+  "chosen": "extside",
+  "borderline": []
+ },
+ "un1c0rnio/so101_box_pencil5": {
+  "fixed": [
+   "base"
+  ],
+  "moving": [
+   "endeffector",
+   "extside"
+  ],
+  "chosen": "base",
+  "borderline": []
+ },
+ "un1c0rnio/so101_test2": {
+  "fixed": [
+   "extside"
+  ],
+  "moving": [
+   "base"
+  ],
+  "chosen": "extside",
+  "borderline": []
+ },
+ "un1c0rnio/so101_test4": {
+  "fixed": [
+   "extside"
+  ],
+  "moving": [
+   "base"
+  ],
+  "chosen": "extside",
+  "borderline": []
+ },
+ "vicwu666/so100_test2": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "vicwu666/so100_test3": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "wannrrr/so100_grab_test": {
+  "fixed": [
+   "webcam1",
+   "webcam2"
+  ],
+  "moving": [],
+  "chosen": "webcam1",
+  "borderline": []
+ },
+ "wcode/so100_put_pen_50": {
+  "fixed": [],
+  "moving": [
+   "hand",
+   "top"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "wcode/so100_test_2": {
+  "fixed": [],
+  "moving": [
+   "hand",
+   "top"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "wcode/so100_test_3_20": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "hand"
+  ],
+  "chosen": "top",
+  "borderline": [
+   "top"
+  ]
+ },
+ "wcode/so100_test_4_20": {
+  "fixed": [],
+  "moving": [
+   "hand",
+   "top"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "weiye11/0603_pi0_onlyright": {
+  "fixed": [
+   "wrist_right"
+  ],
+  "moving": [
+   "front"
+  ],
+  "chosen": "wrist_right",
+  "borderline": []
+ },
+ "weiye11/0605_pi0": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist_right"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "weiye11/0605_pi0_100": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist_right"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "weiye11/0605_pi0_50hz": {
+  "fixed": [
+   "front"
+  ],
+  "moving": [
+   "wrist_right"
+  ],
+  "chosen": "front",
+  "borderline": []
+ },
+ "weiye11/so100_410_zwy": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "wrist_left"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "weiye11/so100_421_pick": {
+  "fixed": [
+   "wrist_left"
+  ],
+  "moving": [
+   "top"
+  ],
+  "chosen": "wrist_left",
+  "borderline": []
+ },
+ "wonhchoi/so100_test": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "wu12581/so100_test_dtp": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "phone"
+  ]
+ },
+ "yadunund/so100_move_black_knight": {
+  "fixed": [
+   "camera"
+  ],
+  "moving": [],
+  "chosen": "camera",
+  "borderline": []
+ },
+ "ycdamn1988/so100_0420_3": {
+  "fixed": [
+   "orbbec"
+  ],
+  "moving": [
+   "logi",
+   "robo_cam"
+  ],
+  "chosen": "orbbec",
+  "borderline": [
+   "logi"
+  ]
+ },
+ "ycdamn1988/so100_0517": {
+  "fixed": [
+   "logi",
+   "orbbec"
+  ],
+  "moving": [
+   "robo_cam"
+  ],
+  "chosen": "orbbec",
+  "borderline": [
+   "logi"
+  ]
+ },
+ "yingliu-data/so101_Da_Pinchi_2": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "yingliu-data/so101_Da_Pinchi_draw": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "yingliu-data/so101_pickpen": {
+  "fixed": [
+   "phone"
+  ],
+  "moving": [
+   "wrist"
+  ],
+  "chosen": "phone",
+  "borderline": []
+ },
+ "youjiang97/so100_tt": {
+  "fixed": [
+   "laptop",
+   "phone"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "youliangtan/so100_strawberry_grape": {
+  "fixed": [
+   "webcam"
+  ],
+  "moving": [],
+  "chosen": "webcam",
+  "borderline": [
+   "webcam"
+  ]
+ },
+ "yutaro-kimura-acs/so101_pp_blue_cube": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": []
+ },
+ "zaidyzahar/IKMKL": {
+  "fixed": [
+   "phone2"
+  ],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": "phone2",
+  "borderline": []
+ },
+ "zheng6677/new_so101_test": {
+  "fixed": [
+   "laptop"
+  ],
+  "moving": [],
+  "chosen": "laptop",
+  "borderline": [
+   "laptop"
+  ]
+ },
+ "zheng6677/new_so101_test1": {
+  "fixed": [
+   "top"
+  ],
+  "moving": [
+   "left"
+  ],
+  "chosen": "top",
+  "borderline": []
+ },
+ "zlj666/so101_test2": {
+  "fixed": [
+   "camera1"
+  ],
+  "moving": [
+   "camera2"
+  ],
+  "chosen": "camera1",
+  "borderline": []
+ },
+ "LeRobot-worldwide-hackathon/188-DGT01-fayri5": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "Qiushuang/so100_test": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "akira-sasaki/gr00t_rtx5090_test": {
+  "fixed": [],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "cjlqwe/so100_1_20": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "cjlqwe/so100_21_50": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "hoon-shin/so100_basketball": {
+  "fixed": [],
+  "moving": [
+   "arm",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "luo99999999/so101_clean": {
+  "fixed": [],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "luriss/so100_pick_and_place_box_task_0428": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "maujim/so100bagelps4": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "produc-xuan/so100_guess-who_24_final": {
+  "fixed": [],
+  "moving": [
+   "laptop"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "shawntan72/pick_and_place_pill_bottle_1": {
+  "fixed": [],
+  "moving": [
+   "gripper",
+   "overhead"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "shawntan72/pick_and_place_pill_bottle_2": {
+  "fixed": [],
+  "moving": [
+   "gripper",
+   "overhead"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "sincostangerines/stack_cubes_40": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "sincostangerines/stack_cubes_50": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "sincostangerines/stack_cubes_70": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "sunq/so101_lego": {
+  "fixed": [],
+  "moving": [
+   "base",
+   "wrist"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "suoxd123/so100_test_0530_20": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "vadimitri/so101_eraser": {
+  "fixed": [],
+  "moving": [
+   "mac"
+  ],
+  "chosen": null,
+  "borderline": []
+ },
+ "wefio/so101_test": {
+  "fixed": [],
+  "moving": [
+   "laptop",
+   "phone"
+  ],
+  "chosen": null,
+  "borderline": []
+ }
+}

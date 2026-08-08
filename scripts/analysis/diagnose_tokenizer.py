@@ -13,25 +13,17 @@ from visionary.common.checkpoint import (
     restore_preprocessor_export,
 )
 from visionary.dataset import RandomVideoCrop, VideoDataSource
-from visionary.tokenizer import Tokenizer
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.models.dreamer4.tokenizer import Tokenizer
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 
 def compute_mse(prediction: jax.Array, target: jax.Array) -> float:
     return float(jnp.mean(jnp.square(prediction - target)))
 
 
-def build_grid(
-    original: np.ndarray,
-    reconstructed: np.ndarray,
-    zero_latent: np.ndarray,
-    shuffled_latent: np.ndarray,
-    mean_baseline: np.ndarray,
-    seed: int,
-) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    episode_indices = np.arange(original.shape[0])
-    frame_indices = rng.integers(0, original.shape[1], size=original.shape[0])
+def build_grid(panels: list[np.ndarray], rng: np.random.Generator) -> np.ndarray:
+    episode_indices = np.arange(panels[0].shape[0])
+    frame_indices = rng.integers(0, panels[0].shape[1], size=panels[0].shape[0])
 
     def sample_frames(images: np.ndarray) -> np.ndarray:
         return np.clip(
@@ -40,27 +32,14 @@ def build_grid(
             255,
         ).astype(np.uint8)
 
-    original = sample_frames(original)
-    reconstructed = sample_frames(reconstructed)
-    zero_latent = sample_frames(zero_latent)
-    shuffled_latent = sample_frames(shuffled_latent)
-    mean_baseline = sample_frames(mean_baseline)
-
-    col_sep = np.full((original.shape[1], 2, 3), 255, dtype=np.uint8)
-    rows = [
-        np.concatenate(
-            [o, col_sep, r, col_sep, z, col_sep, s, col_sep, m],
-            axis=1,
-        )
-        for o, r, z, s, m in zip(
-            original,
-            reconstructed,
-            zero_latent,
-            shuffled_latent,
-            mean_baseline,
-            strict=True,
-        )
-    ]
+    panels = [sample_frames(p) for p in panels]
+    col_sep = np.full((panels[0].shape[1], 2, 3), 255, dtype=np.uint8)
+    rows = []
+    for cells in zip(*panels, strict=True):
+        row = [cells[0]]
+        for cell in cells[1:]:
+            row.extend([col_sep, cell])
+        rows.append(np.concatenate(row, axis=1))
     row_sep = np.full((2, rows[0].shape[1], 3), 255, dtype=np.uint8)
     return np.concatenate(
         [row if i == 0 else np.concatenate([row_sep, row], axis=0) for i, row in enumerate(rows)],
@@ -70,16 +49,15 @@ def build_grid(
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", choices=("recon", "ablate"), default="ablate")
     parser.add_argument("--checkpoint_dir", required=True)
     parser.add_argument("--dataset_dir", required=True)
     parser.add_argument("--output", default="tokenizer_diagnostic.png")
     parser.add_argument("--step", type=int)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_episodes", type=int, default=8)
-    parser.add_argument(
-        "--config",
-        default=str(Path(__file__).resolve().parent / "config" / "breakout_tokenizer.yaml"),
-    )
+    parser.add_argument("--mask_prob", type=float, default=0.1)
+    parser.add_argument("--config", required=True)
     args = parser.parse_args()
 
     run_cfg = OmegaConf.load(args.config)
@@ -107,6 +85,30 @@ def main():
     preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)
     patch_batch = {"video": preprocessor.preprocess_video(batch["video"])}
     patch_video = jnp.asarray(patch_batch["video"], dtype=jnp.float32) / 255.0
+    original = preprocessor.patches_to_images(patch_video).astype(jnp.float32)
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.mode == "recon":
+        reconstructed_patches, mask, _ = tokenizer.apply(
+            variables,
+            patch_batch,
+            mask_prob=float(args.mask_prob),
+            method=Tokenizer.reconstruct,
+            rngs={"sample": jax.random.key(args.seed + 1)},
+        )
+        reconstructed = preprocessor.patches_to_images(
+            reconstructed_patches.astype(jnp.float32)
+        )
+        mask_images = preprocessor.mask_to_images(mask).astype(original.dtype)
+        masked = original * (1.0 - mask_images)
+        panels = jax.device_get(
+            [jnp.clip(p, 0.0, 1.0) for p in (original, masked, reconstructed)]
+        )
+        imageio.imwrite(output, build_grid([np.asarray(p) for p in panels], rng))
+        print(output)
+        return
 
     def decode_images(latent: jax.Array) -> jax.Array:
         return preprocessor.patches_to_images(
@@ -116,8 +118,6 @@ def main():
                 method=Tokenizer.decode,
             ).astype(jnp.float32)
         )
-
-    original = preprocessor.patches_to_images(patch_video).astype(jnp.float32)
 
     latent = tokenizer.apply(variables, patch_batch, method=Tokenizer.encode).astype(jnp.float32)
     reconstructed = decode_images(latent)
@@ -147,24 +147,16 @@ def main():
         "recon_vs_shuffled_l1": float(jnp.mean(jnp.abs(reconstructed - shuffled_latent))),
     }
 
-    original_images = np.asarray(jax.device_get(jnp.clip(original, 0.0, 1.0)))
-    reconstructed_images = np.asarray(jax.device_get(jnp.clip(reconstructed, 0.0, 1.0)))
-    zero_latent_images = np.asarray(jax.device_get(jnp.clip(zero_latent, 0.0, 1.0)))
-    shuffled_latent_images = np.asarray(jax.device_get(jnp.clip(shuffled_latent, 0.0, 1.0)))
-    mean_baseline_images = np.asarray(jax.device_get(jnp.clip(mean_baseline, 0.0, 1.0)))
-
-    grid = build_grid(
-        original_images,
-        reconstructed_images,
-        zero_latent_images,
-        shuffled_latent_images,
-        mean_baseline_images,
-        seed=args.seed + 1,
+    panels = jax.device_get(
+        [
+            jnp.clip(p, 0.0, 1.0)
+            for p in (original, reconstructed, zero_latent, shuffled_latent, mean_baseline)
+        ]
     )
-
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    imageio.imwrite(output, grid)
+    imageio.imwrite(
+        output,
+        build_grid([np.asarray(p) for p in panels], np.random.default_rng(args.seed + 1)),
+    )
 
     print("Saved diagnostic grid:", output)
     print()

@@ -1,0 +1,369 @@
+import flax.linen as nn
+import jax
+import jax.numpy as jnp
+
+from visionary.dataset import VideoDataset
+from visionary.models.dreamer4.transformer import (
+    SpatioTemporalTransformer,
+    create_spatial_rope,
+    create_temporal_rope,
+    pad_rope_for_latents,
+)
+
+
+def create_spatial_mask(
+    num_image_tokens: int, num_latent_tokens: int, encoder: bool
+) -> jnp.ndarray:
+    n_img, n_lat = num_image_tokens, num_latent_tokens
+
+    latent_to_latent = jnp.ones((n_lat, n_lat), dtype=bool)
+    image_to_image = jnp.ones((n_img, n_img), dtype=bool)
+
+    if encoder:
+        latent_to_image = jnp.ones((n_lat, n_img), dtype=bool)
+        image_to_latent = jnp.zeros((n_img, n_lat), dtype=bool)
+    else:
+        latent_to_image = jnp.zeros((n_lat, n_img), dtype=bool)
+        image_to_latent = jnp.ones((n_img, n_lat), dtype=bool)
+
+    return jnp.block(
+        [
+            [latent_to_latent, latent_to_image],
+            [image_to_latent, image_to_image],
+        ]
+    )
+
+
+def create_temporal_mask(independent: jnp.ndarray, t: int) -> jnp.ndarray:
+    causal = jnp.tril(jnp.ones((t, t), dtype=bool))
+    identity = jnp.eye(t, dtype=bool)
+    return jnp.where(independent[:, None, None], identity, causal)
+
+
+def build_rope_embeddings(
+    base: float,
+    head_dim: int,
+    x_len: int,
+    y_len: int,
+    num_latents: int,
+    seq_len: int,
+) -> tuple[tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
+    spatial_rope = pad_rope_for_latents(
+        *create_spatial_rope(base, head_dim, x_len, y_len),
+        num_latents,
+    )
+    temporal_rope = create_temporal_rope(base, head_dim, seq_len)
+    return spatial_rope, temporal_rope
+
+
+class TokenizerEncoder(nn.Module):
+    num_layers: int
+    num_latents: int
+    num_heads: int
+    num_kv_heads: int
+
+    model_dim: int
+    head_dim: int
+    mlp_hidden_dim: int
+    channel_dim: int
+    x_len: int
+    y_len: int
+
+    base: float
+    temporal_layer_period: int = 4
+    remat: bool = False
+    remat_policy: str | None = None
+    bounded_latent: bool = True
+    dtype: jnp.dtype = jnp.bfloat16
+
+    @nn.compact
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        temporal_mask: jnp.ndarray,
+        mask: jnp.ndarray | None = None,
+    ) -> jnp.ndarray:
+        batch_size, seq_len, num_tokens, _ = x.shape
+
+        x = nn.Dense(self.model_dim, dtype=self.dtype)(x)
+
+        # Apply masking to patches
+        mask_token = self.param(
+            "mask_token", nn.initializers.normal(stddev=0.02), (self.model_dim,)
+        ).astype(self.dtype)
+        if mask is None:
+            mask = jnp.zeros((batch_size, seq_len, num_tokens), dtype=bool)
+        x = jnp.where(jnp.expand_dims(mask, axis=-1), mask_token, x)
+
+        # Prepend latent tokens
+        latent_tokens = self.param(
+            "latent_tokens",
+            nn.initializers.normal(stddev=0.02),
+            (self.num_latents, self.model_dim),
+        ).astype(self.dtype)
+        latent_tokens = jnp.broadcast_to(
+            latent_tokens, (batch_size, seq_len, self.num_latents, self.model_dim)
+        )
+        x = jnp.concatenate([latent_tokens, x], axis=2)
+
+        spatial_rope, temporal_rope = build_rope_embeddings(
+            self.base,
+            self.head_dim,
+            self.x_len,
+            self.y_len,
+            self.num_latents,
+            seq_len,
+        )
+
+        x = SpatioTemporalTransformer(
+            num_layers=self.num_layers,
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            mlp_hidden_dim=self.mlp_hidden_dim,
+            temporal_layer_period=self.temporal_layer_period,
+            remat=self.remat,
+            remat_policy=self.remat_policy,
+            dtype=self.dtype,
+        )(
+            x=x,
+            t=seq_len,
+            total_tokens=num_tokens + self.num_latents,
+            spatial_rope_emb=spatial_rope,
+            spatial_mask=create_spatial_mask(num_tokens, self.num_latents, encoder=True),
+            temporal_rope_emb=temporal_rope,
+            temporal_mask=temporal_mask,
+        )
+
+        latent = x[:, :, : self.num_latents, :]
+        latent = nn.Dense(self.channel_dim, dtype=self.dtype)(latent)
+        if self.bounded_latent:
+            latent = jnp.tanh(latent)
+        return latent
+
+
+class TokenizerDecoder(nn.Module):
+    num_layers: int
+    num_latents: int
+    num_heads: int
+    num_kv_heads: int
+
+    model_dim: int
+    head_dim: int
+    mlp_hidden_dim: int
+    x_len: int
+    y_len: int
+
+    base: float
+    temporal_layer_period: int = 4
+    remat: bool = False
+    remat_policy: str | None = None
+    dtype: jnp.dtype = jnp.bfloat16
+
+    @nn.compact
+    def __call__(
+        self,
+        latent: jnp.ndarray,
+        temporal_mask: jnp.ndarray,
+        patch_dim: int,
+    ) -> jnp.ndarray:
+        batch_size, seq_len, _, _ = latent.shape
+        num_tokens = self.x_len * self.y_len
+
+        image_tokens = self.param(
+            "image_tokens",
+            nn.initializers.normal(stddev=0.02),
+            (num_tokens, self.model_dim),
+        ).astype(self.dtype)
+        image_tokens = jnp.broadcast_to(
+            image_tokens, (batch_size, seq_len, num_tokens, self.model_dim)
+        )
+
+        latent = nn.Dense(self.model_dim, dtype=self.dtype)(latent)
+        x = jnp.concatenate([latent, image_tokens], axis=2)
+
+        spatial_rope, temporal_rope = build_rope_embeddings(
+            self.base,
+            self.head_dim,
+            self.x_len,
+            self.y_len,
+            self.num_latents,
+            seq_len,
+        )
+
+        x = SpatioTemporalTransformer(
+            num_layers=self.num_layers,
+            model_dim=self.model_dim,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            head_dim=self.head_dim,
+            mlp_hidden_dim=self.mlp_hidden_dim,
+            temporal_layer_period=self.temporal_layer_period,
+            remat=self.remat,
+            remat_policy=self.remat_policy,
+            dtype=self.dtype,
+        )(
+            x=x,
+            t=seq_len,
+            total_tokens=num_tokens + self.num_latents,
+            spatial_rope_emb=spatial_rope,
+            spatial_mask=create_spatial_mask(num_tokens, self.num_latents, encoder=False),
+            temporal_rope_emb=temporal_rope,
+            temporal_mask=temporal_mask,
+        )
+
+        x = x[:, :, self.num_latents :, :]
+        x = nn.Dense(patch_dim, dtype=self.dtype)(x)
+        return nn.sigmoid(x.astype(jnp.float32))
+
+
+class Tokenizer(nn.Module):
+    num_layers: int
+    num_latents: int
+    num_heads: int
+    num_kv_heads: int
+
+    model_dim: int
+    head_dim: int
+    mlp_hidden_dim: int
+    channel_dim: int
+
+    patch_size: int
+    resize_shape: tuple[int, int]
+    pad_width: tuple[int, int]
+
+    base: float
+    temporal_layer_period: int = 4
+    remat: bool = False
+    remat_policy: str | None = None
+    independent_prob: float = 0.3
+    mask_prob_min: float = 0.0
+    mask_prob_max: float = 0.9
+    bounded_latent: bool = True
+    dtype: jnp.dtype = jnp.bfloat16
+
+    @property
+    def image_height(self) -> int:
+        return int(self.resize_shape[0])
+
+    @property
+    def image_width(self) -> int:
+        return int(self.resize_shape[1])
+
+    @property
+    def height_pad(self) -> int:
+        return int(self.pad_width[0])
+
+    @property
+    def width_pad(self) -> int:
+        return int(self.pad_width[1])
+
+    @property
+    def y_len(self) -> int:
+        return (self.image_height + 2 * self.height_pad) // int(self.patch_size)
+
+    @property
+    def x_len(self) -> int:
+        return (self.image_width + 2 * self.width_pad) // int(self.patch_size)
+
+    @property
+    def patch_dim(self) -> int:
+        return int(self.patch_size) * int(self.patch_size) * 3
+
+    def setup(self):
+        encoder_kwargs = dict(
+            num_layers=self.num_layers,
+            num_latents=self.num_latents,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            temporal_layer_period=self.temporal_layer_period,
+            model_dim=self.model_dim,
+            head_dim=self.head_dim,
+            mlp_hidden_dim=self.mlp_hidden_dim,
+            channel_dim=self.channel_dim,
+            x_len=self.x_len,
+            y_len=self.y_len,
+            base=self.base,
+            remat=self.remat,
+            remat_policy=self.remat_policy,
+            bounded_latent=self.bounded_latent,
+            dtype=self.dtype,
+        )
+        decoder_kwargs = dict(
+            num_layers=self.num_layers,
+            num_latents=self.num_latents,
+            num_heads=self.num_heads,
+            num_kv_heads=self.num_kv_heads,
+            temporal_layer_period=self.temporal_layer_period,
+            model_dim=self.model_dim,
+            head_dim=self.head_dim,
+            mlp_hidden_dim=self.mlp_hidden_dim,
+            x_len=self.x_len,
+            y_len=self.y_len,
+            base=self.base,
+            remat=self.remat,
+            remat_policy=self.remat_policy,
+            dtype=self.dtype,
+        )
+        self.encoder = TokenizerEncoder(**encoder_kwargs)
+        self.decoder = TokenizerDecoder(**decoder_kwargs)
+
+    def sample_independent(self, batch_size: int) -> jnp.ndarray:
+        rng = self.make_rng("sample")
+        return jax.random.bernoulli(rng, p=self.independent_prob, shape=(batch_size,))
+
+    def sample_mask(
+        self,
+        video_shape: tuple[int, int, int],
+        mask_prob: float | None = None,
+    ) -> jnp.ndarray:
+        batch_size, seq_len, num_tokens = video_shape
+        rng = self.make_rng("sample")
+
+        if mask_prob is None:
+            prob_rng, rng = jax.random.split(rng)
+            mask_prob = jax.random.uniform(
+                prob_rng,
+                shape=(batch_size, seq_len),
+                minval=self.mask_prob_min,
+                maxval=self.mask_prob_max,
+            )
+        else:
+            mask_prob = jnp.full((batch_size, seq_len), mask_prob)
+        rand_vals = jax.random.uniform(rng, shape=(batch_size, seq_len, num_tokens))
+        return rand_vals < jnp.expand_dims(mask_prob, axis=-1)
+
+    def __call__(
+        self,
+        batch: VideoDataset,
+        mask_prob: float | None = None,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        return self.reconstruct(batch, mask_prob=mask_prob)
+
+    def encode(self, batch: VideoDataset) -> jnp.ndarray:
+        batch_size, seq_len, _, _ = batch["video"].shape
+        temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
+        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+        return self.encoder(video, temporal_mask)
+
+    def decode(self, latent: jnp.ndarray) -> jnp.ndarray:
+        batch_size, seq_len, _, _ = latent.shape
+        temporal_mask = create_temporal_mask(jnp.zeros((batch_size,), dtype=bool), seq_len)
+        return self.decoder(latent, temporal_mask, self.patch_dim)
+
+    def reconstruct(
+        self,
+        batch: VideoDataset,
+        mask_prob: float | None = None,
+        independent: jnp.ndarray | None = None,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
+        if independent is None:
+            independent = self.sample_independent(batch_size)
+        mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=mask_prob)
+        temporal_mask = create_temporal_mask(independent, seq_len)
+        video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
+        latent = self.encoder(video, temporal_mask, mask=mask)
+        reconstructed = self.decoder(latent, temporal_mask, patch_dim)
+        return reconstructed, mask, latent

@@ -1,0 +1,90 @@
+seed: 42
+learning_rate: 3e-4
+optimizer:
+  _target_: optax.chain
+  _args_:
+    - _target_: optax.clip_by_global_norm
+      max_norm: 1.0
+    - _target_: optax.adam
+      learning_rate:
+        _target_: optax.warmup_constant_schedule
+        init_value: 0.0
+        peak_value: ${learning_rate}
+        warmup_steps: 1000
+lpips_weight: 0.4
+sigreg_weight: 0.0
+log_interval: 100
+eval_steps: 1000
+total_steps: 50000
+exp_name: tokenizer
+
+fsdp:
+  enabled: auto
+  data_axis_size: 8
+  log_sharding: true
+
+dataset:
+  train_dir: data/so101/shards/train
+  eval_dir: data/so101/shards/eval
+  # records hold encoded mp4
+  source:
+    _target_: visionary.dataset.VideoBytesDataSource
+  clip_transform:
+    _target_: visionary.dataset.DecodeRandomVideoClip
+    decode_hw: [240, 320]
+    stride: 6
+  augment:
+    _target_: visionary.dataset.AugmentVideoClip
+    crop_scale: 0.95
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+  frame_length: 32
+  # per process; v6e-8 shards it 8 ways, so this is 4 clips per chip
+  batch_size: 32
+  worker_count: 8
+  num_threads: 8
+  prefetch_buffer_size: 16
+  eval:
+    max_batches: 16
+    log_frames: 8
+
+tokenizer:
+  _target_: visionary.models.dreamer4.tokenizer.Tokenizer
+  num_layers: 12
+  num_latents: 160
+  num_heads: 12
+  num_kv_heads: 3
+  temporal_layer_period: 4
+  model_dim: 768
+  mlp_hidden_dim: 2304
+  head_dim: 64
+  channel_dim: 16
+  resize_shape: [240, 320]
+  pad_width: [0, 0]
+  patch_size: 16
+  base: 10000.0
+  # 4 clips x 32 frames x 460 tokens per chip. Keeping the projection and MLP
+  # matmuls costs 21.3 GB/chip of activations (23.7 GB with optimizer state, of
+  # 32 GB) and recomputes only 2% of the flops; full remat would cost 25%.
+  # Going to 8 clips per chip would not leave room for this.
+  remat: true
+  remat_policy: dots_with_no_batch_dims_saveable
+  independent_prob: 0.3
+
+checkpoint:
+  export_interval_steps: 50000
+  manager:
+    _target_: visionary.common.checkpoint.CheckpointManager
+    directory: gs://visionary-uc1/so101/checkpoints/${exp_name}
+    options:
+      _target_: orbax.checkpoint.CheckpointManagerOptions
+      save_interval_steps: 1000
+      max_to_keep: 5
+      enable_async_checkpointing: true
+  resume_step: null
+
+wandb:
+  enabled: true
+  project: visionary
+  group: so101_tokenizer

@@ -29,7 +29,9 @@ TRC_ACCELERATOR_LIMITS = {
     ("v4", "us-central2-b", False): 32,
     ("v4", "us-central2-b", True): 32,
     ("v6e", "us-east1-d", True): 64,
+    ("v6e", "us-east5-b", True): 64,
     ("v5e", "us-central1-a", True): 64,
+    ("v5e", "us-west1-c", True): 64,
 }
 
 DEFAULT_RUNTIME_VERSION = {
@@ -924,7 +926,14 @@ def main() -> None:
         existing = discover_existing_resource(cfg, candidates)
 
         if gcs_object_exists(cfg, complete_marker_uri):
-            if existing is not None:
+            keep_node = bool(cfg.get("job", {}).get("keep_node_on_complete"))
+            if existing is not None and keep_node:
+                index, candidate, _ = existing
+                print(
+                    f"[watcher] Completion marker found; keeping queued resource {index} "
+                    "(keep_node_on_complete). Delete it manually when done."
+                )
+            elif existing is not None:
                 index, candidate, _ = existing
                 print(f"[watcher] Completion marker found; deleting queued resource {index}.")
                 delete_queued_resource(

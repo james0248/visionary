@@ -1,6 +1,10 @@
 seed: 42
 learning_rate: 3e-4
+optimizer:
+  _target_: optax.adam
+  learning_rate: ${learning_rate}
 lpips_weight: 0.4
+sigreg_weight: 0.09
 log_interval: 100
 eval_steps: 1000
 total_steps: 1000000
@@ -14,6 +18,13 @@ fsdp:
 dataset:
   train_dir: /mnt/data/train/
   eval_dir: /mnt/data/eval/
+  # VideoDataSource reads decoded frames; VideoBytesDataSource reads encoded mp4
+  # and pairs with DecodeRandomVideoClip below.
+  source:
+    _target_: visionary.dataset.VideoDataSource
+  clip_transform:
+    _target_: visionary.dataset.RandomVideoCrop
+  augment: null
   frame_length: 32
   batch_size: 8
   worker_count: 4
@@ -24,7 +35,7 @@ dataset:
     log_frames: 8
 
 tokenizer:
-  _target_: visionary.tokenizer.Tokenizer
+  _target_: visionary.models.dreamer4.tokenizer.Tokenizer
   num_layers: 8
   num_latents: 64
   num_heads: 8
@@ -34,8 +45,8 @@ tokenizer:
   mlp_hidden_dim: 384
   head_dim: 32
   channel_dim: 16
-  resize_shape: [ 128, 96 ]
-  pad_width: [ 0, 0 ]
+  resize_shape: [128, 96]
+  pad_width: [0, 0]
   patch_size: 8
   base: 10000.0
   independent_prob: 0.3
@@ -44,7 +55,7 @@ checkpoint:
   export_interval_steps: 100000
   manager:
     _target_: visionary.common.checkpoint.CheckpointManager
-    directory: gs://visionary-exp/dream-arcade/checkpoints/${exp_name}
+    directory: gs://visionary-uc1/atari/checkpoints/${exp_name}
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
       save_interval_steps: 10000

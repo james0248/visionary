@@ -39,7 +39,7 @@ from visionary.common.checkpoint import (
     resolve_model_export_step,
     restore_model_export_single_device,
 )
-from visionary.export.onnx_wrappers import (
+from visionary.models.dreamer4.onnx_wrappers import (
     onnx_apply_dynamics_cached_sample_step_append_context_full_cache_entries,
     onnx_apply_dynamics_uncached,
     onnx_apply_tokenizer_decode_z,
@@ -180,9 +180,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Optional directory where the freshly exported ONNX files are copied before "
-            "any simplification, ORT optimization, or backend-specific graph rewrites. Use this "
-            "with webgpu_app/export/compare_raw_optimized_onnx.py as a behavior-preserving "
-            "optimization gate."
+            "any simplification, ORT optimization, or backend-specific graph rewrites."
         ),
     )
     parser.add_argument("--batch_size", type=int, default=1)

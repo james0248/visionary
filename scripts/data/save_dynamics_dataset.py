@@ -21,8 +21,8 @@ from visionary.common.checkpoint import (
     restore_model_export_single_device,
     restore_preprocessor_export,
 )
-from visionary.tokenizer import Tokenizer
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.models.dreamer4.tokenizer import Tokenizer
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -245,11 +245,13 @@ def encode_record(
         if key != "frames" and value.ndim > 0 and value.shape[0] == episode_length:
             payload[key] = value[start:stop]
             if key == "actions":
-                payload["prev_action"] = (
-                    np.asarray(value[start - 1], dtype=value.dtype)
-                    if start > 0
-                    else np.full(value.shape[1:], -1, dtype=value.dtype)
-                )
+                if start > 0:
+                    prev_action = np.asarray(value[start - 1], dtype=value.dtype)
+                elif value.ndim > 1:
+                    prev_action = np.zeros(value.shape[1:], dtype=value.dtype)  # continuous
+                else:
+                    prev_action = np.full(value.shape[1:], -1, dtype=value.dtype)  # discrete
+                payload["prev_action"] = prev_action
 
     buffer = io.BytesIO()
     np.savez(buffer, **payload)
@@ -428,6 +430,7 @@ def write_split(
     encoder: TokenizerEncoder,
     build_cfg: BuildConfig,
     output_dir: Path,
+    action_normalizer=None,
 ) -> SplitStats:
     shard_writer = ShardWriter(output_dir, build_cfg.records_per_shard)
     stats = SplitStats(episodes_found=len(files))
@@ -481,6 +484,9 @@ def write_split(
             if episode_length < build_cfg.min_length:
                 stats.episodes_skipped += 1
                 continue
+
+            if action_normalizer is not None and "actions" in arrays:
+                arrays["actions"] = action_normalizer(arrays["actions"])
 
             pending_episodes.append((episode_id, arrays))
             should_flush = len(pending_episodes) == build_cfg.encode_episode_batch_size
@@ -579,7 +585,35 @@ def create_parser() -> argparse.ArgumentParser:
         default="float32",
         help="Latent dtype stored on disk.",
     )
+    parser.add_argument(
+        "--action_mode",
+        choices=("discrete", "continuous"),
+        default="discrete",
+        help="continuous -> normalize float joint actions with --action_stats.",
+    )
+    parser.add_argument(
+        "--action_stats",
+        default=None,
+        help="Path to norm_stats.json (q01/q99) for continuous action normalization.",
+    )
     return parser
+
+
+def build_action_normalizer(action_mode: str, action_stats_path: str | None):
+    if action_mode != "continuous":
+        return None
+    if not action_stats_path:
+        raise ValueError("--action_mode continuous requires --action_stats <norm_stats.json>")
+    stats = json.loads(Path(action_stats_path).read_text())
+    q01 = np.asarray(stats["q01"], dtype=np.float32)
+    q99 = np.asarray(stats["q99"], dtype=np.float32)
+    span = np.where((q99 - q01) > 1e-6, q99 - q01, 1.0)
+
+    def normalize(actions: np.ndarray) -> np.ndarray:
+        actions = np.asarray(actions, dtype=np.float32)
+        return np.clip(2.0 * (actions - q01) / span - 1.0, -1.0, 1.0).astype(np.float32)
+
+    return normalize
 
 
 def main() -> None:
@@ -593,6 +627,9 @@ def main() -> None:
         build_cfg.checkpoint_step if build_cfg.checkpoint_step is not None else "latest",
     )
     encoder = TokenizerEncoder(build_cfg)
+    action_normalizer = build_action_normalizer(args.action_mode, args.action_stats)
+    if action_normalizer is not None:
+        logger.info("Applying continuous action normalization from %s", args.action_stats)
 
     file_splits = FileSplits.from_build_config(build_cfg)
     logger.info(
@@ -608,6 +645,7 @@ def main() -> None:
         encoder,
         build_cfg,
         build_cfg.output_dir / "train",
+        action_normalizer=action_normalizer,
     )
     eval_stats = write_split(
         "eval",
@@ -615,6 +653,7 @@ def main() -> None:
         encoder,
         build_cfg,
         build_cfg.output_dir / "eval",
+        action_normalizer=action_normalizer,
     )
 
     metadata = {

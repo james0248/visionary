@@ -19,7 +19,7 @@
     - permission to use the data disk, typically `roles/compute.storageAdmin`
     - read access to the marker objects, typically `roles/storage.objectViewer` on the marker bucket or prefix
     - `roles/iam.serviceAccountUser` on the starter service account
-- Fill in [example_watcher.yaml](/Users/hyeonseok/Documents/Sources/visionary/cloud/example_watcher.yaml).
+- Fill in a job yaml (see `cloud/so101/` and `cloud/atari/` for real examples).
   The simplest path is to set a single `machine` block with `family`, `chips`, and `region` or `zone`. The watcher derives `accelerator_type` and the TPU runtime version from the family. Advanced fallback rotation is still available through `candidates`.
 
 **Repeated Use**
@@ -27,7 +27,7 @@
 - Start the watcher:
 
 ```bash
-uv run python cloud/watcher.py --config cloud/example_watcher.yaml
+uv run python cloud/watcher.py --config cloud/so101/so101_tokenizer.yaml
 ```
 
 - The watcher will:

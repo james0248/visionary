@@ -10,7 +10,6 @@ import imageio
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
 import wandb
 from hydra.utils import instantiate, to_absolute_path
 from jax.experimental import mesh_utils, multihost_utils
@@ -27,9 +26,15 @@ from visionary.common.checkpoint import (
 from visionary.common.jax import fold_in_many, maybe_initialize_distributed
 from visionary.common.train_state import DynamicsTrainState
 from visionary.common.wandb import WandbLogger
-from visionary.dataset import DynamicsBatch, DynamicsDataSource, RandomDynamicsCrop
-from visionary.dynamics import DynamicsModel
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.dataset import (
+    DynamicsBatch,
+    DynamicsDataSource,
+    RandomDynamicsCrop,
+    SubsetDataSource,
+    load_record_lengths,
+)
+from visionary.models.dreamer4.dynamics import DynamicsModel
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -515,13 +520,25 @@ def main(cfg: DictConfig):
             return 0
         return target_bootstrap_rows
 
+    stride = int(cfg.dataset.get("stride", 1))
+
     def make_loader(
         source: DynamicsDataSource,
         sequence_length: int,
         shuffle: bool,
         drop_remainder: bool,
         seed: int,
+        lengths: list[int] | None = None,
     ) -> grain.DataLoader:
+        span = (sequence_length - 1) * stride + 1
+        if lengths is not None:
+            indices = [i for i, n in enumerate(lengths) if n >= span]
+            if len(indices) < len(lengths):
+                logger.info(
+                    "Length %d (span %d): %d/%d records fit",
+                    sequence_length, span, len(indices), len(lengths),
+                )
+            source = SubsetDataSource(source, indices)
         sampler = grain.IndexSampler(
             num_records=len(source),
             shard_options=grain.ShardByJaxProcess()
@@ -538,7 +555,7 @@ def main(cfg: DictConfig):
             data_source=source,
             sampler=sampler,
             operations=[
-                RandomDynamicsCrop(sequence_length),
+                RandomDynamicsCrop(sequence_length, stride=stride),
                 grain.Batch(
                     batch_size=batch_size_per_process,
                     drop_remainder=drop_remainder,
@@ -549,6 +566,8 @@ def main(cfg: DictConfig):
         )
 
     _t = time.monotonic()
+    train_lengths_manifest = load_record_lengths(cfg.dataset.train_dir)
+    eval_lengths_manifest = load_record_lengths(cfg.dataset.eval_dir)
     train_loaders = {
         sequence_length: make_loader(
             train_source,
@@ -556,6 +575,7 @@ def main(cfg: DictConfig):
             shuffle=True,
             drop_remainder=True,
             seed=cfg.seed + sequence_length,
+            lengths=train_lengths_manifest,
         )
         for sequence_length in train_sequence_lengths
     }
@@ -582,6 +602,7 @@ def main(cfg: DictConfig):
                         shuffle=False,
                         drop_remainder=fsdp_enabled,
                         seed=cfg.seed,
+                        lengths=eval_lengths_manifest,
                     )
                 )
             )
@@ -593,6 +614,7 @@ def main(cfg: DictConfig):
             shuffle=False,
             drop_remainder=fsdp_enabled,
             seed=cfg.seed,
+            lengths=eval_lengths_manifest,
         )
         logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
 
@@ -609,7 +631,7 @@ def main(cfg: DictConfig):
     logger.info("Model init took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
-    optimizer = optax.adam(cfg.learning_rate)
+    optimizer = instantiate(cfg.optimizer)
     state = DynamicsTrainState.create(
         apply_fn=model.apply,
         params=params,
@@ -706,7 +728,12 @@ def main(cfg: DictConfig):
             rollout_seed,
         ):
             video = jnp.asarray(video_batch[:1, :total_video_frames], dtype=jnp.float32)
-            actions = jnp.asarray(action_batch[:1, :total_video_frames], dtype=jnp.int32)
+            eval_action_dtype = (
+                jnp.float32
+                if str(cfg.dynamics.get("action_mode", "discrete")) == "continuous"
+                else jnp.int32
+            )
+            actions = jnp.asarray(action_batch[:1, :total_video_frames], dtype=eval_action_dtype)
             rollout_video = jnp.zeros_like(video)
             rollout_video = rollout_video.at[:, :video_context_frames].set(
                 video[:, :video_context_frames]
@@ -940,7 +967,7 @@ def main(cfg: DictConfig):
                 log_video_eval(
                     wb,
                     put_single_device_tree(state.params),
-                    eval_batches[0],
+                    eval_batches[(step // cfg.eval_steps) % num_batches],
                     step=step,
                     rollout_seed=make_host_seed(cfg.seed, step, num_batches),
                     video_cfg=video_cfg,

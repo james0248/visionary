@@ -1,6 +1,0 @@
-run_dir: artifacts/ppo-rnd-montezuma
-n_envs: 64
-screen_size: 84
-start_from_step: null
-policy_mode: argmax
-temperature: 1.0

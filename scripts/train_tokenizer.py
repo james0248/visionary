@@ -23,10 +23,11 @@ from visionary.common.checkpoint import (
 from visionary.common.jax import fold_in_many, maybe_initialize_distributed
 from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
-from visionary.dataset import RandomVideoCrop, VideoDataset, VideoDataSource
+from visionary.dataset import VideoDataset
 from visionary.lpips import LPIPS
-from visionary.tokenizer import Tokenizer
-from visionary.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.models.dreamer4.sigreg import sigreg_loss
+from visionary.models.dreamer4.tokenizer import Tokenizer
+from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +100,7 @@ def choose_fsdp_partition_spec(
         dtype = np.int32 if isinstance(value, (int, np.integer)) else None
         value = np.asarray(value, dtype=dtype)
     shape = tuple(int(dim) for dim in value.shape)
-    if (
-        not enabled
-        or fsdp_axis_size <= 1
-        or not shape
-    ):
+    if not enabled or fsdp_axis_size <= 1 or not shape:
         return P()
 
     ranked_dims = sorted(range(len(shape)), key=lambda axis: shape[axis], reverse=True)
@@ -264,9 +261,11 @@ def update_loss_ema(
     state: TokenizerTrainState,
     mse_loss: jax.Array,
     lpips_loss: jax.Array,
+    sigreg_loss: jax.Array,
 ) -> TokenizerTrainState:
     mse_loss = mse_loss.astype(jnp.float32)
     lpips_loss = lpips_loss.astype(jnp.float32)
+    sigreg_loss = sigreg_loss.astype(jnp.float32)
     step_size = jnp.asarray(1.0 - LOSS_RMS_DECAY, dtype=mse_loss.dtype)
     return state.replace(
         mse_sq_ema=optax.incremental_update(
@@ -277,6 +276,11 @@ def update_loss_ema(
             state.lpips_sq_ema.astype(lpips_loss.dtype),
             step_size,
         ),
+        sigreg_sq_ema=optax.incremental_update(
+            jnp.square(sigreg_loss),
+            state.sigreg_sq_ema.astype(sigreg_loss.dtype),
+            step_size,
+        ),
     )
 
 
@@ -285,7 +289,10 @@ def compute_loss_metrics(
     batch: VideoDataset,
     reconstructed: jax.Array,
     mask: jax.Array,
+    latent: jax.Array,
+    sigreg_key: jax.Array,
     lpips_weight: float,
+    sigreg_weight: float,
     preprocessor: TokenizerPreprocessor,
 ):
     original = batch["video"].astype(jnp.float32) / 255.0
@@ -304,18 +311,40 @@ def compute_loss_metrics(
         lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
     normalized_lpips_loss = lpips_loss / jax.lax.stop_gradient(lpips_rms)
 
+    sigreg_rms = jnp.sqrt(state.sigreg_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
+    if sigreg_weight > 0:
+        sigreg = sigreg_loss(latent, sigreg_key)
+    else:
+        sigreg = jnp.zeros((), dtype=mse_loss.dtype)
+    normalized_sigreg_loss = sigreg / jax.lax.stop_gradient(sigreg_rms)
+
+    # per-channel over the pooled latents, the distribution sigreg targets
+    latent = latent.astype(jnp.float32).reshape(-1, latent.shape[-1])
+    latent_mean = jnp.mean(latent, axis=0)
+    latent_std = jnp.std(latent, axis=0)
+
     raw_loss = mse_loss + lpips_weight * lpips_loss
-    loss = normalized_mse_loss + lpips_weight * normalized_lpips_loss
+    loss = (
+        normalized_mse_loss
+        + lpips_weight * normalized_lpips_loss
+        + sigreg_weight * normalized_sigreg_loss
+    )
     metrics = {
         "loss": loss,
         "raw_loss": raw_loss,
         "mse_loss": mse_loss,
         "lpips_loss": lpips_loss,
+        "sigreg_loss": sigreg,
         "normalized_mse_loss": normalized_mse_loss,
         "normalized_lpips_loss": normalized_lpips_loss,
+        "normalized_sigreg_loss": normalized_sigreg_loss,
         "mse_rms": mse_rms,
         "lpips_rms": lpips_rms,
+        "sigreg_rms": sigreg_rms,
         "mask_ratio": jnp.mean(mask),
+        "latent_mean_absmax": jnp.max(jnp.abs(latent_mean)),
+        "latent_std_min": jnp.min(latent_std),
+        "latent_std_max": jnp.max(latent_std),
     }
     return loss, metrics
 
@@ -326,23 +355,28 @@ def train_step(
     base_sample_key: jax.Array,
     global_step: int,
     lpips_weight: float,
+    sigreg_weight: float,
     preprocessor: TokenizerPreprocessor,
 ):
     sample_key = fold_in_many(base_sample_key, global_step)
+    model_key, sigreg_key = jax.random.split(sample_key)
 
     def loss_fn(params):
-        reconstructed, mask = state.apply_fn(
+        reconstructed, mask, latent = state.apply_fn(
             params,
             batch,
             method=Tokenizer.reconstruct,
-            rngs={"sample": sample_key},
+            rngs={"sample": model_key},
         )
         return compute_loss_metrics(
             state,
             batch,
             reconstructed,
             mask,
+            latent,
+            sigreg_key,
             lpips_weight,
+            sigreg_weight,
             preprocessor,
         )
 
@@ -352,6 +386,7 @@ def train_step(
         state,
         metrics["mse_loss"],
         metrics["lpips_loss"],
+        metrics["sigreg_loss"],
     )
     return state, metrics
 
@@ -363,11 +398,12 @@ def eval_step(
     global_step: int,
     batch_index: int,
     lpips_weight: float,
+    sigreg_weight: float,
     preprocessor: TokenizerPreprocessor,
 ):
     sample_key = fold_in_many(base_sample_key, global_step, batch_index)
-    model_key, frame_key = jax.random.split(sample_key)
-    reconstructed, mask = state.apply_fn(
+    model_key, frame_key, sigreg_key = jax.random.split(sample_key, num=3)
+    reconstructed, mask, latent = state.apply_fn(
         state.params,
         batch,
         mask_prob=0.1,
@@ -380,7 +416,10 @@ def eval_step(
         batch,
         reconstructed,
         mask,
+        latent,
+        sigreg_key,
         lpips_weight,
+        sigreg_weight,
         preprocessor,
     )
     sampled_frames = sample_sequence_frames(
@@ -501,8 +540,8 @@ def main(cfg: DictConfig):
     wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled) and is_primary_process)
     total_steps = int(cfg.total_steps)
 
-    train_source = VideoDataSource(cfg.dataset.train_dir)
-    eval_source = VideoDataSource(cfg.dataset.eval_dir)
+    train_source = instantiate(cfg.dataset.source, data_dir=cfg.dataset.train_dir)
+    eval_source = instantiate(cfg.dataset.source, data_dir=cfg.dataset.eval_dir)
     logger.info(
         "Loaded %d training videos and %d eval videos",
         len(train_source),
@@ -542,15 +581,15 @@ def main(cfg: DictConfig):
         "LPIPS settings: weight=%.3f",
         float(cfg.lpips_weight),
     )
-    crop_transform = RandomVideoCrop(cfg.dataset.frame_length)
+    clip_transform = instantiate(cfg.dataset.clip_transform, frame_length=cfg.dataset.frame_length)
+    augment_transform = instantiate(cfg.dataset.augment) if cfg.dataset.augment else None
+    logger.info("Train augmentation: %s", augment_transform or "disabled")
     preprocess_transform = preprocessor.as_grain_transform()
 
-    def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int):
+    def make_loader(source, shuffle: bool, drop_remainder: bool, seed: int, augment: bool = False):
         sampler = grain.IndexSampler(
             num_records=len(source),
-            shard_options=grain.ShardByJaxProcess()
-            if process_count > 1
-            else grain.NoSharding(),
+            shard_options=grain.ShardByJaxProcess() if process_count > 1 else grain.NoSharding(),
             shuffle=shuffle,
             seed=seed,
         )
@@ -558,11 +597,14 @@ def main(cfg: DictConfig):
             num_threads=num_threads,
             prefetch_buffer_size=prefetch_buffer_size,
         )
+        operations = [clip_transform]
+        if augment and augment_transform is not None:
+            operations.append(augment_transform)
         return grain.DataLoader(
             data_source=source,
             sampler=sampler,
             operations=[
-                crop_transform,
+                *operations,
                 preprocess_transform,
                 grain.Batch(
                     batch_size=batch_size_per_process,
@@ -579,6 +621,7 @@ def main(cfg: DictConfig):
         shuffle=True,
         drop_remainder=True,
         seed=int(cfg.seed),
+        augment=True,
     )
     logger.info("Train DataLoader creation took %.1fs", time.monotonic() - _t)
 
@@ -612,7 +655,7 @@ def main(cfg: DictConfig):
         logger.info("LPIPS init took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
-    optimizer = optax.adam(cfg.learning_rate)
+    optimizer = instantiate(cfg.optimizer)
     state = TokenizerTrainState.create(
         model.apply,
         params,
@@ -643,7 +686,7 @@ def main(cfg: DictConfig):
             metrics_sharding,
         ),
         out_shardings=(state_shardings, metrics_sharding),
-        static_argnames=("lpips_weight", "preprocessor"),
+        static_argnames=("lpips_weight", "sigreg_weight", "preprocessor"),
         donate_argnums=(0,),
     )
     jit_eval_step = jax.jit(
@@ -659,7 +702,7 @@ def main(cfg: DictConfig):
             metrics_sharding,
             (sampled_frame_sharding, sampled_frame_sharding, sampled_frame_sharding),
         ),
-        static_argnames=("lpips_weight", "preprocessor"),
+        static_argnames=("lpips_weight", "sigreg_weight", "preprocessor"),
     )
     train_key = put_replicated(train_key, mesh)
     eval_key = put_replicated(eval_key, mesh)
@@ -758,6 +801,7 @@ def main(cfg: DictConfig):
             train_key,
             jnp.asarray(current_step, dtype=jnp.int32),
             float(cfg.lpips_weight),
+            float(cfg.sigreg_weight),
             preprocessor,
         )
         train_dispatched = time.monotonic()
@@ -789,9 +833,7 @@ def main(cfg: DictConfig):
             eval_batches = list(itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches))
             if fsdp_enabled:
                 global_eval_batch_counts = np.asarray(
-                    multihost_utils.process_allgather(
-                        np.asarray(len(eval_batches), dtype=np.int32)
-                    )
+                    multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
                 )
                 eval_batches = eval_batches[: int(np.min(global_eval_batch_counts))]
             vis_original_batches = []
@@ -805,6 +847,7 @@ def main(cfg: DictConfig):
                     jnp.asarray(step, dtype=jnp.int32),
                     jnp.asarray(batch_idx, dtype=jnp.int32),
                     float(cfg.lpips_weight),
+                    float(cfg.sigreg_weight),
                     preprocessor,
                 )
                 sampled_frames = host_local_batch(sampled_frames, mesh, batch_pspec)

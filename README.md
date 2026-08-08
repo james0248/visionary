@@ -31,6 +31,10 @@ uv run python scripts/train_tokenizer.py
 uv run python scripts/train_dynamics.py
 ```
 
+The transformer ends in an RMSNorm, so the parameter tree does not match
+checkpoints trained before that was added. To load an older Atari checkpoint or
+reproduce the shipped demo weights, check out `abe92ca`.
+
 ## Export to ONNX
 
 ```sh
