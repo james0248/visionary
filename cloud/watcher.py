@@ -926,7 +926,14 @@ def main() -> None:
         existing = discover_existing_resource(cfg, candidates)
 
         if gcs_object_exists(cfg, complete_marker_uri):
-            if existing is not None:
+            keep_node = bool(cfg.get("job", {}).get("keep_node_on_complete"))
+            if existing is not None and keep_node:
+                index, candidate, _ = existing
+                print(
+                    f"[watcher] Completion marker found; keeping queued resource {index} "
+                    "(keep_node_on_complete). Delete it manually when done."
+                )
+            elif existing is not None:
                 index, candidate, _ = existing
                 print(f"[watcher] Completion marker found; deleting queued resource {index}.")
                 delete_queued_resource(
