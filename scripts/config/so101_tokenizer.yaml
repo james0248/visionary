@@ -12,7 +12,7 @@ optimizer:
         peak_value: ${learning_rate}
         warmup_steps: 1000
 lpips_weight: 0.4
-sigreg_weight: 0.09
+sigreg_weight: 0.0
 log_interval: 100
 eval_steps: 1000
 total_steps: 50000
@@ -32,6 +32,7 @@ dataset:
   clip_transform:
     _target_: visionary.dataset.DecodeRandomVideoClip
     decode_hw: [240, 320]
+    stride: 6
   augment:
     _target_: visionary.dataset.AugmentVideoClip
     crop_scale: 0.95

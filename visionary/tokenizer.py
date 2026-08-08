@@ -73,6 +73,7 @@ class TokenizerEncoder(nn.Module):
     temporal_layer_period: int = 4
     remat: bool = False
     remat_policy: str | None = None
+    bounded_latent: bool = True
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -136,7 +137,10 @@ class TokenizerEncoder(nn.Module):
         )
 
         latent = x[:, :, : self.num_latents, :]
-        return nn.Dense(self.channel_dim, dtype=self.dtype)(latent)
+        latent = nn.Dense(self.channel_dim, dtype=self.dtype)(latent)
+        if self.bounded_latent:
+            latent = jnp.tanh(latent)
+        return latent
 
 
 class TokenizerDecoder(nn.Module):
@@ -236,6 +240,7 @@ class Tokenizer(nn.Module):
     independent_prob: float = 0.3
     mask_prob_min: float = 0.0
     mask_prob_max: float = 0.9
+    bounded_latent: bool = True
     dtype: jnp.dtype = jnp.bfloat16
 
     @property
@@ -282,6 +287,7 @@ class Tokenizer(nn.Module):
             base=self.base,
             remat=self.remat,
             remat_policy=self.remat_policy,
+            bounded_latent=self.bounded_latent,
             dtype=self.dtype,
         )
         decoder_kwargs = dict(

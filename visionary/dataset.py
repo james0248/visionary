@@ -234,18 +234,26 @@ class VideoBytesDataSource(grain.RandomAccessDataSource):
 
 
 class DecodeRandomVideoClip(grain.RandomMapTransform):
-    def __init__(self, frame_length: int, decode_hw: tuple[int, int] | None = None):
+    # stride matches the dynamics frame rate; short clips pad by repeating the last frame
+    def __init__(
+        self,
+        frame_length: int,
+        decode_hw: tuple[int, int] | None = None,
+        stride: int = 1,
+    ):
         self.frame_length = frame_length
         self.decode_hw = decode_hw
+        self.stride = max(int(stride), 1)
 
     def random_map(self, element: dict, rng: np.random.Generator) -> VideoDataset:
         length = element["length"]
-        start = (
-            0
-            if length <= self.frame_length
-            else int(rng.integers(0, length - self.frame_length + 1))
-        )
-        frames = decode_video_window(element["video"], start, self.frame_length, self.decode_hw)
+        span = (self.frame_length - 1) * self.stride + 1
+        start = 0 if length <= span else int(rng.integers(0, length - span + 1))
+        frames = decode_video_window(element["video"], start, span, self.decode_hw)
+        frames = frames[:: self.stride][: self.frame_length]
+        if len(frames) < self.frame_length:
+            pad = np.repeat(frames[-1:], self.frame_length - len(frames), axis=0)
+            frames = np.concatenate([frames, pad], axis=0)
         return VideoDataset(video=frames)
 
 
