@@ -431,8 +431,7 @@ def load_skip_list(checklist):
 
 
 def so101_main(args, report):
-    manifest = json.loads(Path(args.manifest).read_text())
-    repos = sorted(manifest) if isinstance(manifest, dict) else sorted(manifest)
+    repos = sorted(json.loads(Path(args.manifest).read_text()))
     skip = load_skip_list(args.checklist)
     todo = [r for i, r in enumerate(repos) if i % args.num_shards == args.shard]
     for repo in todo:
