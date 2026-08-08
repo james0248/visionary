@@ -14,7 +14,7 @@ ENCODE_ARGS = [
     "-c:v",
     "libx264",
     "-preset",
-    "medium",
+    "fast",
     "-crf",
     "16",
     "-maxrate",
