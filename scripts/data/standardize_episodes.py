@@ -27,6 +27,7 @@ ENCODE_ARGS = [
     "-an",
 ]
 WRIST_HINTS = ("wrist", "gripper", "hand", "claw", "ego", "arm_cam")
+BLANK_BYTES_PER_FRAME = 300
 SHARD_MAX_BYTES = 2_000_000_000
 
 
@@ -69,6 +70,27 @@ def transcode(src, dst, extra_in=()):
         text=True,
     )
     return int(out.stdout.strip())
+
+
+def looks_blank(path, n_frames):
+    # LeRobot v3 pads cameras a session lacked with all-black video, valid timestamps and all
+    if n_frames < 1 or Path(path).stat().st_size / n_frames >= BLANK_BYTES_PER_FRAME:
+        return False
+    import cv2
+
+    cap = cv2.VideoCapture(str(path))
+    read_any = False
+    for fraction in (0.1, 0.5, 0.9):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(n_frames * fraction))
+        ok, frame = cap.read()
+        if not ok:
+            continue
+        read_any = True
+        if frame.max() > 4 or frame.std() > 1.0:
+            cap.release()
+            return False
+    cap.release()
+    return read_any
 
 
 def camera_label(name):
@@ -186,6 +208,7 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
     writer = ShardWriter(out_dir)
     tmp = Path(out_dir) / "_tmp.mp4"
     written = 0
+    blank = 0
     for ep in episodes:
         ep_idx = ep["episode_index"]
         parquets = list(raw.glob(f"data/chunk-*/episode_{ep_idx:06d}.parquet"))
@@ -211,6 +234,9 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
                 n_frames = transcode(vids[0], tmp)
             except subprocess.CalledProcessError as exc:
                 issues.append(f"ep{ep_idx}/{cam}: transcode failed: {exc.stderr[-200:]}")
+                continue
+            if looks_blank(tmp, n_frames):
+                blank += 1
                 continue
             if abs(n_frames - len(actions)) > 2:
                 issues.append(f"ep{ep_idx}/{cam}: frames={n_frames} rows={len(actions)}")
@@ -240,6 +266,7 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
             {"index": i, "orig_name": c, "label": camera_label(c)} for i, c in enumerate(cameras)
         ],
         "entries": written,
+        "blank_skipped": blank,
         "annotated_language": bool(annotations),
         "shards": shards,
         "issues": issues,
@@ -280,6 +307,7 @@ def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_rows, dat
     tmp = Path(out_dir) / "_tmp.mp4"
     issues = []
     written = 0
+    blank = 0
     cam_index = bridge_camera_keys(episodes[0]).index(cam)
     for ep in episodes:
         ep_idx = int(ep["episode_index"])
@@ -304,6 +332,9 @@ def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_rows, dat
             n_frames = transcode(src, tmp, extra_in=["-ss", str(t0), "-t", str(t1 - t0)])
         except subprocess.CalledProcessError as exc:
             issues.append(f"ep{ep_idx}: transcode failed: {exc.stderr[-200:]}")
+            continue
+        if looks_blank(tmp, n_frames):
+            blank += 1
             continue
         if abs(n_frames - len(actions)) > 2:
             issues.append(f"ep{ep_idx}: frames={n_frames} rows={len(actions)}")
@@ -335,6 +366,7 @@ def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_rows, dat
         "camera": {"index": cam_index, "orig_name": cam.removeprefix("observation.images.")},
         "episodes": len(episodes),
         "entries": written,
+        "blank_skipped": blank,
         "shards": shards,
         "issues": issues,
     }
@@ -349,6 +381,7 @@ def process_soar_split(tfrecord_paths, split_name, out_dir, fps, report):
     tmp = Path(out_dir) / "_tmp.mp4"
     issues = []
     written = 0
+    blank = 0
     dataset = tf.data.TFRecordDataset([str(p) for p in tfrecord_paths])
     for ep_idx, record in enumerate(dataset):
         try:
@@ -383,6 +416,9 @@ def process_soar_split(tfrecord_paths, split_name, out_dir, fps, report):
                     frames_dir / "%06d.jpg", tmp, extra_in=["-framerate", str(fps)]
                 )
                 shutil.rmtree(frames_dir, ignore_errors=True)
+                if looks_blank(tmp, n_frames):
+                    blank += 1
+                    continue
                 meta = {
                     "dataset": "soar",
                     "source": split_name,
@@ -412,6 +448,7 @@ def process_soar_split(tfrecord_paths, split_name, out_dir, fps, report):
         "source": split_name,
         "fps": fps,
         "entries": written,
+        "blank_skipped": blank,
         "shards": shards,
         "issues": issues,
     }
