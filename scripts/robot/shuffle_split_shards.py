@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import io
 import json
+import resource
 from pathlib import Path
 
 import grain.python as grain
@@ -10,6 +11,16 @@ import numpy as np
 from visionary.shards import ShardWriter
 
 GB = 1024**3
+
+
+def raise_fd_limit(needed):
+    """ArrayRecordDataSource holds every input file open, so the 1024 default
+    fails once the corpus passes ~1000 sources."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = min(max(needed * 2 + 256, soft), hard)
+    if want > soft:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
 def is_eval(seed, repo, episode, eval_ratio):
@@ -29,8 +40,11 @@ def main():
     paths = sorted(str(p) for p in Path(args.input_dir).rglob("*.arecord"))
     if not paths:
         raise SystemExit(f"no .arecord files under {args.input_dir}")
+    limit = raise_fd_limit(len(paths))
+    if limit < len(paths) + 64:
+        raise SystemExit(f"fd limit {limit} too low for {len(paths)} input files")
     source = grain.ArrayRecordDataSource(paths)
-    print(f"{len(paths)} input files, {len(source):,} records", flush=True)
+    print(f"{len(paths)} input files, {len(source):,} records, fd limit {limit}", flush=True)
 
     out = Path(args.output_dir)
     writers = {
