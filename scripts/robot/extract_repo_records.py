@@ -5,7 +5,7 @@ the same consumers. Works on a local shard dir, or streams shards one at a
 time from GCS (download, filter, delete) so the full set never has to fit on
 disk.
 
-    uv run python scripts/data/extract_repo_records.py \
+    uv run python scripts/robot/extract_repo_records.py \
         --src data/so101/dyn_g5/eval --out data/so101/dyn_single/eval \
         --repo Loki0929/so100_lan
 """

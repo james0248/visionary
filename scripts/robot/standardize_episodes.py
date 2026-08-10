@@ -66,14 +66,15 @@ def transcode(src, dst, extra_in=()):
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=nb_read_packets",
+            "stream=width,height,nb_read_packets",
             "-of",
-            "csv=p=0",
+            "json",
             str(dst),
         ],
         text=True,
     )
-    return int(out.stdout.strip())
+    stream = json.loads(out.stdout)["streams"][0]
+    return int(stream["nb_read_packets"]), int(stream["width"]), int(stream["height"])
 
 
 def looks_blank(path, n_frames):
@@ -97,7 +98,7 @@ def looks_blank(path, n_frames):
     return read_any
 
 
-def camera_label(name):
+def camera_name_hint(name):
     lower = name.lower()
     return "wrist" if any(h in lower for h in WRIST_HINTS) else "fixed"
 
@@ -234,7 +235,7 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
                 issues.append(f"ep{ep_idx}/{cam}: missing video")
                 continue
             try:
-                n_frames = transcode(vids[0], tmp)
+                n_frames, width, height = transcode(vids[0], tmp)
             except subprocess.CalledProcessError as exc:
                 issues.append(f"ep{ep_idx}/{cam}: transcode failed: {exc.stderr[-200:]}")
                 continue
@@ -247,10 +248,12 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
                 "dataset": "so101",
                 "source": source,
                 "episode": ep_idx,
-                "camera": {"index": cam_idx, "label": camera_label(cam), "orig_name": cam},
+                "camera": {"index": cam_idx, "name_hint": camera_name_hint(cam), "orig_name": cam},
                 "language": language,
                 "fps": fps,
                 "frames": n_frames,
+                "width": width,
+                "height": height,
                 "parquet_rows": len(actions),
             }
             writer.add_entry(
@@ -266,7 +269,8 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
         "fps": fps,
         "episodes": len(episodes),
         "cameras": [
-            {"index": i, "orig_name": c, "label": camera_label(c)} for i, c in enumerate(cameras)
+            {"index": i, "orig_name": c, "name_hint": camera_name_hint(c)}
+            for i, c in enumerate(cameras)
         ],
         "entries": written,
         "blank_skipped": blank,
@@ -347,7 +351,9 @@ def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_table, da
         t0 = ep[f"videos/{cam}/from_timestamp"]
         t1 = ep[f"videos/{cam}/to_timestamp"]
         try:
-            n_frames = transcode(src, tmp, extra_in=["-ss", str(t0), "-t", str(t1 - t0)])
+            n_frames, width, height = transcode(
+                src, tmp, extra_in=["-ss", str(t0), "-t", str(t1 - t0)]
+            )
         except subprocess.CalledProcessError as exc:
             issues.append(f"ep{ep_idx}: transcode failed: {exc.stderr[-200:]}")
             continue
@@ -362,12 +368,14 @@ def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_table, da
             "episode": ep_idx,
             "camera": {
                 "index": cam_index,
-                "label": camera_label(cam),
+                "name_hint": camera_name_hint(cam),
                 "orig_name": cam.removeprefix("observation.images."),
             },
             "language": (ep.get("tasks") or [""])[0],
             "fps": fps,
             "frames": n_frames,
+            "width": width,
+            "height": height,
             "parquet_rows": int(mask.sum()),
         }
         writer.add_entry(
@@ -431,7 +439,7 @@ def process_soar_split(tfrecord_paths, split_name, out_dir, fps, report):
                 frames_dir.mkdir()
                 for i, jpeg in enumerate(jpegs):
                     (frames_dir / f"{i:06d}.jpg").write_bytes(jpeg)
-                n_frames = transcode(
+                n_frames, width, height = transcode(
                     frames_dir / "%06d.jpg", tmp, extra_in=["-framerate", str(fps)]
                 )
                 shutil.rmtree(frames_dir, ignore_errors=True)
@@ -444,12 +452,14 @@ def process_soar_split(tfrecord_paths, split_name, out_dir, fps, report):
                     "episode": ep_idx,
                     "camera": {
                         "index": cam_idx,
-                        "label": camera_label(key),
+                        "name_hint": camera_name_hint(key),
                         "orig_name": key.split("/")[-1],
                     },
                     "language": language,
                     "fps": fps,
                     "frames": n_frames,
+                    "width": width,
+                    "height": height,
                     "parquet_rows": num_steps,
                     "success": success,
                 }
@@ -476,27 +486,12 @@ def process_soar_split(tfrecord_paths, split_name, out_dir, fps, report):
     report.append(manifest)
 
 
-def load_skip_list(checklist):
-    if not checklist:
-        return set()
-    skip = set()
-    for line in Path(checklist).read_text().splitlines()[1:]:
-        parts = line.split(",")
-        if len(parts) >= 5 and parts[4].strip() == "n":
-            skip.add(parts[1].strip())
-    return skip
-
-
 def so101_main(args, report):
     repos = sorted(json.loads(Path(args.manifest).read_text()))
-    skip = load_skip_list(args.checklist)
     todo = [r for i, r in enumerate(repos) if i % args.num_shards == args.shard]
     for repo in todo:
         source = repo.replace("/", "__")
         dst_prefix = f"{args.out}/so101/{source}"
-        if repo in skip:
-            print(f"skip(drop) {repo}", flush=True)
-            continue
         if gcs_exists(f"{dst_prefix}/_DONE"):
             print(f"skip(done) {repo}", flush=True)
             continue
@@ -617,7 +612,6 @@ def main():
     parser.add_argument("--out", default="gs://visionary-uc1/processed/v1")
     parser.add_argument("--workdir", default="/mnt/work")
     parser.add_argument("--manifest", default="artifacts/so101/download_pool.json")
-    parser.add_argument("--checklist", default="artifacts/repo_review/checklist.csv")
     parser.add_argument("--annotations", default="/mnt/work/language_annotations")
     parser.add_argument("--soar_fps", type=int, default=5)
     args = parser.parse_args()

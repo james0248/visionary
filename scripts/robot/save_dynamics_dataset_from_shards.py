@@ -11,7 +11,7 @@ temporal RoPE never saw longer offsets) and the window batch is sharded over
 every local device. Actions are normalized to [-1, 1] with q01-q99 stats
 computed from the shards themselves unless --action_stats is given.
 
-    uv run python scripts/data/save_dynamics_dataset_from_shards.py \
+    uv run python scripts/robot/save_dynamics_dataset_from_shards.py \
         --checkpoint_dir gs://visionary-uc1/so101/checkpoints/tokenizer \
         --input_dir data/so101/shards --output_dir data/so101/dyn --frame_length 64
 """
@@ -33,14 +33,6 @@ import numpy as np
 from hydra.utils import instantiate
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from omegaconf import OmegaConf
-from save_dynamics_dataset import (
-    ShardWriter,
-    SplitStats,
-    build_action_normalizer,
-    chunk_starts,
-    record_bounds,
-)
-
 from visionary.common.checkpoint import (
     restore_model_export_single_device,
     restore_preprocessor_export,
@@ -48,6 +40,13 @@ from visionary.common.checkpoint import (
 from visionary.dataset import AugmentVideoClip, decode_video_window
 from visionary.models.dreamer4.tokenizer import Tokenizer
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.shards import (
+    ShardWriter,
+    SplitStats,
+    build_action_normalizer,
+    chunk_starts,
+    record_bounds,
+)
 
 logger = logging.getLogger(__name__)
 

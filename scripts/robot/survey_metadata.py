@@ -1,7 +1,7 @@
 """Fetch each dataset's LeRobot meta/info.json (no video) and report the
 distributions of fps, resolution, cameras, action/state dims, and totals.
 
-    uv run python scripts/so101/survey_metadata.py --workers 48
+    uv run python scripts/robot/survey_metadata.py --workers 48
 """
 
 import argparse
@@ -54,7 +54,7 @@ def fetch_info(repo: str, timeout: float = 20.0) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--manifest", default="scripts/so101/molmoact2_repo_list.json")
+    ap.add_argument("--manifest", default="scripts/robot/molmoact2_repo_list.json")
     ap.add_argument("--out", default="artifacts/so101/survey.json")
     ap.add_argument("--workers", type=int, default=48)
     ap.add_argument("--limit", type=int, default=None)

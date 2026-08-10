@@ -11,8 +11,8 @@ training rather than as an error:
 
 Optionally renders sample clips so the encode quality can be judged by eye.
 
-    uv run python scripts/so101/inspect_shards.py --shards data/so101/shards
-    uv run python scripts/so101/inspect_shards.py --samples 12
+    uv run python scripts/robot/inspect_tokenizer_shards.py --shards data/robot/tokenizer
+    uv run python scripts/robot/inspect_tokenizer_shards.py --samples 12
 """
 
 import argparse
@@ -40,7 +40,7 @@ def count_frames(video: bytes) -> int:
 
 
 def check_record(args) -> dict:
-    shard, index = args
+    shard, index, action_dim = args
     import grain.python as grain
 
     src = grain.ArrayRecordDataSource([shard])
@@ -69,7 +69,7 @@ def check_record(args) -> dict:
         }
     if not (np.isfinite(actions).all() and np.isfinite(state).all()):
         return {"ok": False, "repo": repo, "error": "non-finite actions or state"}
-    if actions.ndim != 2 or actions.shape[1] != 6:
+    if actions.ndim != 2 or (action_dim and actions.shape[1] != action_dim):
         return {"ok": False, "repo": repo, "error": f"action shape {actions.shape}"}
 
     try:
@@ -148,17 +148,18 @@ def render_samples(shards: list[str], out: Path, n: int) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shards", default="data/so101/shards")
+    ap.add_argument("--shards", default="data/robot/tokenizer")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--limit", type=int, default=None, help="check only the first N records")
     ap.add_argument("--samples", type=int, default=0, help="also render N clips to outputs/")
     ap.add_argument("--out", default="outputs/shard_samples")
-    ap.add_argument("--report", default="artifacts/so101/shard_report.json")
+    ap.add_argument("--report", default="artifacts/robot/shard_report.json")
+    ap.add_argument("--action-dim", type=int, default=6, help="expected action dim; 0 disables")
     args = ap.parse_args()
 
     import grain.python as grain
 
-    shards = sorted(glob.glob(f"{args.shards}/*/*.arecord"))
+    shards = sorted(glob.glob(f"{args.shards}/**/*.arecord", recursive=True))
     shards = [s for s in shards if Path(s).stat().st_size > 65536]
     if not shards:
         raise SystemExit(f"no usable shards under {args.shards}")
@@ -173,7 +174,7 @@ def main() -> None:
             # a shard still being written, or genuinely corrupt; report, do not crash
             unreadable.append((shard, f"{type(e).__name__}: {str(e)[:90]}"))
             continue
-        work += [(shard, i) for i in range(n)]
+        work += [(shard, i, args.action_dim) for i in range(n)]
     if unreadable:
         print(f"  {len(unreadable)} shard(s) could not be opened:")
         for shard, err in unreadable[:5]:

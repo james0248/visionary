@@ -1,6 +1,6 @@
 # SO-101 tokenizer training (TPU v6e-8). Decodes mp4 clips on the fly from
 # ArrayRecord shards. Provision the GCS bucket and a data disk holding
-# /mnt/data/tokenizer/{train,eval} (pack_arecord.py).
+# /mnt/data/tokenizer/{train,eval} (pack_tokenizer_dataset.py + shuffle_split_shards.py).
 project: visionary-491008
 exp_name: tokenizer
 checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${exp_name}
