@@ -38,19 +38,28 @@ def main():
     }
     counts = {"train": 0, "eval": 0}
     payload = {"train": 0, "eval": 0}
+    lengths = {"train": [], "eval": []}
+    rates = {"train": [], "eval": []}
     order = np.random.default_rng(args.seed).permutation(len(source))
     for done, idx in enumerate(order, 1):
         record = source[int(idx)]
         with np.load(io.BytesIO(record)) as data:
             repo, episode = str(data["repo"]), int(data["episode"])
+            n_frames = int(data["length"])
+            rate = float(data["fps"]) if "fps" in data else 0.0
         split = "eval" if is_eval(args.seed, repo, episode, args.eval_ratio) else "train"
         writers[split].write(record)
+        lengths[split].append(n_frames)
+        rates[split].append(rate)
         counts[split] += 1
         payload[split] += len(record)
         if done % 2000 == 0:
             print(f"  {done:,}/{len(source):,}", flush=True)
 
     shards = {split: writer.close() for split, writer in writers.items()}
+    for split in ("train", "eval"):
+        (out / split / "lengths.json").write_text(json.dumps(lengths[split]))
+        (out / split / "fps.json").write_text(json.dumps(rates[split]))
     summary = {
         "input_files": len(paths),
         "records": len(source),

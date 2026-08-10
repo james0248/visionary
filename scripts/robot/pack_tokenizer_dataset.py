@@ -28,7 +28,7 @@ BORDERLINE_SHIFT_MAX = 2.0
 
 # Episode trim. Motion is deg/s (|dA| * fps) so thresholds are fps-invariant, and
 # smoothed over ~0.5s so a single-frame blip cannot anchor the start at frame 0.
-MOTION_DEG_S = 3.0
+MOTION_DEG_S = 6.0
 WINDOW_S = 0.5
 PAD_S = 0.5
 MIN_KEEP_S = 2.0
@@ -64,9 +64,7 @@ def list_sources(processed, dataset):
     if is_gcs(processed):
         out = run(["gcloud", "storage", "ls", prefix + "/"], text=True).stdout
         return sorted(
-            line.rstrip("/").rsplit("/", 1)[-1]
-            for line in out.splitlines()
-            if line.endswith("/")
+            line.rstrip("/").rsplit("/", 1)[-1] for line in out.splitlines() if line.endswith("/")
         )
     return sorted(d.name for d in Path(prefix).iterdir() if d.is_dir())
 
@@ -111,8 +109,9 @@ def camera_metrics(video, n_frames: int = 24, hw: tuple[int, int] = (96, 128)) -
 
     h, w = std.shape
     bh, bw = h // 5, w // 5
-    edge = np.concatenate([std[:bh].ravel(), std[-bh:].ravel(),
-                           std[:, :bw].ravel(), std[:, -bw:].ravel()])
+    edge = np.concatenate(
+        [std[:bh].ravel(), std[-bh:].ravel(), std[:, :bw].ravel(), std[:, -bw:].ravel()]
+    )
     edge_ratio = float(edge.mean() / max(std[bh:-bh, bw:-bw].mean(), 1e-6))
 
     shifts = []
@@ -121,8 +120,12 @@ def camera_metrics(video, n_frames: int = 24, hw: tuple[int, int] = (96, 128)) -
         shifts.append((dx**2 + dy**2) ** 0.5)
     shift_p90 = float(np.percentile(shifts, 90)) if shifts else 0.0
 
-    return {"static_frac": static_frac, "edge_ratio": edge_ratio, "shift_p90": shift_p90,
-            "mean_absdiff": float(np.abs(np.diff(gray, axis=0)).mean())}
+    return {
+        "static_frac": static_frac,
+        "edge_ratio": edge_ratio,
+        "shift_p90": shift_p90,
+        "mean_absdiff": float(np.abs(np.diff(gray, axis=0)).mean()),
+    }
 
 
 def is_moving(m: dict) -> bool:
@@ -147,8 +150,13 @@ def episode_qc(action: np.ndarray, fps: float) -> dict:
     smooth = np.convolve(velocity, np.ones(window) / window, mode="same")
     active = smooth > MOTION_DEG_S
     if not active.any():
-        return {"n_frames": n, "duration_s": duration, "active_frac": 0.0,
-                "flags": ["no_motion"], "keep": False}
+        return {
+            "n_frames": n,
+            "duration_s": duration,
+            "active_frac": 0.0,
+            "flags": ["no_motion"],
+            "keep": False,
+        }
 
     idx = np.flatnonzero(active)
     pad = int(round(PAD_S * fps))
@@ -158,7 +166,7 @@ def episode_qc(action: np.ndarray, fps: float) -> dict:
     kept = (end - start) / fps
 
     gaps, run_len = [], 0
-    for a in active[idx[0]:idx[-1] + 1]:
+    for a in active[idx[0] : idx[-1] + 1]:
         run_len = 0 if a else run_len + 1
         gaps.append(run_len)
     mid_gap = (max(gaps) if gaps else 0) / fps
@@ -177,16 +185,28 @@ def episode_qc(action: np.ndarray, fps: float) -> dict:
         flags.append("gripper_only")
 
     return {
-        "n_frames": n, "duration_s": round(duration, 2), "start": start, "end": end,
-        "kept_s": round(kept, 2), "head_idle_s": round(head_idle, 2),
-        "tail_idle_s": round(tail_idle, 2), "mid_gap_s": round(mid_gap, 2),
+        "n_frames": n,
+        "duration_s": round(duration, 2),
+        "start": start,
+        "end": end,
+        "kept_s": round(kept, 2),
+        "head_idle_s": round(head_idle, 2),
+        "tail_idle_s": round(tail_idle, 2),
+        "mid_gap_s": round(mid_gap, 2),
         "active_frac": round(float(active.mean()), 3),
         "max_vel_deg_s": round(float(velocity.max()), 1),
-        "flags": flags, "keep": kept >= MIN_KEEP_S,
+        "flags": flags,
+        "keep": kept >= MIN_KEEP_S,
     }
 
 
-def analyze_source(source, entries, fps, probe_episodes):
+ANALYSIS_PARAMS = {
+    "motion_deg_s": MOTION_DEG_S, "pad_s": PAD_S, "window_s": WINDOW_S,
+    "min_keep_s": MIN_KEEP_S, "static_max": STATIC_MAX, "shift_min": SHIFT_MIN,
+}
+
+
+def analyze_source(source, entries, fps, probe_episodes, trim):
     by_camera = defaultdict(list)
     for tar_path, files, meta in entries:
         by_camera[meta["camera"]["orig_name"]].append((tar_path, files, meta))
@@ -217,9 +237,21 @@ def analyze_source(source, entries, fps, probe_episodes):
             continue
         with np.load(io.BytesIO(read_member(tar_path, files["frames.npz"]))) as d:
             actions = np.asarray(d["actions"], dtype=np.float32)
-        episodes[ep] = episode_qc(actions, fps)
+        if trim:
+            episodes[ep] = episode_qc(actions, fps)
+        else:
+            n = len(actions)
+            episodes[ep] = {
+                "n_frames": n,
+                "duration_s": round(n / fps, 2),
+                "start": 0,
+                "end": n - 1,
+                "flags": [],
+                "keep": n >= 3,
+            }
 
-    return {"source": source, "fps": fps, "cameras": cameras, "episodes": episodes}
+    return {"source": source, "fps": fps, "cameras": cameras, "episodes": episodes,
+            "params": {**ANALYSIS_PARAMS, "probe_episodes": probe_episodes, "trim": trim}}
 
 
 def probe_dims(video_bytes):
@@ -228,8 +260,18 @@ def probe_dims(video_bytes):
         path = tmp.name
     try:
         out = run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-of", "json", path],
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "json",
+                path,
+            ],
             text=True,
         )
         stream = json.loads(out.stdout)["streams"][0]
@@ -248,16 +290,52 @@ def trim_and_encode(video_bytes, start, stop, height, width, crf, preset, gop):
     try:
         vf = f"select='between(n\\,{start}\\,{stop - 1})',setpts=N/FRAME_RATE/TB"
         if height and width:
-            vf += f",scale={width}:{height}"
+            vf += (
+                f",scale={width}:{height}:force_original_aspect_ratio=decrease"
+                f":force_divisible_by=2:flags=lanczos"
+                f",pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+            )
         run(
-            ["ffmpeg", "-v", "error", "-y", "-threads", "2", "-i", str(src),
-             "-vf", vf, "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-             "-g", str(gop), "-pix_fmt", "yuv420p", "-an", str(out)],
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-threads",
+                "2",
+                "-i",
+                str(src),
+                "-vf",
+                vf,
+                "-c:v",
+                "libx264",
+                "-preset",
+                preset,
+                "-crf",
+                str(crf),
+                "-g",
+                str(gop),
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                str(out),
+            ],
         )
         data = out.read_bytes()
         probe = run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
-             "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(out)],
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-count_frames",
+                "-show_entries",
+                "stream=nb_read_frames",
+                "-of",
+                "csv=p=0",
+                str(out),
+            ],
             text=True,
         )
         return data, int(probe.stdout.strip() or 0)
@@ -282,8 +360,7 @@ def pack_source(source, entries, analysis, args, out_path):
             if cam in fixed and cam not in dims:
                 dims[cam] = probe_dims(read_member(tar_path, files["video.mp4"]))
         off_aspect = {
-            c for c in fixed
-            if not dims[c][1] or abs(dims[c][0] / dims[c][1] - args.aspect) > 0.02
+            c for c in fixed if not dims[c][1] or abs(dims[c][0] / dims[c][1] - args.aspect) > 0.02
         }
         fixed -= off_aspect
     else:
@@ -307,30 +384,47 @@ def pack_source(source, entries, analysis, args, out_path):
                 actions = np.asarray(d["actions"], dtype=np.float32)[start:stop]
                 state = np.asarray(d["state"], dtype=np.float32)[start:stop]
             video, n = trim_and_encode(
-                read_member(tar_path, files["video.mp4"]), start, stop,
-                args.height, args.width, args.crf, args.preset, args.gop,
+                read_member(tar_path, files["video.mp4"]),
+                start,
+                stop,
+                args.height,
+                args.width,
+                args.crf,
+                args.preset,
+                args.gop,
             )
         except Exception:  # noqa: BLE001
             skipped += 1
             continue
-        if n != len(actions):          # pixels and actions must stay aligned
+        if n != len(actions):  # pixels and actions must stay aligned
             skipped += 1
             continue
         buf = io.BytesIO()
-        np.savez(buf, video=np.frombuffer(video, dtype=np.uint8), length=np.int32(n),
-                 actions=actions, state=state, repo=repo,
-                 episode=np.int32(meta["episode"]), camera=cam)
+        np.savez(
+            buf,
+            video=np.frombuffer(video, dtype=np.uint8),
+            length=np.int32(n),
+            fps=np.float32(fps),
+            actions=actions,
+            state=state,
+            repo=repo,
+            episode=np.int32(meta["episode"]),
+            camera=cam,
+        )
         writer.write(buf.getvalue())
         written += 1
         frames_kept += n
     writer.close()
 
     return {
-        "source": source, "fps": fps,
+        "source": source,
+        "fps": fps,
         "cameras_fixed": sorted(fixed),
         "cameras_moving": sorted(c for c, m in cameras.items() if m["moving"]),
         "cameras_off_aspect": sorted(off_aspect),
-        "records": written, "skipped": skipped, "failures_dropped": failures,
+        "records": written,
+        "skipped": skipped,
+        "failures_dropped": failures,
         "frames": frames_kept,
         "bytes": out_path.stat().st_size if written else 0,
     }
@@ -380,18 +474,30 @@ def main():
     parser.add_argument("--checklist", default="artifacts/repo_review/checklist.csv")
     parser.add_argument("--phase", choices=["analyze", "pack"], default="pack")
     parser.add_argument("--reanalyze", action="store_true")
-    parser.add_argument("--probe_episodes", type=int, default=1)
+    parser.add_argument("--probe_episodes", type=int, default=3)
+    parser.add_argument("--trim", choices=["auto", "on", "off"], default="auto")
     parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--width", type=int, default=320)
-    parser.add_argument("--crf", type=int, default=18)
-    parser.add_argument("--preset", default="veryfast")
+    parser.add_argument("--crf", type=int, default=16)
+    parser.add_argument("--preset", default="fast")
     parser.add_argument("--gop", type=int, default=25)
-    parser.add_argument("--fps", type=float, default=30.0,
-                        help="only pack sources at this rate; 0 disables. bridge/soar are 5")
-    parser.add_argument("--aspect", type=float, default=4 / 3,
-                        help="only pack streams at this aspect; 0 disables")
-    parser.add_argument("--require_success", action="store_true",
-                        help="drop entries flagged success=false (SOAR only)")
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=0,
+        help="only pack sources at this rate; 0 packs every rate",
+    )
+    parser.add_argument(
+        "--aspect",
+        type=float,
+        default=0,
+        help="only pack streams at this aspect; 0 disables (fit-and-pad handles all)",
+    )
+    parser.add_argument(
+        "--require_success",
+        action="store_true",
+        help="drop entries flagged success=false (SOAR only)",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -429,18 +535,25 @@ def main():
                 print(f"[{position}/{len(todo)}] skip(fps={fps}) {source}", flush=True)
                 continue
 
+            trim = args.trim == "on" or (args.trim == "auto" and args.dataset == "so101")
+            wanted = {**ANALYSIS_PARAMS, "probe_episodes": args.probe_episodes, "trim": trim}
             analysis = None
             if not args.reanalyze:
                 analysis = load_analysis(args.analysis, args.dataset, source, args.workdir)
+                if analysis is not None and analysis.get("params") != wanted:
+                    analysis = None
             if analysis is None:
-                analysis = analyze_source(source, entries, fps, args.probe_episodes)
+                analysis = analyze_source(source, entries, fps, args.probe_episodes, trim)
                 save_analysis(analysis, args.analysis, args.dataset, source, args.workdir)
             if args.phase == "analyze":
                 n_moving = sum(m["moving"] for m in analysis["cameras"].values())
                 n_keep = sum(e.get("keep", False) for e in analysis["episodes"].values())
-                print(f"[{position}/{len(todo)}] analyzed {source}: "
-                      f"{len(analysis['cameras'])} cams ({n_moving} moving), "
-                      f"{n_keep}/{len(analysis['episodes'])} episodes keep", flush=True)
+                print(
+                    f"[{position}/{len(todo)}] analyzed {source}: "
+                    f"{len(analysis['cameras'])} cams ({n_moving} moving), "
+                    f"{n_keep}/{len(analysis['episodes'])} episodes keep",
+                    flush=True,
+                )
                 continue
 
             out_local = Path(args.workdir) / "out" / f"{source}.arecord"
@@ -455,11 +568,15 @@ def main():
                     Path(out_uri).parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(out_local, out_uri)
             out_local.unlink(missing_ok=True)
-            print(f"[{position}/{len(todo)}] done {source}: {row['records']} records "
-                  f"({row['skipped']} skipped, {row['bytes'] / GB:.2f} GB)", flush=True)
+            print(
+                f"[{position}/{len(todo)}] done {source}: {row['records']} records "
+                f"({row['skipped']} skipped, {row['bytes'] / GB:.2f} GB)",
+                flush=True,
+            )
         except Exception as exc:  # noqa: BLE001
-            print(f"[{position}/{len(todo)}] FAILED {source}: {type(exc).__name__}: {exc}",
-                  flush=True)
+            print(
+                f"[{position}/{len(todo)}] FAILED {source}: {type(exc).__name__}: {exc}", flush=True
+            )
         finally:
             if staged:
                 shutil.rmtree(local, ignore_errors=True)
@@ -467,8 +584,11 @@ def main():
     report_path = Path(args.workdir) / f"pack_report_{args.dataset}_{args.shard}.json"
     report_path.write_text(json.dumps(report, indent=1))
     total = sum(r.get("records", 0) for r in report)
-    print(f"PACK_COMPLETE dataset={args.dataset} shard={args.shard} "
-          f"sources={len(report)} records={total}", flush=True)
+    print(
+        f"PACK_COMPLETE dataset={args.dataset} shard={args.shard} "
+        f"sources={len(report)} records={total}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
