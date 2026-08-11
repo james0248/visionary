@@ -64,7 +64,7 @@ def main():
     )
     n_params = sum(x.size for x in jax.tree.leaves(params))
 
-    mesh = jax.make_mesh((n_dev,), ("data",))
+    mesh = jax.sharding.Mesh(np.asarray(jax.local_devices()), ("data",))
     batch = jax.device_put(batch, NamedSharding(mesh, P("data")))
     state = jax.device_put(state, NamedSharding(mesh, P()))
 
