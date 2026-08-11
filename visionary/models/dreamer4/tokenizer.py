@@ -72,6 +72,7 @@ class TokenizerEncoder(nn.Module):
     base: float
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
+    use_splash: bool = True
     remat: bool = False
     remat_policy: str | None = None
     bounded_latent: bool = True
@@ -127,6 +128,7 @@ class TokenizerEncoder(nn.Module):
             temporal_layer_offset=self.temporal_layer_offset,
             remat=self.remat,
             remat_policy=self.remat_policy,
+            splash_spec=(self.num_latents, num_tokens, True) if self.use_splash else None,
             dtype=self.dtype,
         )(
             x=x,
@@ -160,6 +162,7 @@ class TokenizerDecoder(nn.Module):
     base: float
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
+    use_splash: bool = True
     remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
@@ -206,6 +209,7 @@ class TokenizerDecoder(nn.Module):
             temporal_layer_offset=self.temporal_layer_offset,
             remat=self.remat,
             remat_policy=self.remat_policy,
+            splash_spec=(self.num_latents, num_tokens, False) if self.use_splash else None,
             dtype=self.dtype,
         )(
             x=x,
@@ -240,6 +244,7 @@ class Tokenizer(nn.Module):
     base: float
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
+    use_splash: bool = True
     decoder_num_layers: int | None = None
     decoder_model_dim: int | None = None
     decoder_num_heads: int | None = None
@@ -289,6 +294,7 @@ class Tokenizer(nn.Module):
             num_kv_heads=self.num_kv_heads,
             temporal_layer_period=self.temporal_layer_period,
             temporal_layer_offset=self.temporal_layer_offset,
+            use_splash=self.use_splash,
             model_dim=self.model_dim,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
@@ -308,6 +314,7 @@ class Tokenizer(nn.Module):
             num_kv_heads=self.decoder_num_kv_heads or self.num_kv_heads,
             temporal_layer_period=self.temporal_layer_period,
             temporal_layer_offset=self.temporal_layer_offset,
+            use_splash=self.use_splash,
             model_dim=self.decoder_model_dim or self.model_dim,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.decoder_mlp_hidden_dim or self.mlp_hidden_dim,
