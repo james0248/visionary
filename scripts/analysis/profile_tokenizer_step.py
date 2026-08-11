@@ -7,6 +7,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax.sharding import NamedSharding, PartitionSpec as P
 from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -62,6 +63,10 @@ def main():
         apply_fn=model.apply, params=params, tx=build_optimizer(cfg)
     )
     n_params = sum(x.size for x in jax.tree.leaves(params))
+
+    mesh = jax.make_mesh((n_dev,), ("data",))
+    batch = jax.device_put(batch, NamedSharding(mesh, P("data")))
+    state = jax.device_put(state, NamedSharding(mesh, P()))
 
     jit_step = jax.jit(
         train_step,
