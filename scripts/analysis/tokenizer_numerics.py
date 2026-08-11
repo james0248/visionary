@@ -18,6 +18,7 @@ PRESETS = {
         num_layers=12, num_latents=256, num_heads=12, num_kv_heads=3, model_dim=768,
         mlp_hidden_dim=2304, head_dim=64, channel_dim=16, resize_shape=[240, 320],
         pad_width=[0, 0], patch_size=16, base=10000.0, decoder_num_layers=8,
+        remat=True, remat_policy="dots_with_no_batch_dims_saveable",
     ),
 }
 BATCH = {"tiny": (2, 4), "full": (2, 16)}
