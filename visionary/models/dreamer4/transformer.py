@@ -126,11 +126,14 @@ def _splash_kernel(n_latents, n_image, encoder, num_heads, seq_pad, interpret):
     )
 
 
+SPLASH_MESH = None
+SPLASH_AXIS = "data"
+
+
 def splash_attention(q, k, v, spec, scale):
     n_latents, n_image, encoder = spec
     batch, seq, num_heads, head_dim = q.shape
     seq_pad = ((seq + 127) // 128) * 128
-    kernel = _splash_kernel(n_latents, n_image, encoder, num_heads, seq_pad, SPLASH_INTERPRET)
 
     repeats = num_heads // k.shape[2]
     k = jnp.repeat(k, repeats, axis=2)
@@ -140,8 +143,20 @@ def splash_attention(q, k, v, spec, scale):
         x = jnp.pad(x, ((0, 0), (0, seq_pad - seq), (0, 0), (0, 0)))
         return jnp.swapaxes(x, 1, 2)
 
-    out = jax.vmap(kernel)(prep(q * scale), prep(k), prep(v))
-    return jnp.swapaxes(out, 1, 2)[:, :seq]
+    def run(q, k, v):
+        kernel = _splash_kernel(
+            n_latents, n_image, encoder, num_heads, seq_pad, SPLASH_INTERPRET
+        )
+        out = jax.vmap(kernel)(prep(q), prep(k), prep(v))
+        return jnp.swapaxes(out, 1, 2)[:, :seq]
+
+    if SPLASH_MESH is not None:
+        # Mosaic kernels cannot be auto-partitioned by GSPMD
+        p = jax.sharding.PartitionSpec(SPLASH_AXIS)
+        run = jax.shard_map(
+            run, mesh=SPLASH_MESH, in_specs=(p, p, p), out_specs=p
+        )
+    return run(q * scale, k, v)
 
 
 class Attention(nn.Module):
