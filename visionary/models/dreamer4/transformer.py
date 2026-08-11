@@ -112,10 +112,11 @@ def _splash_kernel(n_latents, n_image, encoder, num_heads, seq_pad, interpret):
     )
 
     mask = _splash_mask(n_latents, n_image, encoder, seq_pad)
+    b = min(int(os.environ.get("SPLASH_BLOCK", "128")), seq_pad)
     block = sk.BlockSizes(
-        block_q=128, block_kv=128, block_kv_compute=128,
-        block_q_dkv=128, block_kv_dkv=128, block_kv_dkv_compute=128,
-        block_q_dq=128, block_kv_dq=128,
+        block_q=b, block_kv=b, block_kv_compute=b,
+        block_q_dkv=b, block_kv_dkv=b, block_kv_dkv_compute=b,
+        block_q_dq=b, block_kv_dq=b,
     )
     return sk.make_splash_mha(
         mask=sm.MultiHeadMask([sm.NumpyMask(mask)] * num_heads),
@@ -133,7 +134,8 @@ SPLASH_AXIS = "data"
 def splash_attention(q, k, v, spec, scale):
     n_latents, n_image, encoder = spec
     batch, seq, num_heads, head_dim = q.shape
-    seq_pad = ((seq + 127) // 128) * 128
+    step = max(128, min(int(os.environ.get("SPLASH_BLOCK", "128")), 1024))
+    seq_pad = ((seq + step - 1) // step) * step
 
     repeats = num_heads // k.shape[2]
     k = jnp.repeat(k, repeats, axis=2)
