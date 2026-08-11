@@ -194,7 +194,9 @@ def make_global_array_from_host(value, sharding: NamedSharding):
 
 
 def put_replicated(value, mesh: Mesh):
-    return jax.device_put(value, replicated_sharding(mesh))
+    if jax.process_count() == 1:
+        return jax.device_put(value, replicated_sharding(mesh))
+    return multihost_utils.host_local_array_to_global_array(value, mesh, P())
 
 
 def put_global_batch(batch: VideoDataset, batch_sharding: NamedSharding) -> VideoDataset:
