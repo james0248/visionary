@@ -4,7 +4,7 @@ set -euo pipefail
 
 PROJECT_ID="visionary-491008"
 STAGING_SERVICE_ACCOUNT="visionary-starter@visionary-491008.iam.gserviceaccount.com"
-MACHINE_TYPE="c4-standard-4"
+MACHINE_TYPE="${HDML_MACHINE_TYPE:-c4-standard-4}"
 BOOT_DISK_SIZE_GB="50"
 
 DISK_NAME=""
