@@ -1,13 +1,7 @@
-import os
-from functools import lru_cache
-
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import numpy as np
 from einops import rearrange
-
-SPLASH_INTERPRET = os.environ.get("SPLASH_INTERPRET") == "1"
 
 
 class SwiGLU(nn.Module):
@@ -88,85 +82,12 @@ def resolve_remat_policy(name: str | None):
     return policy
 
 
-@lru_cache(maxsize=8)
-def _splash_mask(n_latents, n_image, encoder, seq_pad):
-    seq = n_latents + n_image
-    mask = np.zeros((seq_pad, seq_pad), dtype=bool)
-    mask[:n_latents, :seq] = True
-    mask[n_latents:seq, n_latents:seq] = True
-    if encoder:
-        mask[n_latents:seq, :n_latents] = False
-    else:
-        mask[:n_latents, n_latents:seq] = False
-        mask[n_latents:seq, :n_latents] = True
-    np.fill_diagonal(mask, True)
-    return mask
-
-
-def _splash_kernel(n_latents, n_image, encoder, num_heads, seq_pad, interpret):
-    # constructed per trace: the kernel closes over arrays it creates, and
-    # caching those across jit traces leaks tracers
-    from jax.experimental.pallas.ops.tpu.splash_attention import (
-        splash_attention_kernel as sk,
-        splash_attention_mask as sm,
-    )
-
-    mask = _splash_mask(n_latents, n_image, encoder, seq_pad)
-    b = min(int(os.environ.get("SPLASH_BLOCK", "640")), seq_pad)
-    block = sk.BlockSizes(
-        block_q=b, block_kv=b, block_kv_compute=b,
-        block_q_dkv=b, block_kv_dkv=b, block_kv_dkv_compute=b,
-        block_q_dq=b, block_kv_dq=b,
-    )
-    return sk.make_splash_mha(
-        mask=sm.MultiHeadMask([sm.NumpyMask(mask)] * num_heads),
-        block_sizes=block,
-        head_shards=1,
-        q_seq_shards=1,
-        interpret=interpret,
-    )
-
-
-SPLASH_MESH = None
-SPLASH_AXIS = "data"
-
-
-def splash_attention(q, k, v, spec, scale):
-    n_latents, n_image, encoder = spec
-    batch, seq, num_heads, head_dim = q.shape
-    seq_pad = ((seq + 127) // 128) * 128
-
-    repeats = num_heads // k.shape[2]
-    k = jnp.repeat(k, repeats, axis=2)
-    v = jnp.repeat(v, repeats, axis=2)
-
-    def prep(x):
-        x = jnp.pad(x, ((0, 0), (0, seq_pad - seq), (0, 0), (0, 0)))
-        return jnp.swapaxes(x, 1, 2)
-
-    def run(q, k, v):
-        kernel = _splash_kernel(
-            n_latents, n_image, encoder, num_heads, seq_pad, SPLASH_INTERPRET
-        )
-        out = jax.vmap(kernel)(prep(q), prep(k), prep(v))
-        return jnp.swapaxes(out, 1, 2)[:, :seq]
-
-    if SPLASH_MESH is not None:
-        # Mosaic kernels cannot be auto-partitioned by GSPMD
-        p = jax.sharding.PartitionSpec(SPLASH_AXIS)
-        run = jax.shard_map(
-            run, mesh=SPLASH_MESH, in_specs=(p, p, p), out_specs=p, check_vma=False
-        )
-    return run(q * scale, k, v)
-
-
 class Attention(nn.Module):
     model_dim: int
     num_heads: int
     num_kv_heads: int
     head_dim: int
     attention_logit_soft_cap: float | None = 50.0
-    splash_spec: tuple | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -191,13 +112,7 @@ class Attention(nn.Module):
             q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
             k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
 
-        scale = 1.0 / jnp.sqrt(self.head_dim)
-        if self.splash_spec is not None and (
-            jax.default_backend() == "tpu" or SPLASH_INTERPRET
-        ):
-            out = splash_attention(q, k, v, self.splash_spec, scale)
-        else:
-            out = jax.nn.dot_product_attention(q, k, v, mask=mask, scale=scale)
+        out = jax.nn.dot_product_attention(q, k, v, mask=mask, scale=1.0 / jnp.sqrt(self.head_dim))
         out = rearrange(out, "b t h d -> b t (h d)")
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
 
@@ -211,7 +126,6 @@ class TransformerBlock(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     attention_logit_soft_cap: float | None = 50.0
-    splash_spec: tuple | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -229,7 +143,6 @@ class TransformerBlock(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             attention_logit_soft_cap=self.attention_logit_soft_cap,
-            splash_spec=self.splash_spec,
             dtype=self.dtype,
         )(x, rope_emb, mask)
 
@@ -250,7 +163,6 @@ class SpatioTemporalTransformer(nn.Module):
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
     attention_logit_soft_cap: float | None = 50.0
-    splash_spec: tuple | None = None
     remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
@@ -299,7 +211,6 @@ class SpatioTemporalTransformer(nn.Module):
             x: jnp.ndarray,
             rope_emb: tuple[jnp.ndarray, jnp.ndarray],
             mask: jnp.ndarray,
-            splash_spec: tuple | None = None,
         ) -> jnp.ndarray:
             return block_cls(
                 model_dim=self.model_dim,
@@ -308,7 +219,6 @@ class SpatioTemporalTransformer(nn.Module):
                 head_dim=self.head_dim,
                 mlp_hidden_dim=self.mlp_hidden_dim,
                 attention_logit_soft_cap=self.attention_logit_soft_cap,
-                splash_spec=splash_spec,
                 dtype=self.dtype,
                 name=f"TransformerBlock_{block_idx}",
             )(x, rope_emb, mask)
@@ -318,7 +228,7 @@ class SpatioTemporalTransformer(nn.Module):
                 return x, block_idx
             x = rearrange(x, "b t n d -> (b t) n d")
             for _ in range(count):
-                x = apply_block(block_idx, x, spatial_rope_emb, spatial_mask, self.splash_spec)
+                x = apply_block(block_idx, x, spatial_rope_emb, spatial_mask)
                 block_idx += 1
             return rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=t), block_idx
 

@@ -69,10 +69,6 @@ def main():
     batch = jax.device_put(batch, NamedSharding(mesh, P("data")))
     state = jax.device_put(state, NamedSharding(mesh, P()))
 
-    from visionary.models.dreamer4 import transformer as _tr
-
-    _tr.SPLASH_MESH = mesh
-
     from visionary.models.dreamer4.tokenizer import Tokenizer as _Tok
 
     def fwd_fn(state_, batch_, key_, step_, lpips_weight, lpips_frame_stride, preprocessor):

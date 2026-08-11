@@ -35,6 +35,11 @@ Split: forward 60 ms, backward +223 ms, Muon update ~30 ms.
 | 5 | splash attention, block 256/512 | 351 ms (regression) | 6.3% | — |
 | 6 | splash attention, block 640 = whole padded seq (**landed**) | 287 -> 261 ms (+9.9% sps) | 8.4% | 4 metrics at rel 2.2-3.1e-4, all < 5e-4; loss rel 1e-6. Kernel accumulation-order reassociation. |
 
+**2026-08-11: splash reverted from main** — +9.9% did not justify the
+complexity (shard_map wiring, per-seq block tuning, libtpu coupling) at
+seq 556. Full implementation preserved on branch `splash-attn`; revisit
+when sequences reach ~2k+ (dynamics). The jax>=0.10.2 bump stays.
+
 ## Splash notes (branch `splash-attn`, jax 0.9.1 -> 0.10.2)
 
 - Pallas needs libtpu <= 1 month old: forced the jax bump. XLA fingerprint
