@@ -225,7 +225,11 @@ class VideoBytesDataSource(grain.RandomAccessDataSource):
     def __getitem__(self, idx: int) -> dict:
         try:
             with np.load(io.BytesIO(self._source[idx])) as data:
-                return {"video": data["video"].tobytes(), "length": int(data["length"])}
+                return {
+                    "video": data["video"].tobytes(),
+                    "length": int(data["length"]),
+                    "fps": float(data["fps"]) if "fps" in data else 0.0,
+                }
         except Exception as exc:
             location = _describe_record_location(self._source, self._paths, idx)
             raise ValueError(
@@ -240,21 +244,58 @@ class DecodeRandomVideoClip(grain.RandomMapTransform):
         frame_length: int,
         decode_hw: tuple[int, int] | None = None,
         stride: int = 1,
+        target_hz: float | None = None,
     ):
         self.frame_length = frame_length
         self.decode_hw = decode_hw
         self.stride = max(int(stride), 1)
+        self.target_hz = target_hz
+
+    def _stride_for(self, element: dict) -> int:
+        # records carry their native rate; a random window start covers every
+        # phase of the decimation, so no frame is unreachable
+        if self.target_hz and element.get("fps", 0.0) > 0:
+            return max(int(round(element["fps"] / self.target_hz)), 1)
+        return self.stride
 
     def random_map(self, element: dict, rng: np.random.Generator) -> VideoDataset:
         length = element["length"]
-        span = (self.frame_length - 1) * self.stride + 1
+        stride = self._stride_for(element)
+        span = (self.frame_length - 1) * stride + 1
         start = 0 if length <= span else int(rng.integers(0, length - span + 1))
         frames = decode_video_window(element["video"], start, span, self.decode_hw)
-        frames = frames[:: self.stride][: self.frame_length]
+        frames = frames[::stride][: self.frame_length]
         if len(frames) < self.frame_length:
             pad = np.repeat(frames[-1:], self.frame_length - len(frames), axis=0)
             frames = np.concatenate([frames, pad], axis=0)
         return VideoDataset(video=frames)
+
+
+class WeightedVideoBytesDataSource(VideoBytesDataSource):
+    # samples each episode in proportion to its duration: grain draws records
+    # uniformly, so without this a 3s Bridge episode and a 90s SO-101 episode
+    # would contribute the same number of clips
+    def __init__(self, data_dir: str, weight_seconds: float = 25.6):
+        super().__init__(data_dir)
+        base = epath.Path(data_dir)
+        lengths = json.loads((base / "lengths.json").read_text())
+        rates = json.loads((base / "fps.json").read_text())
+        if len(lengths) != len(self._source) or len(rates) != len(self._source):
+            raise ValueError(
+                f"sidecar length mismatch in {data_dir}: "
+                f"{len(lengths)} lengths, {len(rates)} fps, {len(self._source)} records"
+            )
+        self._index = []
+        for record_idx, (n_frames, fps) in enumerate(zip(lengths, rates)):
+            duration = n_frames / fps if fps > 0 else n_frames / 30.0
+            repeats = max(int(np.ceil(duration / weight_seconds)), 1)
+            self._index.extend([record_idx] * repeats)
+
+    def __len__(self):
+        return len(self._index)
+
+    def __getitem__(self, idx: int) -> dict:
+        return super().__getitem__(self._index[idx])
 
 
 class AugmentVideoClip(grain.RandomMapTransform):

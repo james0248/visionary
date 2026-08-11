@@ -71,6 +71,7 @@ class TokenizerEncoder(nn.Module):
 
     base: float
     temporal_layer_period: int = 4
+    temporal_layer_offset: int | None = None
     remat: bool = False
     remat_policy: str | None = None
     bounded_latent: bool = True
@@ -123,6 +124,7 @@ class TokenizerEncoder(nn.Module):
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
             temporal_layer_period=self.temporal_layer_period,
+            temporal_layer_offset=self.temporal_layer_offset,
             remat=self.remat,
             remat_policy=self.remat_policy,
             dtype=self.dtype,
@@ -157,6 +159,7 @@ class TokenizerDecoder(nn.Module):
 
     base: float
     temporal_layer_period: int = 4
+    temporal_layer_offset: int | None = None
     remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
@@ -200,6 +203,7 @@ class TokenizerDecoder(nn.Module):
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
             temporal_layer_period=self.temporal_layer_period,
+            temporal_layer_offset=self.temporal_layer_offset,
             remat=self.remat,
             remat_policy=self.remat_policy,
             dtype=self.dtype,
@@ -235,6 +239,12 @@ class Tokenizer(nn.Module):
 
     base: float
     temporal_layer_period: int = 4
+    temporal_layer_offset: int | None = None
+    decoder_num_layers: int | None = None
+    decoder_model_dim: int | None = None
+    decoder_num_heads: int | None = None
+    decoder_num_kv_heads: int | None = None
+    decoder_mlp_hidden_dim: int | None = None
     remat: bool = False
     remat_policy: str | None = None
     independent_prob: float = 0.3
@@ -278,6 +288,7 @@ class Tokenizer(nn.Module):
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
             temporal_layer_period=self.temporal_layer_period,
+            temporal_layer_offset=self.temporal_layer_offset,
             model_dim=self.model_dim,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
@@ -291,14 +302,15 @@ class Tokenizer(nn.Module):
             dtype=self.dtype,
         )
         decoder_kwargs = dict(
-            num_layers=self.num_layers,
+            num_layers=self.decoder_num_layers or self.num_layers,
             num_latents=self.num_latents,
-            num_heads=self.num_heads,
-            num_kv_heads=self.num_kv_heads,
+            num_heads=self.decoder_num_heads or self.num_heads,
+            num_kv_heads=self.decoder_num_kv_heads or self.num_kv_heads,
             temporal_layer_period=self.temporal_layer_period,
-            model_dim=self.model_dim,
+            temporal_layer_offset=self.temporal_layer_offset,
+            model_dim=self.decoder_model_dim or self.model_dim,
             head_dim=self.head_dim,
-            mlp_hidden_dim=self.mlp_hidden_dim,
+            mlp_hidden_dim=self.decoder_mlp_hidden_dim or self.mlp_hidden_dim,
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,

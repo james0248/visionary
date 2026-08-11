@@ -25,7 +25,6 @@ from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import VideoDataset
 from visionary.lpips import LPIPS
-from visionary.models.dreamer4.sigreg import sigreg_loss
 from visionary.models.dreamer4.tokenizer import Tokenizer
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
@@ -55,6 +54,56 @@ def parse_auto_bool(value: Any, auto_value: bool) -> bool:
     if value in {"0", "false", "no", "off", "disabled"}:
         return False
     raise ValueError(f"Expected a boolean or 'auto', got {value!r}")
+
+
+
+def build_wsd_schedule(cfg) -> optax.Schedule:
+    total = int(cfg.total_steps)
+    warmup = max(int(total * cfg.optimizer.warmup_ratio), 1)
+    decay = int(total * cfg.optimizer.decay_ratio)
+    stable = max(total - warmup - decay, 0)
+    return optax.join_schedules(
+        [
+            optax.linear_schedule(0.0, cfg.optimizer.peak_lr, warmup),
+            optax.constant_schedule(cfg.optimizer.peak_lr),
+            optax.linear_schedule(cfg.optimizer.peak_lr, 0.0, decay),
+        ],
+        boundaries=[warmup, warmup + stable],
+    )
+
+
+def muon_dimension_numbers(params):
+    from optax.contrib import MuonDimensionNumbers
+
+    def mapper(path, x):
+        path_str = "/".join(str(getattr(key, "key", key)) for key in path).lower()
+        if "embedding" in path_str:
+            return None
+        return MuonDimensionNumbers() if x.ndim >= 2 else None
+
+    return jax.tree_util.tree_map_with_path(mapper, params)
+
+
+def build_optimizer(cfg) -> optax.GradientTransformation:
+    schedule = build_wsd_schedule(cfg)
+    opt = cfg.optimizer
+    adam_ratio = float(opt.adam_lr_ratio)
+
+    def adam_schedule(step):
+        return schedule(step) * adam_ratio
+
+    return optax.contrib.muon(
+        learning_rate=schedule,
+        beta=float(opt.muon_beta),
+        ns_steps=int(opt.ns_steps),
+        nesterov=bool(opt.nesterov),
+        weight_decay=float(opt.weight_decay),
+        adam_learning_rate=adam_schedule,
+        adam_b1=float(opt.adam_b1),
+        adam_b2=float(opt.adam_b2),
+        adam_weight_decay=0.0,
+        muon_weight_dimension_numbers=muon_dimension_numbers,
+    )
 
 
 def build_fsdp_mesh(cfg: DictConfig) -> tuple[Mesh, bool, int]:
@@ -261,11 +310,9 @@ def update_loss_ema(
     state: TokenizerTrainState,
     mse_loss: jax.Array,
     lpips_loss: jax.Array,
-    sigreg_loss: jax.Array,
 ) -> TokenizerTrainState:
     mse_loss = mse_loss.astype(jnp.float32)
     lpips_loss = lpips_loss.astype(jnp.float32)
-    sigreg_loss = sigreg_loss.astype(jnp.float32)
     step_size = jnp.asarray(1.0 - LOSS_RMS_DECAY, dtype=mse_loss.dtype)
     return state.replace(
         mse_sq_ema=optax.incremental_update(
@@ -274,11 +321,6 @@ def update_loss_ema(
         lpips_sq_ema=optax.incremental_update(
             jnp.square(lpips_loss),
             state.lpips_sq_ema.astype(lpips_loss.dtype),
-            step_size,
-        ),
-        sigreg_sq_ema=optax.incremental_update(
-            jnp.square(sigreg_loss),
-            state.sigreg_sq_ema.astype(sigreg_loss.dtype),
             step_size,
         ),
     )
@@ -290,9 +332,8 @@ def compute_loss_metrics(
     reconstructed: jax.Array,
     mask: jax.Array,
     latent: jax.Array,
-    sigreg_key: jax.Array,
     lpips_weight: float,
-    sigreg_weight: float,
+    lpips_frame_stride: int,
     preprocessor: TokenizerPreprocessor,
 ):
     original = batch["video"].astype(jnp.float32) / 255.0
@@ -306,41 +347,29 @@ def compute_loss_metrics(
 
     lpips_rms = jnp.sqrt(state.lpips_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if lpips_weight > 0:
-        lpips_loss = compute_lpips_loss(original, reconstructed, preprocessor)
+        stride = max(int(lpips_frame_stride), 1)
+        lpips_loss = compute_lpips_loss(
+            original[:, ::stride], reconstructed[:, ::stride], preprocessor
+        )
     else:
         lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
     normalized_lpips_loss = lpips_loss / jax.lax.stop_gradient(lpips_rms)
 
-    sigreg_rms = jnp.sqrt(state.sigreg_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
-    if sigreg_weight > 0:
-        sigreg = sigreg_loss(latent, sigreg_key)
-    else:
-        sigreg = jnp.zeros((), dtype=mse_loss.dtype)
-    normalized_sigreg_loss = sigreg / jax.lax.stop_gradient(sigreg_rms)
-
-    # per-channel over the pooled latents, the distribution sigreg targets
     latent = latent.astype(jnp.float32).reshape(-1, latent.shape[-1])
     latent_mean = jnp.mean(latent, axis=0)
     latent_std = jnp.std(latent, axis=0)
 
     raw_loss = mse_loss + lpips_weight * lpips_loss
-    loss = (
-        normalized_mse_loss
-        + lpips_weight * normalized_lpips_loss
-        + sigreg_weight * normalized_sigreg_loss
-    )
+    loss = normalized_mse_loss + lpips_weight * normalized_lpips_loss
     metrics = {
         "loss": loss,
         "raw_loss": raw_loss,
         "mse_loss": mse_loss,
         "lpips_loss": lpips_loss,
-        "sigreg_loss": sigreg,
         "normalized_mse_loss": normalized_mse_loss,
         "normalized_lpips_loss": normalized_lpips_loss,
-        "normalized_sigreg_loss": normalized_sigreg_loss,
         "mse_rms": mse_rms,
         "lpips_rms": lpips_rms,
-        "sigreg_rms": sigreg_rms,
         "mask_ratio": jnp.mean(mask),
         "latent_mean_absmax": jnp.max(jnp.abs(latent_mean)),
         "latent_std_min": jnp.min(latent_std),
@@ -355,11 +384,10 @@ def train_step(
     base_sample_key: jax.Array,
     global_step: int,
     lpips_weight: float,
-    sigreg_weight: float,
+    lpips_frame_stride: int,
     preprocessor: TokenizerPreprocessor,
 ):
-    sample_key = fold_in_many(base_sample_key, global_step)
-    model_key, sigreg_key = jax.random.split(sample_key)
+    model_key = fold_in_many(base_sample_key, global_step)
 
     def loss_fn(params):
         reconstructed, mask, latent = state.apply_fn(
@@ -374,20 +402,14 @@ def train_step(
             reconstructed,
             mask,
             latent,
-            sigreg_key,
             lpips_weight,
-            sigreg_weight,
+            lpips_frame_stride,
             preprocessor,
         )
 
     (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
     state = state.apply_gradients(grads=grads)
-    state = update_loss_ema(
-        state,
-        metrics["mse_loss"],
-        metrics["lpips_loss"],
-        metrics["sigreg_loss"],
-    )
+    state = update_loss_ema(state, metrics["mse_loss"], metrics["lpips_loss"])
     return state, metrics
 
 
@@ -398,11 +420,11 @@ def eval_step(
     global_step: int,
     batch_index: int,
     lpips_weight: float,
-    sigreg_weight: float,
+    lpips_frame_stride: int,
     preprocessor: TokenizerPreprocessor,
 ):
     sample_key = fold_in_many(base_sample_key, global_step, batch_index)
-    model_key, frame_key, sigreg_key = jax.random.split(sample_key, num=3)
+    model_key, frame_key = jax.random.split(sample_key)
     reconstructed, mask, latent = state.apply_fn(
         state.params,
         batch,
@@ -417,9 +439,8 @@ def eval_step(
         reconstructed,
         mask,
         latent,
-        sigreg_key,
         lpips_weight,
-        sigreg_weight,
+        lpips_frame_stride,
         preprocessor,
     )
     sampled_frames = sample_sequence_frames(
@@ -655,7 +676,7 @@ def main(cfg: DictConfig):
         logger.info("LPIPS init took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
-    optimizer = instantiate(cfg.optimizer)
+    optimizer = build_optimizer(cfg)
     state = TokenizerTrainState.create(
         model.apply,
         params,
@@ -686,7 +707,7 @@ def main(cfg: DictConfig):
             metrics_sharding,
         ),
         out_shardings=(state_shardings, metrics_sharding),
-        static_argnames=("lpips_weight", "sigreg_weight", "preprocessor"),
+        static_argnames=("lpips_weight", "lpips_frame_stride", "preprocessor"),
         donate_argnums=(0,),
     )
     jit_eval_step = jax.jit(
@@ -702,7 +723,7 @@ def main(cfg: DictConfig):
             metrics_sharding,
             (sampled_frame_sharding, sampled_frame_sharding, sampled_frame_sharding),
         ),
-        static_argnames=("lpips_weight", "sigreg_weight", "preprocessor"),
+        static_argnames=("lpips_weight", "lpips_frame_stride", "preprocessor"),
     )
     train_key = put_replicated(train_key, mesh)
     eval_key = put_replicated(eval_key, mesh)
@@ -801,7 +822,7 @@ def main(cfg: DictConfig):
             train_key,
             jnp.asarray(current_step, dtype=jnp.int32),
             float(cfg.lpips_weight),
-            float(cfg.sigreg_weight),
+            int(cfg.lpips_frame_stride),
             preprocessor,
         )
         train_dispatched = time.monotonic()
@@ -847,7 +868,7 @@ def main(cfg: DictConfig):
                     jnp.asarray(step, dtype=jnp.int32),
                     jnp.asarray(batch_idx, dtype=jnp.int32),
                     float(cfg.lpips_weight),
-                    float(cfg.sigreg_weight),
+                    int(cfg.lpips_frame_stride),
                     preprocessor,
                 )
                 sampled_frames = host_local_batch(sampled_frames, mesh, batch_pspec)
