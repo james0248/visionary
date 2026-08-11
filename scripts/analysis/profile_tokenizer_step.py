@@ -33,6 +33,7 @@ def main():
     parser.add_argument("--override", action="append", default=[])
     parser.add_argument("--trace_dir")
     parser.add_argument("--tag", default="baseline")
+    parser.add_argument("--mode", choices=["full", "grad", "fwd"], default="full")
     args = parser.parse_args()
 
     cfg = OmegaConf.load(args.config)
@@ -68,8 +69,27 @@ def main():
     batch = jax.device_put(batch, NamedSharding(mesh, P("data")))
     state = jax.device_put(state, NamedSharding(mesh, P()))
 
+    from visionary.models.dreamer4.tokenizer import Tokenizer as _Tok
+
+    def fwd_fn(state_, batch_, key_, step_, lpips_weight, lpips_frame_stride, preprocessor):
+        recon, mask, latent = state_.apply_fn(
+            state_.params, batch_, method=_Tok.reconstruct, rngs={"sample": key_}
+        )
+        return state_, {"loss": jnp.mean(jnp.square(recon))}
+
+    def grad_fn(state_, batch_, key_, step_, lpips_weight, lpips_frame_stride, preprocessor):
+        def loss_fn(p):
+            recon, mask, latent = state_.apply_fn(
+                p, batch_, method=_Tok.reconstruct, rngs={"sample": key_}
+            )
+            return jnp.mean(jnp.square(recon))
+        loss, grads = jax.value_and_grad(loss_fn)(state_.params)
+        gnorm = jnp.sqrt(sum(jnp.sum(jnp.square(g)) for g in jax.tree.leaves(grads)))
+        return state_, {"loss": loss + 0 * gnorm}
+
+    step_fn = {"full": train_step, "grad": grad_fn, "fwd": fwd_fn}[args.mode]
     jit_step = jax.jit(
-        train_step,
+        step_fn,
         static_argnames=("lpips_weight", "lpips_frame_stride", "preprocessor"),
         donate_argnums=(0,),
     )
