@@ -154,7 +154,7 @@ def splash_attention(q, k, v, spec, scale):
         # Mosaic kernels cannot be auto-partitioned by GSPMD
         p = jax.sharding.PartitionSpec(SPLASH_AXIS)
         run = jax.shard_map(
-            run, mesh=SPLASH_MESH, in_specs=(p, p, p), out_specs=p
+            run, mesh=SPLASH_MESH, in_specs=(p, p, p), out_specs=p, check_vma=False
         )
     return run(q * scale, k, v)
 
