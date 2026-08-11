@@ -252,8 +252,6 @@ class DecodeRandomVideoClip(grain.RandomMapTransform):
         self.target_hz = target_hz
 
     def _stride_for(self, element: dict) -> int:
-        # records carry their native rate; a random window start covers every
-        # phase of the decimation, so no frame is unreachable
         if self.target_hz and element.get("fps", 0.0) > 0:
             return max(int(round(element["fps"] / self.target_hz)), 1)
         return self.stride
@@ -272,9 +270,8 @@ class DecodeRandomVideoClip(grain.RandomMapTransform):
 
 
 class WeightedVideoBytesDataSource(VideoBytesDataSource):
-    # samples each episode in proportion to its duration: grain draws records
-    # uniformly, so without this a 3s Bridge episode and a 90s SO-101 episode
-    # would contribute the same number of clips
+    """Repeats each record in the sampling index in proportion to its duration."""
+
     def __init__(self, data_dir: str, weight_seconds: float = 25.6):
         super().__init__(data_dir)
         base = epath.Path(data_dir)

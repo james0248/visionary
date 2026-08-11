@@ -71,7 +71,7 @@ class TokenizerEncoder(nn.Module):
 
     base: float
     temporal_layer_period: int = 4
-    temporal_layer_offset: int | None = None
+    temporal_layer_offset: int = 1
     remat: bool = False
     remat_policy: str | None = None
     bounded_latent: bool = True
@@ -159,7 +159,7 @@ class TokenizerDecoder(nn.Module):
 
     base: float
     temporal_layer_period: int = 4
-    temporal_layer_offset: int | None = None
+    temporal_layer_offset: int = 1
     remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
@@ -239,7 +239,7 @@ class Tokenizer(nn.Module):
 
     base: float
     temporal_layer_period: int = 4
-    temporal_layer_offset: int | None = None
+    temporal_layer_offset: int = 1
     decoder_num_layers: int | None = None
     decoder_model_dim: int | None = None
     decoder_num_heads: int | None = None

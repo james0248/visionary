@@ -29,8 +29,6 @@ dataset:
     _target_: visionary.dataset.WeightedVideoBytesDataSource
   clip_transform:
     _target_: visionary.dataset.DecodeRandomVideoClip
-    # shards are stored at native fps with fps in each record; the loader
-    # strides each record down to 5 Hz with a random phase
     target_hz: 5.0
   augment:
     _target_: visionary.dataset.AugmentVideoClip
@@ -39,8 +37,7 @@ dataset:
     contrast: 0.2
     saturation: 0.2
   frame_length: 16
-  # per process; a v6e-16 shards this 16 ways
-  batch_size: 128
+  batch_size: 32
   worker_count: 8
   num_threads: 8
   prefetch_buffer_size: 16
@@ -55,8 +52,6 @@ tokenizer:
   num_heads: 12
   num_kv_heads: 3
   temporal_layer_period: 4
-  # temporal attention as the second layer of each group, matching the
-  # open-dreamer reference; the default (last) is what old checkpoints use
   temporal_layer_offset: 1
   model_dim: 768
   mlp_hidden_dim: 2304

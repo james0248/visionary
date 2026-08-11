@@ -161,7 +161,7 @@ class SpatioTemporalTransformer(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     temporal_layer_period: int = 4
-    temporal_layer_offset: int | None = None
+    temporal_layer_offset: int = 1
     attention_logit_soft_cap: float | None = 50.0
     remat: bool = False
     remat_policy: str | None = None
@@ -178,9 +178,7 @@ class SpatioTemporalTransformer(nn.Module):
         temporal_rope_emb: tuple[jnp.ndarray, jnp.ndarray],
         temporal_mask: jnp.ndarray,
     ) -> jnp.ndarray:
-        if self.temporal_layer_offset is not None and not (
-            0 <= self.temporal_layer_offset < self.temporal_layer_period
-        ):
+        if not 0 <= self.temporal_layer_offset < self.temporal_layer_period:
             raise ValueError(
                 f"temporal_layer_offset={self.temporal_layer_offset} must be in "
                 f"[0, {self.temporal_layer_period})"
@@ -234,13 +232,7 @@ class SpatioTemporalTransformer(nn.Module):
                 block_idx += 1
             return rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=t), block_idx
 
-        # position of the temporal layer inside each group; the default keeps the
-        # original last-in-group layout that existing checkpoints were trained with
-        offset = (
-            self.temporal_layer_offset
-            if self.temporal_layer_offset is not None
-            else self.temporal_layer_period - 1
-        )
+        offset = self.temporal_layer_offset
         block_idx = 0
         num_groups = self.num_layers // self.temporal_layer_period
         for _ in range(num_groups):

@@ -1,7 +1,5 @@
-# SO-101 tokenizer v2 (TPU v6e-16 spot). Decodes mp4 clips on the fly from the
-# mixed-corpus shards (so101+bridge+soar, native fps per record). Provision a
-# Hyperdisk ML data disk holding /mnt/data/{train,eval} copied from
-# gs://visionary-uc1/so101/data/tokenizer/shards/ before launching.
+# Tokenizer v2 on v6e-16 spot; data disk holds /mnt/data/{train,eval} copied
+# from gs://visionary-uc1/so101/data/tokenizer/shards/.
 project: visionary-491008
 exp_name: tokenizer_v2
 checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${exp_name}
