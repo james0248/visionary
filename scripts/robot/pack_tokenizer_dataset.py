@@ -464,7 +464,7 @@ def save_analysis(analysis, analysis_prefix, dataset, source, workdir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--processed", default="gs://visionary-uc1/processed/v1")
+    parser.add_argument("--processed", default="gs://visionary-uc1/so101/data/processed/v1")
     parser.add_argument("--dataset", default="so101")
     parser.add_argument("--out", default="gs://visionary-uc1/so101/data/tokenizer/packed")
     parser.add_argument("--analysis", default="gs://visionary-uc1/so101/data/tokenizer/analysis")

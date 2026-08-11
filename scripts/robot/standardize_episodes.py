@@ -609,7 +609,7 @@ def main():
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num_shards", type=int, default=1)
     parser.add_argument("--raw", default="gs://visionary-uc1/raw")
-    parser.add_argument("--out", default="gs://visionary-uc1/processed/v1")
+    parser.add_argument("--out", default="gs://visionary-uc1/so101/data/processed/v1")
     parser.add_argument("--workdir", default="/mnt/work")
     parser.add_argument("--manifest", default="artifacts/so101/download_pool.json")
     parser.add_argument("--annotations", default="/mnt/work/language_annotations")
