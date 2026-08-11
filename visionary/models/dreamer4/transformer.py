@@ -89,12 +89,7 @@ def resolve_remat_policy(name: str | None):
 
 
 @lru_cache(maxsize=8)
-def _splash_kernel(n_latents, n_image, encoder, num_heads, seq_pad, interpret):
-    from jax.experimental.pallas.ops.tpu.splash_attention import (
-        splash_attention_kernel as sk,
-        splash_attention_mask as sm,
-    )
-
+def _splash_mask(n_latents, n_image, encoder, seq_pad):
     seq = n_latents + n_image
     mask = np.zeros((seq_pad, seq_pad), dtype=bool)
     mask[:n_latents, :seq] = True
@@ -105,7 +100,18 @@ def _splash_kernel(n_latents, n_image, encoder, num_heads, seq_pad, interpret):
         mask[:n_latents, n_latents:seq] = False
         mask[n_latents:seq, :n_latents] = True
     np.fill_diagonal(mask, True)
+    return mask
 
+
+def _splash_kernel(n_latents, n_image, encoder, num_heads, seq_pad, interpret):
+    # constructed per trace: the kernel closes over arrays it creates, and
+    # caching those across jit traces leaks tracers
+    from jax.experimental.pallas.ops.tpu.splash_attention import (
+        splash_attention_kernel as sk,
+        splash_attention_mask as sm,
+    )
+
+    mask = _splash_mask(n_latents, n_image, encoder, seq_pad)
     block = sk.BlockSizes(
         block_q=128, block_kv=128, block_kv_compute=128,
         block_q_dkv=128, block_kv_dkv=128, block_kv_dkv_compute=128,
