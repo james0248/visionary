@@ -194,9 +194,19 @@ def make_global_array_from_host(value, sharding: NamedSharding):
 
 
 def put_replicated(value, mesh: Mesh):
+    sharding = replicated_sharding(mesh)
     if jax.process_count() == 1:
-        return jax.device_put(value, replicated_sharding(mesh))
-    return multihost_utils.host_local_array_to_global_array(value, mesh, P())
+        return jax.device_put(value, sharding)
+    # host_local_array_to_global_array requires contiguous per-host subcubes,
+    # which TPU ICI-optimized meshes violate; assemble the replicated array
+    # from explicit per-device copies instead
+    value = jnp.asarray(value)
+    is_key = jnp.issubdtype(value.dtype, jax.dtypes.prng_key)
+    data = jax.random.key_data(value) if is_key else value
+    data = np.asarray(data)
+    arrays = [jax.device_put(data, d) for d in mesh.local_devices]
+    out = jax.make_array_from_single_device_arrays(data.shape, sharding, arrays)
+    return jax.random.wrap_key_data(out, impl=jax.random.key_impl(value)) if is_key else out
 
 
 def put_global_batch(batch: VideoDataset, batch_sharding: NamedSharding) -> VideoDataset:
@@ -207,7 +217,21 @@ def put_global_batch(batch: VideoDataset, batch_sharding: NamedSharding) -> Vide
 
 
 def host_local_batch(batch, mesh: Mesh, pspec: P):
-    return multihost_utils.global_array_to_host_local_array(batch, mesh, pspec)
+    if jax.process_count() == 1:
+        return batch
+
+    # global_array_to_host_local_array requires contiguous per-host subcubes;
+    # concatenate this host's unique leading-dim shards instead
+    def to_local(x):
+        shards = {}
+        for s in x.addressable_shards:
+            start = s.index[0].start if x.ndim and s.index else 0
+            shards.setdefault(start or 0, s.data)
+        return np.concatenate(
+            [np.asarray(shards[k]) for k in sorted(shards)], axis=0
+        ) if x.ndim else np.asarray(next(iter(shards.values())))
+
+    return jax.tree_util.tree_map(to_local, batch)
 
 
 def log_sharding_summary(tree, shardings, prefix: str, max_entries: int = 12) -> None:
