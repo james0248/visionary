@@ -74,6 +74,7 @@ checkpoint:
       _target_: orbax.checkpoint.CheckpointManagerOptions
       save_interval_steps: 1000
       max_to_keep: 5
+      keep_period: 20000
       enable_async_checkpointing: true
   resume_step: null
 
