@@ -725,6 +725,12 @@ def next_failure_event_uri(cfg: dict[str, Any], failure_prefix: str, last_proces
     return ""
 
 
+def latest_failure_event_uri(cfg: dict[str, Any], failure_prefix: str, fallback_uri: str) -> str:
+    # one crash writes a marker per worker; consume them as a single event
+    uris = list(gcs_list_objects(cfg, failure_prefix))
+    return max(uris) if uris else fallback_uri
+
+
 def failure_candidate_index(
     payload: dict[str, Any] | None,
     existing_index: int | None,
@@ -964,7 +970,9 @@ def main() -> None:
                     queued_resource_name=queued_resource_name(cfg["job"]["name"], index),
                     zone=candidate["zone"],
                 )
-            state["last_processed_failure_uri"] = failure_event_uri
+            state["last_processed_failure_uri"] = latest_failure_event_uri(
+                cfg, failure_prefix, failure_event_uri
+            )
             state["current_attempt_id"] = None
             state["current_candidate_index"] = None
             if failure_policy["mode"] == "retry" and (
