@@ -762,7 +762,7 @@ def main(cfg: DictConfig):
         export_model = should_export_model(step, force=force)
         if export_model:
             save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
-        if is_primary_process and export_model:
+        if export_model:
             save_preprocessor_export(
                 checkpoint_manager.directory,
                 step,
