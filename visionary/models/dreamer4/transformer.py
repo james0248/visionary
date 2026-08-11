@@ -82,6 +82,38 @@ def resolve_remat_policy(name: str | None):
     return policy
 
 
+QUERY_CHUNK = 139
+
+
+def chunked_attention(q, k, v, mask, scale):
+    # XLA:TPU materializes fp32 softmax logits (B, H, S, S) in HBM, which makes
+    # long-sequence attention bandwidth-bound. Chunking the query rows keeps
+    # each row's full logit vector (exact softmax, no reassociation) while
+    # bounding live logits to (B, H, chunk, S); checkpoint keeps the backward
+    # pass from storing them per chunk.
+    seq_len = q.shape[1]
+    if seq_len <= 256 or seq_len % QUERY_CHUNK:
+        return jax.nn.dot_product_attention(q, k, v, mask=mask, scale=scale)
+
+    n_chunks = seq_len // QUERY_CHUNK
+
+    @jax.checkpoint
+    def one_chunk(q_chunk, mask_chunk):
+        return jax.nn.dot_product_attention(q_chunk, k, v, mask=mask_chunk, scale=scale)
+
+    q_chunks = jnp.stack(jnp.split(q, n_chunks, axis=1))
+    if mask is not None:
+        mask = jnp.broadcast_to(mask, (*mask.shape[:-2], seq_len, mask.shape[-1]))
+        mask_chunks = jnp.stack(jnp.split(mask, n_chunks, axis=-2))
+    else:
+        mask_chunks = jnp.zeros((n_chunks, 0))
+    out = jax.lax.map(
+        lambda args: one_chunk(args[0], args[1] if mask is not None else None),
+        (q_chunks, mask_chunks),
+    )
+    return jnp.concatenate(list(out), axis=1)
+
+
 class Attention(nn.Module):
     model_dim: int
     num_heads: int
@@ -112,7 +144,7 @@ class Attention(nn.Module):
             q = apply_rotary_embedding(q, rope_emb[0], rope_emb[1])
             k = apply_rotary_embedding(k, rope_emb[0], rope_emb[1])
 
-        out = jax.nn.dot_product_attention(q, k, v, mask=mask, scale=1.0 / jnp.sqrt(self.head_dim))
+        out = chunked_attention(q, k, v, mask, 1.0 / jnp.sqrt(self.head_dim))
         out = rearrange(out, "b t h d -> b t (h d)")
         out = nn.Dense(self.model_dim, use_bias=False, dtype=self.dtype)(out)
 
