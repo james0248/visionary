@@ -568,18 +568,24 @@ def main(cfg: DictConfig):
         len(train_source),
         len(eval_source),
     )
-    batch_size_per_process = int(cfg.dataset.batch_size)
+    batch_size_global = int(cfg.dataset.batch_size)
+    if batch_size_global % process_count != 0:
+        raise ValueError(
+            "cfg.dataset.batch_size is global and must be divisible by the process count; "
+            f"got batch_size={batch_size_global} process_count={process_count}"
+        )
+    batch_size_per_process = batch_size_global // process_count
     if fsdp_enabled and batch_size_per_process % local_device_count != 0:
         raise ValueError(
-            "cfg.dataset.batch_size is interpreted per process and must be divisible by "
+            "global batch_size / process_count must be divisible by "
             "jax.local_device_count() for FSDP input sharding; got "
-            f"batch_size={batch_size_per_process} local_device_count={local_device_count}"
+            f"per_process={batch_size_per_process} local_device_count={local_device_count}"
         )
     logger.info(
-        "Batch layout: per_process=%d per_device=%d global=%d",
+        "Batch layout: global=%d per_process=%d per_device=%d",
+        batch_size_global,
         batch_size_per_process,
         batch_size_per_process // local_device_count if fsdp_enabled else batch_size_per_process,
-        batch_size_per_process * process_count,
     )
     worker_count = int(cfg.dataset.worker_count)
     num_threads = int(cfg.dataset.num_threads)
