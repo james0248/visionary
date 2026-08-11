@@ -3150,7 +3150,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=0.24.0" },
     { name = "hydra-core", specifier = ">=1.3.2" },
     { name = "importlib-resources", specifier = ">=6.5.2" },
-    { name = "jax", specifier = ">=0.9.1" },
+    { name = "jax", specifier = ">=0.10.2" },
     { name = "jaxlpips", specifier = ">=1.2.0" },
     { name = "moviepy", specifier = ">=2.2.1" },
     { name = "opencv-python-headless", specifier = ">=4.10.0.84" },
