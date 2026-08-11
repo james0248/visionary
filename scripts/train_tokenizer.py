@@ -25,6 +25,7 @@ from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import VideoDataset
 from visionary.lpips import LPIPS
+from visionary.models.dreamer4 import transformer
 from visionary.models.dreamer4.tokenizer import Tokenizer
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
@@ -527,6 +528,9 @@ def main(cfg: DictConfig):
     mesh, fsdp_enabled, fsdp_axis_size = build_fsdp_mesh(cfg)
     log_sharding = bool(cfg_select(cfg, "fsdp.log_sharding", True))
     batch_pspec = batch_partition_spec() if fsdp_enabled else P()
+    if fsdp_enabled:
+        transformer.SPLASH_MESH = mesh
+        transformer.SPLASH_AXIS = (DATA_AXIS, FSDP_AXIS)
     batch_sharding = NamedSharding(mesh, batch_pspec)
     metrics_sharding = replicated_sharding(mesh)
 
