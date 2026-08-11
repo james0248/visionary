@@ -14,6 +14,11 @@ PRESETS = {
         mlp_hidden_dim=128, head_dim=32, channel_dim=8, resize_shape=[64, 64],
         pad_width=[0, 0], patch_size=16, base=10000.0, decoder_num_layers=4,
     ),
+    "mid": dict(
+        num_layers=4, num_latents=8, num_heads=4, num_kv_heads=2, model_dim=128,
+        mlp_hidden_dim=256, head_dim=32, channel_dim=8, resize_shape=[240, 320],
+        pad_width=[0, 0], patch_size=16, base=10000.0, decoder_num_layers=4,
+    ),
     "full": dict(
         num_layers=12, num_latents=256, num_heads=12, num_kv_heads=3, model_dim=768,
         mlp_hidden_dim=2304, head_dim=64, channel_dim=16, resize_shape=[240, 320],
@@ -21,7 +26,7 @@ PRESETS = {
         remat=True, remat_policy="dots_with_no_batch_dims_saveable",
     ),
 }
-BATCH = {"tiny": (2, 4), "full": (2, 16)}
+BATCH = {"tiny": (2, 4), "mid": (2, 4), "full": (2, 16)}
 
 
 def tree_norms(tree):
@@ -33,9 +38,9 @@ def tree_norms(tree):
     return {k: float(np.sqrt(v)) for k, v in sorted(flat.items())}
 
 
-def fingerprint(preset: str) -> dict:
+def fingerprint(preset: str, splash: bool = False) -> dict:
     cfg = dict(PRESETS[preset])
-    model = Tokenizer(**cfg, dtype=jnp.float32)
+    model = Tokenizer(**cfg, use_splash=splash, dtype=jnp.float32)
     batch_size, frames = BATCH[preset]
     tokens = (cfg["resize_shape"][0] // 16) * (cfg["resize_shape"][1] // 16)
     patch_dim = 16 * 16 * 3
@@ -103,9 +108,10 @@ def main():
     parser.add_argument("--save")
     parser.add_argument("--check")
     parser.add_argument("--rtol", type=float, default=2e-4)
+    parser.add_argument("--splash", action="store_true")
     args = parser.parse_args()
 
-    result = fingerprint(args.preset)
+    result = fingerprint(args.preset, splash=args.splash)
     if args.save:
         Path(args.save).write_text(json.dumps(result, indent=1))
         print(f"saved fingerprint to {args.save} (loss={result['loss']:.8g})")
