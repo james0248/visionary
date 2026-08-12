@@ -22,18 +22,6 @@ class DynamicsDataset(DynamicsBatch):
     prev_action: np.ndarray
 
 
-def align_actions_to_frames(
-    actions: np.ndarray,
-    prev_action: np.ndarray | None = None,
-) -> np.ndarray:
-    aligned = np.empty_like(actions)
-    if prev_action is None:
-        prev_action = np.full(actions.shape[1:], -1, dtype=actions.dtype)
-    aligned[0] = prev_action
-    aligned[1:] = actions[:-1]
-    return aligned
-
-
 def _array_record_source_with_paths(data_dir: str) -> tuple[grain.ArrayRecordDataSource, list[str]]:
     shard_dir = epath.Path(data_dir)
     paths = sorted(

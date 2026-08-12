@@ -57,10 +57,6 @@ def latest_model_export_step(directory: str | PathLike[str]) -> int | None:
     return _latest_export_step(model_export_dir(directory))
 
 
-def latest_preprocessor_export_step(directory: str | PathLike[str]) -> int | None:
-    return _latest_export_step(preprocessor_export_dir(directory))
-
-
 def _find_preprocessor_export_step(
     directory: str | PathLike[str],
     step: int | None,
