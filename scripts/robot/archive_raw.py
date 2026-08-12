@@ -13,9 +13,7 @@ def run(cmd: list[str], check: bool = True) -> int:
 
 
 def gcs_exists(uri: str) -> bool:
-    return subprocess.run(
-        ["gcloud", "storage", "ls", uri], capture_output=True
-    ).returncode == 0
+    return subprocess.run(["gcloud", "storage", "ls", uri], capture_output=True).returncode == 0
 
 
 def push(local: Path, uri: str) -> None:
@@ -39,7 +37,7 @@ def fetch(repo_id: str, local: Path, workers: int, attempts: int = 8) -> None:
         except Exception as exc:
             if attempt == attempts - 1:
                 raise
-            delay = min(600, (2 ** attempt) * 30) + random.uniform(0, 20)
+            delay = min(600, (2**attempt) * 30) + random.uniform(0, 20)
             print(f"  retry {attempt + 1}/{attempts} after {delay:.0f}s: {type(exc).__name__}", flush=True)
             time.sleep(delay)
 
@@ -66,7 +64,8 @@ def archive_so101(args) -> None:
         push(local, dest)
         subprocess.run(
             ["gcloud", "storage", "cp", "-", f"{dest}/_DONE"],
-            input=b"ok", check=False,
+            input=b"ok",
+            check=False,
         )
         shutil.rmtree(local, ignore_errors=True)
         print(f"[{n}/{len(mine)}] done {repo}", flush=True)
@@ -92,12 +91,23 @@ def archive_soar(args) -> None:
         return
     local = Path(args.workdir) / "soar"
     local.mkdir(parents=True, exist_ok=True)
-    run([
-        "wget", "--recursive", "--no-parent", "--no-host-directories",
-        "--cut-dirs=2", "--reject", "index.html*", "--continue",
-        "--tries=5", "--directory-prefix", str(local),
-        "https://rail.eecs.berkeley.edu/datasets/soar_release/",
-    ], check=False)
+    run(
+        [
+            "wget",
+            "--recursive",
+            "--no-parent",
+            "--no-host-directories",
+            "--cut-dirs=2",
+            "--reject",
+            "index.html*",
+            "--continue",
+            "--tries=5",
+            "--directory-prefix",
+            str(local),
+            "https://rail.eecs.berkeley.edu/datasets/soar_release/",
+        ],
+        check=False,
+    )
     push(local, dest)
     subprocess.run(["gcloud", "storage", "cp", "-", f"{dest}/_DONE"], input=b"ok", check=False)
     shutil.rmtree(local, ignore_errors=True)

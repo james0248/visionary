@@ -95,9 +95,9 @@ def train_step(
 
         return loss, (jnp.mean(q_values), jnp.mean(q_values_next))
 
-    (loss, (mean_q, mean_q_next)), grads = jax.value_and_grad(
-        compute_loss, argnums=1, has_aux=True
-    )(state, state.params, gamma, batch)
+    (loss, (mean_q, mean_q_next)), grads = jax.value_and_grad(compute_loss, argnums=1, has_aux=True)(
+        state, state.params, gamma, batch
+    )
     state = state.apply_gradients(grads=grads)
     return state, loss, mean_q, mean_q_next
 
@@ -179,9 +179,7 @@ def main(cfg: DictConfig):
     global_step = 0
     while global_step < cfg.total_steps:
         key, action_key = jax.random.split(key)
-        epsilon = linear_schedule(
-            cfg.start_epsilon, cfg.end_epsilon, exploration_duration, global_step
-        )
+        epsilon = linear_schedule(cfg.start_epsilon, cfg.end_epsilon, exploration_duration, global_step)
         actions = select_action(state, obs, action_key, jnp.array(epsilon), action_size)
         next_obs, rewards, terminated, truncated, infos = env.step(jax.device_get(actions))
         dones = np.logical_or(terminated, truncated)

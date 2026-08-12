@@ -97,9 +97,7 @@ def accelerator_type_from_family(family: str, chip_count: int) -> str:
     valid_chip_counts = VALID_CHIP_COUNTS[family]
     if chip_count not in valid_chip_counts:
         valid_values = ", ".join(str(value) for value in sorted(valid_chip_counts))
-        raise ValueError(
-            f"Unsupported chip count {chip_count} for {family}. Valid values: {valid_values}."
-        )
+        raise ValueError(f"Unsupported chip count {chip_count} for {family}. Valid values: {valid_values}.")
     if family == "v4":
         return f"v4-{chip_count * 2}"
     if family == "v5e":
@@ -120,8 +118,7 @@ def resolve_zone(family: str, spot: bool, region: str | None, zone: str | None) 
     if zone is not None:
         if zone not in allowed_zones:
             raise ValueError(
-                f"Zone {zone} is not allowed for {family} with spot={spot}. "
-                f"Allowed zones: {', '.join(allowed_zones)}."
+                f"Zone {zone} is not allowed for {family} with spot={spot}. Allowed zones: {', '.join(allowed_zones)}."
             )
         if region is not None and not zone.startswith(f"{region}-"):
             raise ValueError(f"Zone {zone} does not belong to region {region}.")
@@ -130,9 +127,7 @@ def resolve_zone(family: str, spot: bool, region: str | None, zone: str | None) 
     if region is None:
         if len(allowed_zones) == 1:
             return allowed_zones[0]
-        raise ValueError(
-            f"Multiple zones are available for {family} with spot={spot}; specify `region` or `zone`."
-        )
+        raise ValueError(f"Multiple zones are available for {family} with spot={spot}; specify `region` or `zone`.")
 
     matching_zones = [candidate_zone for candidate_zone in allowed_zones if candidate_zone.startswith(f"{region}-")]
     if not matching_zones:
@@ -193,9 +188,7 @@ def normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     spot = bool(candidate.get("spot", False))
     max_chips = TRC_ACCELERATOR_LIMITS.get((family, zone, spot))
     if max_chips is None:
-        raise ValueError(
-            f"Candidate {accelerator_type} in {zone} with spot={spot} is outside the TRC allowlist."
-        )
+        raise ValueError(f"Candidate {accelerator_type} in {zone} with spot={spot} is outside the TRC allowlist.")
     if chip_count > max_chips:
         raise ValueError(
             f"Candidate {accelerator_type} requests {chip_count} chips, which exceeds the "
@@ -238,9 +231,7 @@ def resolve_gcloud_retry_policy(cfg: dict[str, Any] | None) -> tuple[int, float,
     return attempts, backoff_seconds, max_backoff_seconds
 
 
-def is_transient_gcloud_failure(
-    cmd: list[str], result: subprocess.CompletedProcess[str]
-) -> bool:
+def is_transient_gcloud_failure(cmd: list[str], result: subprocess.CompletedProcess[str]) -> bool:
     if not cmd or Path(str(cmd[0])).name != "gcloud":
         return False
 
@@ -298,8 +289,7 @@ def run_subprocess(
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         summary = detail[-1] if detail else f"exit code {result.returncode}"
         print(
-            "[watcher] Transient gcloud failure; retrying in "
-            f"{next_delay:.0f}s ({attempt}/{attempts - 1}). {summary}"
+            f"[watcher] Transient gcloud failure; retrying in {next_delay:.0f}s ({attempt}/{attempts - 1}). {summary}"
         )
         time.sleep(next_delay)
         next_delay = min(max_backoff_seconds, max(next_delay * 2, 1.0))
@@ -347,9 +337,7 @@ def gcloud_command(cfg: dict[str, Any], *args: str, json_output: bool = False) -
     return cmd
 
 
-def maybe_describe_queued_resource(
-    cfg: dict[str, Any], queued_resource_name: str, zone: str
-) -> dict[str, Any] | None:
+def maybe_describe_queued_resource(cfg: dict[str, Any], queued_resource_name: str, zone: str) -> dict[str, Any] | None:
     cmd = gcloud_command(
         cfg,
         "compute",
@@ -407,11 +395,7 @@ def queued_resource_state(desc: dict[str, Any]) -> str:
 def queued_resource_state_details(desc: dict[str, Any]) -> str:
     state = desc.get("state")
     if isinstance(state, dict):
-        details = {
-            key: value
-            for key, value in state.items()
-            if key != "state" and value not in (None, "", [], {})
-        }
+        details = {key: value for key, value in state.items() if key != "state" and value not in (None, "", [], {})}
         if details:
             return json.dumps(details, sort_keys=True)
 
@@ -518,11 +502,7 @@ def gcs_list_objects(cfg: dict[str, Any], uri_prefix: str) -> list[str]:
             output=result.stdout,
             stderr=result.stderr,
         )
-    return sorted(
-        line.strip()
-        for line in result.stdout.splitlines()
-        if line.strip().startswith("gs://")
-    )
+    return sorted(line.strip() for line in result.stdout.splitlines() if line.strip().startswith("gs://"))
 
 
 def gcs_write_text(cfg: dict[str, Any], uri: str, text: str) -> None:
@@ -823,10 +803,7 @@ def create_queued_resource(
         f"--runtime-version={candidate['runtime_version']}",
         f"--service-account={cfg['starter_service_account']['email']}",
         f"--scopes={','.join(cfg['starter_service_account'].get('scopes', ['https://www.googleapis.com/auth/cloud-platform']))}",
-        (
-            f"--metadata-from-file="
-            f"startup-script={starter_script},visionary-job-json={payload_path}"
-        ),
+        (f"--metadata-from-file=startup-script={starter_script},visionary-job-json={payload_path}"),
     )
 
     cmd.append(f"--accelerator-type={candidate['accelerator_type']}")
@@ -970,9 +947,7 @@ def main() -> None:
                     queued_resource_name=queued_resource_name(cfg["job"]["name"], index),
                     zone=candidate["zone"],
                 )
-            state["last_processed_failure_uri"] = latest_failure_event_uri(
-                cfg, failure_prefix, failure_event_uri
-            )
+            state["last_processed_failure_uri"] = latest_failure_event_uri(cfg, failure_prefix, failure_event_uri)
             state["current_attempt_id"] = None
             state["current_candidate_index"] = None
             if failure_policy["mode"] == "retry" and (
@@ -1005,8 +980,7 @@ def main() -> None:
                 save_watcher_state(cfg, state)
                 max_retries = failure_policy["max_retries"]
                 raise SystemExit(
-                    "[watcher] Training failed and retry budget is exhausted "
-                    f"({failure_retries}/{max_retries})."
+                    f"[watcher] Training failed and retry budget is exhausted ({failure_retries}/{max_retries})."
                 )
             save_watcher_state(cfg, state)
             raise SystemExit("[watcher] Training failed; see failure event details above.")

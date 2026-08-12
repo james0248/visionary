@@ -73,8 +73,7 @@ def build_fsdp_mesh(cfg: DictConfig) -> tuple[Mesh, bool, int]:
         raise ValueError(f"fsdp.data_axis_size must be >= 1, got {data_axis_size}")
     if device_count % data_axis_size != 0:
         raise ValueError(
-            "fsdp.data_axis_size must divide jax.device_count(); got "
-            f"{data_axis_size=} and device_count={device_count}"
+            f"fsdp.data_axis_size must divide jax.device_count(); got {data_axis_size=} and device_count={device_count}"
         )
 
     fsdp_axis_size = device_count // data_axis_size
@@ -155,9 +154,7 @@ def put_replicated(value, mesh: Mesh):
 def put_single_device_tree(tree):
     sharding = jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
     return jax.tree_util.tree_map(
-        lambda value: jax.device_put(jax.device_get(value), sharding)
-        if hasattr(value, "shape")
-        else value,
+        lambda value: jax.device_put(jax.device_get(value), sharding) if hasattr(value, "shape") else value,
         tree,
     )
 
@@ -329,9 +326,7 @@ def log_video_eval(
     psnr = np.asarray(
         [
             peak_signal_noise_ratio(target_frame, predicted_frame, data_range=1.0)
-            for target_frame, predicted_frame in zip(
-                generated_ground_truth, generated_rollout, strict=True
-            )
+            for target_frame, predicted_frame in zip(generated_ground_truth, generated_rollout, strict=True)
         ],
         dtype=np.float32,
     )
@@ -343,15 +338,12 @@ def log_video_eval(
                 data_range=1.0,
                 channel_axis=-1,
             )
-            for target_frame, predicted_frame in zip(
-                generated_ground_truth, generated_rollout, strict=True
-            )
+            for target_frame, predicted_frame in zip(generated_ground_truth, generated_rollout, strict=True)
         ],
         dtype=np.float32,
     )
     metric_rows = [
-        [context_frames + idx, idx + 1, float(psnr[idx]), float(ssim[idx])]
-        for idx in range(generated_frames)
+        [context_frames + idx, idx + 1, float(psnr[idx]), float(ssim[idx])] for idx in range(generated_frames)
     ]
 
     video_path = output_dir / f"eval_side_by_side_{step}.mp4"
@@ -467,8 +459,7 @@ def main(cfg: DictConfig):
     )
     effective_read_threads = max(cfg.dataset.worker_count, 1) * cfg.dataset.num_threads
     logger.info(
-        "Data loader settings: worker_count=%d num_threads=%d "
-        "prefetch_buffer_size=%d effective_read_threads=%d",
+        "Data loader settings: worker_count=%d num_threads=%d prefetch_buffer_size=%d effective_read_threads=%d",
         cfg.dataset.worker_count,
         cfg.dataset.num_threads,
         cfg.dataset.prefetch_buffer_size,
@@ -493,9 +484,7 @@ def main(cfg: DictConfig):
             f"batch_size={batch_size_per_process} local_device_count={local_device_count}"
         )
     global_batch_size = batch_size_per_process * process_count
-    batch_size_per_device = (
-        batch_size_per_process // local_device_count if fsdp_enabled else batch_size_per_process
-    )
+    batch_size_per_device = batch_size_per_process // local_device_count if fsdp_enabled else batch_size_per_process
     bootstrap_start_step = int(cfg.loss.bootstrap_start_step)
     target_bootstrap_ratio = float(cfg.loss.bootstrap_ratio)
     target_bootstrap_rows = min(
@@ -536,14 +525,15 @@ def main(cfg: DictConfig):
             if len(indices) < len(lengths):
                 logger.info(
                     "Length %d (span %d): %d/%d records fit",
-                    sequence_length, span, len(indices), len(lengths),
+                    sequence_length,
+                    span,
+                    len(indices),
+                    len(lengths),
                 )
             source = SubsetDataSource(source, indices)
         sampler = grain.IndexSampler(
             num_records=len(source),
-            shard_options=grain.ShardByJaxProcess()
-            if process_count > 1
-            else grain.NoSharding(),
+            shard_options=grain.ShardByJaxProcess() if process_count > 1 else grain.NoSharding(),
             shuffle=shuffle,
             seed=seed,
         )
@@ -715,8 +705,7 @@ def main(cfg: DictConfig):
         total_video_frames = video_context_frames + generated_frames
         context_step_count = 1 << (int(cfg.dynamics.max_step_size) - 1)
         context_tau_used = (
-            min(max(round(requested_tau * context_step_count), 0), context_step_count - 1)
-            / context_step_count
+            min(max(round(requested_tau * context_step_count), 0), context_step_count - 1) / context_step_count
         )
 
         @jax.jit
@@ -729,15 +718,11 @@ def main(cfg: DictConfig):
         ):
             video = jnp.asarray(video_batch[:1, :total_video_frames], dtype=jnp.float32)
             eval_action_dtype = (
-                jnp.float32
-                if str(cfg.dynamics.get("action_mode", "discrete")) == "continuous"
-                else jnp.int32
+                jnp.float32 if str(cfg.dynamics.get("action_mode", "discrete")) == "continuous" else jnp.int32
             )
             actions = jnp.asarray(action_batch[:1, :total_video_frames], dtype=eval_action_dtype)
             rollout_video = jnp.zeros_like(video)
-            rollout_video = rollout_video.at[:, :video_context_frames].set(
-                video[:, :video_context_frames]
-            )
+            rollout_video = rollout_video.at[:, :video_context_frames].set(video[:, :video_context_frames])
 
             rollout_key = jax.random.key(rollout_seed)
             context_noise_key, sample_noise_key = jax.random.split(rollout_key)
@@ -758,21 +743,14 @@ def main(cfg: DictConfig):
                 sample_steps=int(video_cfg.sample_steps),
                 method=DynamicsModel.generate_rollout,
             )
-            ground_truth_patches = tokenizer.apply(
-                tokenizer_variables, video, method=type(tokenizer).decode
-            )
-            rollout_patches = tokenizer.apply(
-                tokenizer_variables, rollout_video, method=type(tokenizer).decode
-            )
-            ground_truth_images = preprocessor.patches_to_images(ground_truth_patches).astype(
-                jnp.float32
-            )
+            ground_truth_patches = tokenizer.apply(tokenizer_variables, video, method=type(tokenizer).decode)
+            rollout_patches = tokenizer.apply(tokenizer_variables, rollout_video, method=type(tokenizer).decode)
+            ground_truth_images = preprocessor.patches_to_images(ground_truth_patches).astype(jnp.float32)
             rollout_images = preprocessor.patches_to_images(rollout_patches).astype(jnp.float32)
             return ground_truth_images, rollout_images
 
         logger.info(
-            "Video eval ready; context=%d generated=%d sample_steps=%d requested_tau=%.4f "
-            "used_tau=%.4f",
+            "Video eval ready; context=%d generated=%d sample_steps=%d requested_tau=%.4f used_tau=%.4f",
             int(video_cfg.context_frames),
             int(video_cfg.generated_frames),
             int(video_cfg.sample_steps),
@@ -811,9 +789,7 @@ def main(cfg: DictConfig):
         if should_export_model(step, force=force):
             save_model_export(checkpoint_manager.directory, step, cfg.dynamics, state.params)
 
-    train_iterators = {
-        sequence_length: iter(loader) for sequence_length, loader in train_loaders.items()
-    }
+    train_iterators = {sequence_length: iter(loader) for sequence_length, loader in train_loaders.items()}
 
     def iterator_items():
         if cfg.overfit_single_batch:
@@ -871,8 +847,7 @@ def main(cfg: DictConfig):
     timing_start_step = step
     timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
     logger.info(
-        "Asynchronous timing mode enabled for dynamics training; timing logs are averaged "
-        "over each logging window."
+        "Asynchronous timing mode enabled for dynamics training; timing logs are averaged over each logging window."
     )
     while True:
         current_step = step
@@ -930,14 +905,10 @@ def main(cfg: DictConfig):
             if cfg.overfit_single_batch:
                 eval_batches = [overfit_batches[cfg.dataset.eval.batch_length]]
             else:
-                eval_batches = list(
-                    itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches)
-                )
+                eval_batches = list(itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches))
             if fsdp_enabled:
                 global_eval_batch_counts = np.asarray(
-                    multihost_utils.process_allgather(
-                        np.asarray(len(eval_batches), dtype=np.int32)
-                    )
+                    multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
                 )
                 eval_batches = eval_batches[: int(np.min(global_eval_batch_counts))]
 
@@ -984,8 +955,7 @@ def main(cfg: DictConfig):
 
         if timing_stats is not None:
             logger.info(
-                "Step %d - seq: %d, sps: %.2f, data: %.3fs, transfer: %.3fs, "
-                "compute: %.3fs, wall: %.3fs, eval: %.3fs",
+                "Step %d - seq: %d, sps: %.2f, data: %.3fs, transfer: %.3fs, compute: %.3fs, wall: %.3fs, eval: %.3fs",
                 step,
                 sequence_length,
                 timing_stats["sps"],

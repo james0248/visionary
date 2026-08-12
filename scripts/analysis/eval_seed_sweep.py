@@ -66,9 +66,7 @@ def main() -> None:
     args = parser.parse_args()
     steps_list = [int(s) for s in args.steps_list.split(",")]
 
-    latents = grain.ArrayRecordDataSource(
-        sorted(str(p) for p in Path(args.data_dir).glob("*.arecord"))
-    )
+    latents = grain.ArrayRecordDataSource(sorted(str(p) for p in Path(args.data_dir).glob("*.arecord")))
     raw_index = build_raw_index(args.raw_shards_dir)
 
     def sample_for(index: int):
@@ -104,11 +102,7 @@ def main() -> None:
         vel = np.abs(np.diff(a[:, :-1], axis=0)).mean(axis=1)
         closed = grip[1:] < np.median(grip)
         moving = vel > np.median(vel)
-        cands = [
-            t
-            for t in range(args.context_frames, total)
-            if closed[t - 1] and moving[t - 1]
-        ]
+        cands = [t for t in range(args.context_frames, total) if closed[t - 1] and moving[t - 1]]
         if len(cands) < 2:
             cands = list(range(args.context_frames, total))
         picks = np.linspace(0, len(cands) - 1, min(args.frames_per_clip, len(cands)))
@@ -121,13 +115,9 @@ def main() -> None:
     )
     logger.info("Restored dynamics params from step %d", step)
 
-    tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(
-        args.tokenizer_checkpoint_dir
-    )
+    tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(args.tokenizer_checkpoint_dir)
     tokenizer = instantiate(tokenizer_cfg)
-    preprocessor = TokenizerPreprocessor.from_config(
-        restore_preprocessor_export(args.tokenizer_checkpoint_dir)
-    )
+    preprocessor = TokenizerPreprocessor.from_config(restore_preprocessor_export(args.tokenizer_checkpoint_dir))
 
     @functools.partial(jax.jit, static_argnames=("sample_steps",))
     def tf_one(params, video, actions, t, seed, sample_steps):
@@ -184,7 +174,9 @@ def main() -> None:
         logger.info("clip %d: carry frames %s", index, frames)
 
         raw = decode_video_window(
-            raw_index[sample["key"]], sample["absolute_start"], sample["span"],
+            raw_index[sample["key"]],
+            sample["absolute_start"],
+            sample["span"],
             tuple(preprocessor.resize_shape),
         )[:: args.stride][:total]
         recon = to_u8(decode_batch(truth[np.array(frames)]))
@@ -196,16 +188,14 @@ def main() -> None:
             for ss in steps_list:
                 for s in range(args.num_seeds):
                     z = np.asarray(
-                        jax.device_get(
-                            tf_one(params, video, actions, t, 50_000 + 1000 * index + 10 * t + s, ss)
-                        )
+                        jax.device_get(tf_one(params, video, actions, t, 50_000 + 1000 * index + 10 * t + s, ss))
                     )[0]
                     lat.append(z)
                     errs[f"ss{ss}_seed{s}"] = float(np.linalg.norm(z - truth[t]))
             px = to_u8(decode_batch(np.stack(lat)))
 
             header = [
-                label(raw[t - 1], f"raw t-1={t-1}"),
+                label(raw[t - 1], f"raw t-1={t - 1}"),
                 label(raw[t], f"raw t={t}"),
                 label(recon[fi], f"recon t={t}"),
             ] + [np.zeros_like(raw[0])] * (args.num_seeds - 3)
@@ -225,8 +215,7 @@ def main() -> None:
             "frames": frames,
             "errors": clip_report,
         }
-        logger.info("clip %d done (%d frames x %d samples)", index, len(frames),
-                    len(steps_list) * args.num_seeds)
+        logger.info("clip %d done (%d frames x %d samples)", index, len(frames), len(steps_list) * args.num_seeds)
 
     (output_dir / "seed_sweep.json").write_text(json.dumps(report, indent=2))
     logger.info("Wrote %s", output_dir / "seed_sweep.json")

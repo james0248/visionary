@@ -10,15 +10,36 @@ from visionary.models.dreamer4.tokenizer import Tokenizer
 
 PRESETS = {
     "tiny": dict(
-        num_layers=4, num_latents=8, num_heads=2, num_kv_heads=1, model_dim=64,
-        mlp_hidden_dim=128, head_dim=32, channel_dim=8, resize_shape=[64, 64],
-        pad_width=[0, 0], patch_size=16, base=10000.0, decoder_num_layers=4,
+        num_layers=4,
+        num_latents=8,
+        num_heads=2,
+        num_kv_heads=1,
+        model_dim=64,
+        mlp_hidden_dim=128,
+        head_dim=32,
+        channel_dim=8,
+        resize_shape=[64, 64],
+        pad_width=[0, 0],
+        patch_size=16,
+        base=10000.0,
+        decoder_num_layers=4,
     ),
     "full": dict(
-        num_layers=12, num_latents=256, num_heads=12, num_kv_heads=3, model_dim=768,
-        mlp_hidden_dim=2304, head_dim=64, channel_dim=16, resize_shape=[240, 320],
-        pad_width=[0, 0], patch_size=16, base=10000.0, decoder_num_layers=8,
-        remat=True, remat_policy="dots_with_no_batch_dims_saveable",
+        num_layers=12,
+        num_latents=256,
+        num_heads=12,
+        num_kv_heads=3,
+        model_dim=768,
+        mlp_hidden_dim=2304,
+        head_dim=64,
+        channel_dim=16,
+        resize_shape=[240, 320],
+        pad_width=[0, 0],
+        patch_size=16,
+        base=10000.0,
+        decoder_num_layers=8,
+        remat=True,
+        remat_policy="dots_with_no_batch_dims_saveable",
     ),
 }
 BATCH = {"tiny": (2, 4), "full": (2, 16)}
@@ -41,12 +62,8 @@ def fingerprint(preset: str) -> dict:
     patch_dim = 16 * 16 * 3
 
     rng = np.random.default_rng(0)
-    video = jnp.asarray(
-        rng.integers(0, 256, (batch_size, frames, tokens, patch_dim)), jnp.float32
-    )
-    params = model.init(
-        {"params": jax.random.key(0), "sample": jax.random.key(1)}, {"video": video}
-    )
+    video = jnp.asarray(rng.integers(0, 256, (batch_size, frames, tokens, patch_dim)), jnp.float32)
+    params = model.init({"params": jax.random.key(0), "sample": jax.random.key(1)}, {"video": video})
 
     def loss_fn(p):
         recon, mask, latent = model.apply(
@@ -86,8 +103,16 @@ def compare(baseline: dict, current: dict, rtol: float) -> list[str]:
         if rel > rtol:
             failures.append(f"{name}: baseline={a:.8g} current={b:.8g} rel={rel:.3g}")
 
-    for key in ("loss", "recon_mean", "recon_std", "recon_absmax",
-                "latent_mean", "latent_std", "latent_absmax", "mask_ratio"):
+    for key in (
+        "loss",
+        "recon_mean",
+        "recon_std",
+        "recon_absmax",
+        "latent_mean",
+        "latent_std",
+        "latent_absmax",
+        "mask_ratio",
+    ):
         close(baseline[key], current[key], key)
     for key in baseline["grad_norms"]:
         if key not in current["grad_norms"]:

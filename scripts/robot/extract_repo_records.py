@@ -25,7 +25,9 @@ def shard_list(src: str) -> list[str]:
     if src.startswith("gs://"):
         out = subprocess.run(
             ["gcloud", "storage", "ls", src.rstrip("/") + "/*.arecord"],
-            check=True, capture_output=True, text=True,
+            check=True,
+            capture_output=True,
+            text=True,
         ).stdout.split()
         return sorted(out)
     return sorted(str(p) for p in Path(src).glob("*.arecord"))
@@ -58,7 +60,8 @@ def main() -> None:
             tmp.close()
             subprocess.run(
                 ["gcloud", "storage", "cp", path, tmp.name],
-                check=True, capture_output=True,
+                check=True,
+                capture_output=True,
             )
             local = tmp.name
         source = ArrayRecordDataSource([local])

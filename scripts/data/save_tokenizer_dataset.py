@@ -32,9 +32,7 @@ def list_episode_files(data_dir: str) -> list[epath.Path]:
     return sorted(files, key=lambda p: p.as_posix())
 
 
-def split_files(
-    files: list[epath.Path], eval_ratio: float, seed: int
-) -> tuple[list[epath.Path], list[epath.Path]]:
+def split_files(files: list[epath.Path], eval_ratio: float, seed: int) -> tuple[list[epath.Path], list[epath.Path]]:
     train, eval_ = [], []
     for path in files:
         digest = hashlib.sha256(f"{seed}:{path.as_posix()}".encode("utf-8")).digest()
@@ -67,9 +65,7 @@ def encode_record(arrays: dict[str, np.ndarray], start: int, stop: int) -> bytes
     return buffer.getvalue()
 
 
-def encode_episode(
-    path: str, chunk_length: int, overlap: int, frame_length: int
-) -> tuple[list[bytes], bool]:
+def encode_episode(path: str, chunk_length: int, overlap: int, frame_length: int) -> tuple[list[bytes], bool]:
     with open(path, "rb") as f, np.load(f) as episode:
         arrays = {key: np.asarray(episode[key]) for key in episode.files}
     length = int(arrays["frames"].shape[0])
@@ -85,9 +81,7 @@ def encode_episode(
     return records, False
 
 
-def iter_encoded_episodes(
-    files: list[epath.Path], chunk_length: int, overlap: int, frame_length: int, workers: int
-):
+def iter_encoded_episodes(files: list[epath.Path], chunk_length: int, overlap: int, frame_length: int, workers: int):
     paths = [path.as_posix() for path in files]
     if workers == 1:
         for path in paths:
@@ -121,9 +115,7 @@ def write_shards(
     shard_path = output_dir / f"shard-{shard_idx:05d}.arecord"
     writer = ArrayRecordWriter(shard_path.as_posix(), "group_size:1")
 
-    for records, skipped_episode in iter_encoded_episodes(
-        files, chunk_length, overlap, frame_length, workers
-    ):
+    for records, skipped_episode in iter_encoded_episodes(files, chunk_length, overlap, frame_length, workers):
         skipped += int(skipped_episode)
         for record in records:
             writer.write(record)
@@ -162,13 +154,9 @@ def main():
 
     overlap = 0 if args.overlap is None else args.overlap
     if not 0 <= overlap < args.chunk_length:
-        raise ValueError(
-            f"Expected 0 <= overlap < chunk_length, got {overlap=} {args.chunk_length=}"
-        )
+        raise ValueError(f"Expected 0 <= overlap < chunk_length, got {overlap=} {args.chunk_length=}")
     if args.frame_length > args.chunk_length:
-        raise ValueError(
-            f"frame_length={args.frame_length} must be <= chunk_length={args.chunk_length}"
-        )
+        raise ValueError(f"frame_length={args.frame_length} must be <= chunk_length={args.chunk_length}")
 
     logger.info("Listing episodes from %s", args.input_dir)
     files = list_episode_files(args.input_dir)
@@ -178,9 +166,7 @@ def main():
     logger.info("Found %d episodes", len(files))
 
     train_files, eval_files = split_files(files, args.eval_ratio, args.seed)
-    logger.info(
-        "Split: %d train, %d eval, workers=%d", len(train_files), len(eval_files), args.workers
-    )
+    logger.info("Split: %d train, %d eval, workers=%d", len(train_files), len(eval_files), args.workers)
 
     output = epath.Path(args.output_dir)
     n_train, skipped_train = write_shards(

@@ -28,9 +28,7 @@ def apply_rotary_embedding(x: jnp.ndarray, cos: jnp.ndarray, sin: jnp.ndarray) -
     return jnp.concatenate([rotated_left, rotated_right], axis=-1)
 
 
-def create_temporal_rope(
-    base: float, head_dim: int, seq_len: int
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+def create_temporal_rope(base: float, head_dim: int, seq_len: int) -> tuple[jnp.ndarray, jnp.ndarray]:
     half_head_dim = head_dim // 2
     theta = 1 / (base ** (jnp.arange(half_head_dim) / half_head_dim))
     indicies = jnp.arange(seq_len)
@@ -40,9 +38,7 @@ def create_temporal_rope(
     return cos_emb, sin_emb
 
 
-def create_spatial_rope(
-    base: float, head_dim: int, x_len: int, y_len: int
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+def create_spatial_rope(base: float, head_dim: int, x_len: int, y_len: int) -> tuple[jnp.ndarray, jnp.ndarray]:
     quarter_head_dim = head_dim // 4
     theta = 1 / (base ** (jnp.arange(quarter_head_dim) / quarter_head_dim))
     indicies = jnp.arange(x_len * y_len)
@@ -60,17 +56,6 @@ def create_spatial_rope(
     cos_emb = jnp.concatenate([x_cos_emb, y_cos_emb], axis=-1)
     sin_emb = jnp.concatenate([x_sin_emb, y_sin_emb], axis=-1)
     return cos_emb, sin_emb
-
-
-def pad_rope_for_latents(
-    rope_cos: jnp.ndarray, rope_sin: jnp.ndarray, num_latents: int
-) -> tuple[jnp.ndarray, jnp.ndarray]:
-    latent_cos = jnp.ones((num_latents, rope_cos.shape[-1]), dtype=rope_cos.dtype)
-    latent_sin = jnp.zeros((num_latents, rope_sin.shape[-1]), dtype=rope_sin.dtype)
-    return (
-        jnp.concatenate([latent_cos, rope_cos], axis=0),
-        jnp.concatenate([latent_sin, rope_sin], axis=0),
-    )
 
 
 def resolve_remat_policy(name: str | None):
@@ -180,8 +165,7 @@ class SpatioTemporalTransformer(nn.Module):
     ) -> jnp.ndarray:
         if not 0 <= self.temporal_layer_offset < self.temporal_layer_period:
             raise ValueError(
-                f"temporal_layer_offset={self.temporal_layer_offset} must be in "
-                f"[0, {self.temporal_layer_period})"
+                f"temporal_layer_offset={self.temporal_layer_offset} must be in [0, {self.temporal_layer_period})"
             )
         if self.num_layers % self.temporal_layer_period != 0:
             raise ValueError(

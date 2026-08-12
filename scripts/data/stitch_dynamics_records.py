@@ -30,9 +30,9 @@ PER_FRAME_KEYS = ("frames", "actions", "state", "rewards")
 
 
 def group_key(payload: dict) -> tuple:
-    return tuple(
-        str(payload[k]) for k in ("repo", "episode", "camera", "augment_copy") if k in payload
-    ) + (int(payload["episode_id"]),)
+    return tuple(str(payload[k]) for k in ("repo", "episode", "camera", "augment_copy") if k in payload) + (
+        int(payload["episode_id"]),
+    )
 
 
 def merge(chunks: list[dict]) -> dict:
@@ -61,9 +61,7 @@ def main() -> None:
     parser.add_argument("--records_per_shard", type=int, default=64)
     args = parser.parse_args()
 
-    source = grain.ArrayRecordDataSource(
-        sorted(str(p) for p in Path(args.input_dir).glob("*.arecord"))
-    )
+    source = grain.ArrayRecordDataSource(sorted(str(p) for p in Path(args.input_dir).glob("*.arecord")))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if any(output_dir.glob("*.arecord")):
@@ -87,13 +85,9 @@ def main() -> None:
             for key in PER_FRAME_KEYS:
                 if key in record:
                     record[key] = episode[key][start:stop]
-            record["start_index"] = np.asarray(
-                int(episode["start_index"]) + start, dtype=np.int32
-            )
+            record["start_index"] = np.asarray(int(episode["start_index"]) + start, dtype=np.int32)
             if start > 0:
-                record["prev_action"] = np.asarray(
-                    episode["actions"][start - 1], dtype=episode["actions"].dtype
-                )
+                record["prev_action"] = np.asarray(episode["actions"][start - 1], dtype=episode["actions"].dtype)
             buffer = io.BytesIO()
             np.savez(buffer, **record)
             if writer is None or written % args.records_per_shard == 0:
@@ -128,7 +122,12 @@ def main() -> None:
     arr = np.array(lengths)
     logger.info(
         "Wrote %d records (%d shards, %d dropped short) | frames min %d median %d max %d",
-        written, shard_idx, dropped, arr.min(), int(np.median(arr)), arr.max(),
+        written,
+        shard_idx,
+        dropped,
+        arr.min(),
+        int(np.median(arr)),
+        arr.max(),
     )
 
 

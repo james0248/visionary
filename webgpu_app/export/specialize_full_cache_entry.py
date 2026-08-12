@@ -31,8 +31,7 @@ from webgpu_app.export.export_dreamer4_onnx import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create the packed WebGPU full-cache entry dynamics graph from the exported "
-            "full-cache entry graph."
+            "Create the packed WebGPU full-cache entry dynamics graph from the exported full-cache entry graph."
         )
     )
     parser.add_argument("--asset_dir", type=Path, required=True)
@@ -90,10 +89,7 @@ def constant_fold_small_nodes(model: onnx.ModelProto) -> int:
     changed = True
     while changed:
         changed = False
-        initializers = {
-            initializer.name: numpy_helper.to_array(initializer)
-            for initializer in model.graph.initializer
-        }
+        initializers = {initializer.name: numpy_helper.to_array(initializer) for initializer in model.graph.initializer}
         new_nodes = []
         replacements: dict[str, np.ndarray] = {}
 
@@ -108,11 +104,7 @@ def constant_fold_small_nodes(model: onnx.ModelProto) -> int:
                         axes = initializers[node.input[1]].astype(np.int64).tolist()
                     else:
                         axes = attrs.get("axes")
-                    value = (
-                        np.squeeze(data)
-                        if axes is None
-                        else np.squeeze(data, axis=normalize_axes(axes, data.ndim))
-                    )
+                    value = np.squeeze(data) if axes is None else np.squeeze(data, axis=normalize_axes(axes, data.ndim))
                 elif output and node.op_type == "Unsqueeze" and node.input[0] in initializers:
                     data = initializers[node.input[0]]
                     attrs = attr_map(node)
@@ -135,17 +127,11 @@ def constant_fold_small_nodes(model: onnx.ModelProto) -> int:
                         axis=int(attr_map(node).get("axis", 0)),
                     )
                 elif (
-                    output
-                    and node.op_type == "Sub"
-                    and node.input[0] in initializers
-                    and node.input[1] in initializers
+                    output and node.op_type == "Sub" and node.input[0] in initializers and node.input[1] in initializers
                 ):
                     value = initializers[node.input[0]] - initializers[node.input[1]]
                 elif (
-                    output
-                    and node.op_type == "Mul"
-                    and node.input[0] in initializers
-                    and node.input[1] in initializers
+                    output and node.op_type == "Mul" and node.input[0] in initializers and node.input[1] in initializers
                 ):
                     value = initializers[node.input[0]] * initializers[node.input[1]]
             except Exception:
@@ -190,9 +176,7 @@ def specialize_model(
         model = onnx.load(source_path.as_posix(), load_external_data=True)
         fixed = fixed_full_cache_inputs(source_spec, context_length)
         replace_initializers(model, fixed)
-        kept_inputs = [
-            graph_input for graph_input in model.graph.input if graph_input.name not in fixed
-        ]
+        kept_inputs = [graph_input for graph_input in model.graph.input if graph_input.name not in fixed]
         del model.graph.input[:]
         model.graph.input.extend(kept_inputs)
         folded = constant_fold_small_nodes(model)
@@ -233,9 +217,7 @@ def specialize_model(
         zero_softmax_bias_report = remove_zero_softmax_bias_adds_for_webgpu(target_path)
         cache_layer_gather_report = rewrite_cache_layer_slices_as_gather_for_webgpu(target_path)
         one_position_rotary_report = rewrite_one_position_rotary_transposes_for_webgpu(target_path)
-        final_output_head_slice_report = rewrite_final_output_head_slice_transposes_for_webgpu(
-            target_path
-        )
+        final_output_head_slice_report = rewrite_final_output_head_slice_transposes_for_webgpu(target_path)
         shared_gather_add_fold_report = fold_shared_gather_add_constants_for_webgpu(target_path)
         swiglu_rank2_report = rewrite_swiglu_rank2_islands_for_webgpu(target_path)
 
@@ -336,10 +318,7 @@ def tensor_spec_from_value_info(value_info: onnx.ValueInfoProto) -> dict[str, An
     }.get(tensor_type.elem_type)
     if dtype is None:
         raise ValueError(f"Unsupported tensor elem_type {tensor_type.elem_type}")
-    shape = [
-        int(dim.dim_value) if dim.HasField("dim_value") else str(dim.dim_param)
-        for dim in tensor_type.shape.dim
-    ]
+    shape = [int(dim.dim_value) if dim.HasField("dim_value") else str(dim.dim_param) for dim in tensor_type.shape.dim]
     return {"dtype": dtype, "shape": shape}
 
 
@@ -374,70 +353,42 @@ def update_manifest(
                 "source_export": source_spec["name"],
                 "context_length": validation["context_length"],
                 "folded_constant_nodes": specialization["folded_constant_nodes"],
-                "rotary_embedding_rewrites": specialization["rotary_embedding_rewrite"].get(
-                    "rewrites", 0
-                ),
-                "packed_gemm_rewrites": specialization["packed_gemm_rewrite"].get(
+                "rotary_embedding_rewrites": specialization["rotary_embedding_rewrite"].get("rewrites", 0),
+                "packed_gemm_rewrites": specialization["packed_gemm_rewrite"].get("rewrites", {}),
+                "packed_qkv_partial_head_split_rewrites": specialization["packed_qkv_partial_head_split_rewrite"].get(
                     "rewrites", {}
                 ),
-                "packed_qkv_partial_head_split_rewrites": specialization[
-                    "packed_qkv_partial_head_split_rewrite"
-                ].get("rewrites", {}),
-                "q_head_split_gather_rewrites": specialization[
-                    "q_head_split_gather_rewrite"
-                ].get("rewrites", {}),
-                "attention_scale_folding": specialization["attention_scale_folding"].get(
+                "q_head_split_gather_rewrites": specialization["q_head_split_gather_rewrite"].get("rewrites", {}),
+                "attention_scale_folding": specialization["attention_scale_folding"].get("rewrites", {}),
+                "zero_softmax_bias_add_prunes": specialization["zero_softmax_bias_add_prune"].get("rewrites", 0),
+                "cache_layer_gather_rewrites": specialization["cache_layer_gather_rewrite"].get("rewrites", {}),
+                "one_position_rotary_transpose_rewrites": specialization["one_position_rotary_transpose_rewrite"].get(
                     "rewrites", {}
                 ),
-                "zero_softmax_bias_add_prunes": specialization[
-                    "zero_softmax_bias_add_prune"
-                ].get("rewrites", 0),
-                "cache_layer_gather_rewrites": specialization[
-                    "cache_layer_gather_rewrite"
-                ].get("rewrites", {}),
-                "one_position_rotary_transpose_rewrites": specialization[
-                    "one_position_rotary_transpose_rewrite"
-                ].get("rewrites", {}),
                 "final_output_head_slice_transpose_rewrites": specialization[
                     "final_output_head_slice_transpose_rewrite"
                 ].get("rewrites", 0),
-                "shared_gather_add_constant_folds": specialization[
-                    "shared_gather_add_constant_fold"
-                ].get("rewrites", 0),
-                "swiglu_rank2_island_rewrites": specialization[
-                    "swiglu_rank2_island_rewrite"
-                ].get("rewrites", 0),
+                "shared_gather_add_constant_folds": specialization["shared_gather_add_constant_fold"].get(
+                    "rewrites", 0
+                ),
+                "swiglu_rank2_island_rewrites": specialization["swiglu_rank2_island_rewrite"].get("rewrites", 0),
             },
             "packed_gemm_rewrite": specialization["packed_gemm_rewrite"],
-            "packed_qkv_partial_head_split_rewrite": specialization[
-                "packed_qkv_partial_head_split_rewrite"
-            ],
+            "packed_qkv_partial_head_split_rewrite": specialization["packed_qkv_partial_head_split_rewrite"],
             "q_head_split_gather_rewrite": specialization["q_head_split_gather_rewrite"],
             "attention_scale_folding": specialization["attention_scale_folding"],
             "zero_softmax_bias_add_prune": specialization["zero_softmax_bias_add_prune"],
             "cache_layer_gather_rewrite": specialization["cache_layer_gather_rewrite"],
-            "one_position_rotary_transpose_rewrite": specialization[
-                "one_position_rotary_transpose_rewrite"
-            ],
-            "final_output_head_slice_transpose_rewrite": specialization[
-                "final_output_head_slice_transpose_rewrite"
-            ],
-            "shared_gather_add_constant_fold": specialization[
-                "shared_gather_add_constant_fold"
-            ],
-            "swiglu_rank2_island_rewrite": specialization[
-                "swiglu_rank2_island_rewrite"
-            ],
+            "one_position_rotary_transpose_rewrite": specialization["one_position_rotary_transpose_rewrite"],
+            "final_output_head_slice_transpose_rewrite": specialization["final_output_head_slice_transpose_rewrite"],
+            "shared_gather_add_constant_fold": specialization["shared_gather_add_constant_fold"],
+            "swiglu_rank2_island_rewrite": specialization["swiglu_rank2_island_rewrite"],
             "validation": validation,
         }
     )
     manifest["exports"] = [item for item in manifest["exports"] if item["name"] != target_name]
     insert_at = next(
-        (
-            index + 1
-            for index, item in enumerate(manifest["exports"])
-            if item["name"] == source_spec["name"]
-        ),
+        (index + 1 for index, item in enumerate(manifest["exports"]) if item["name"] == source_spec["name"]),
         len(manifest["exports"]),
     )
     manifest["exports"].insert(insert_at, entry)
@@ -461,9 +412,7 @@ def update_collection_manifest(asset_dir: Path, target_path: Path, target_name: 
         "path": relative_path,
         "sha256": sha256_file(target_path),
     }
-    game_entry["files"] = [
-        item for item in game_entry.get("files", []) if item.get("path") != relative_path
-    ]
+    game_entry["files"] = [item for item in game_entry.get("files", []) if item.get("path") != relative_path]
     game_entry["files"].append(file_entry)
     game_entry["files"].sort(key=lambda item: item["path"])
     game_entry["total_bytes"] = int(sum(item["bytes"] for item in game_entry["files"]))

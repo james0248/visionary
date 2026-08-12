@@ -21,9 +21,7 @@ class LPIPS(nnx.Module):
 
     def __call__(self, ref: jax.Array, tgt: jax.Array):
         if ref.shape != tgt.shape:
-            raise ValueError(
-                f"Expected LPIPS inputs to have the same shape, got {ref.shape} and {tgt.shape}"
-            )
+            raise ValueError(f"Expected LPIPS inputs to have the same shape, got {ref.shape} and {tgt.shape}")
 
         combined = scale_shift(jnp.concatenate([ref, tgt], axis=0))
         combined_feats = self.model(combined)
@@ -35,9 +33,7 @@ class LPIPS(nnx.Module):
             tgt_ft = pair_feats[batch_size:]
             layer_dists.append(
                 jnp.mean(
-                    jnp.sum(
-                        ((normalise(ref_ft) - normalise(tgt_ft)) ** 2) * w, axis=3, keepdims=True
-                    ),
+                    jnp.sum(((normalise(ref_ft) - normalise(tgt_ft)) ** 2) * w, axis=3, keepdims=True),
                     axis=(1, 2),
                     keepdims=True,
                 )

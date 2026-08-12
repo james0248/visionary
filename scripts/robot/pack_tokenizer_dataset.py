@@ -63,9 +63,7 @@ def list_sources(processed, dataset):
     prefix = f"{processed}/{dataset}"
     if is_gcs(processed):
         out = run(["gcloud", "storage", "ls", prefix + "/"], text=True).stdout
-        return sorted(
-            line.rstrip("/").rsplit("/", 1)[-1] for line in out.splitlines() if line.endswith("/")
-        )
+        return sorted(line.rstrip("/").rsplit("/", 1)[-1] for line in out.splitlines() if line.endswith("/"))
     return sorted(d.name for d in Path(prefix).iterdir() if d.is_dir())
 
 
@@ -109,9 +107,7 @@ def camera_metrics(video, n_frames: int = 24, hw: tuple[int, int] = (96, 128)) -
 
     h, w = std.shape
     bh, bw = h // 5, w // 5
-    edge = np.concatenate(
-        [std[:bh].ravel(), std[-bh:].ravel(), std[:, :bw].ravel(), std[:, -bw:].ravel()]
-    )
+    edge = np.concatenate([std[:bh].ravel(), std[-bh:].ravel(), std[:, :bw].ravel(), std[:, -bw:].ravel()])
     edge_ratio = float(edge.mean() / max(std[bh:-bh, bw:-bw].mean(), 1e-6))
 
     shifts = []
@@ -201,8 +197,12 @@ def episode_qc(action: np.ndarray, fps: float) -> dict:
 
 
 ANALYSIS_PARAMS = {
-    "motion_deg_s": MOTION_DEG_S, "pad_s": PAD_S, "window_s": WINDOW_S,
-    "min_keep_s": MIN_KEEP_S, "static_max": STATIC_MAX, "shift_min": SHIFT_MIN,
+    "motion_deg_s": MOTION_DEG_S,
+    "pad_s": PAD_S,
+    "window_s": WINDOW_S,
+    "min_keep_s": MIN_KEEP_S,
+    "static_max": STATIC_MAX,
+    "shift_min": SHIFT_MIN,
 }
 
 
@@ -250,8 +250,13 @@ def analyze_source(source, entries, fps, probe_episodes, trim):
                 "keep": n >= 3,
             }
 
-    return {"source": source, "fps": fps, "cameras": cameras, "episodes": episodes,
-            "params": {**ANALYSIS_PARAMS, "probe_episodes": probe_episodes, "trim": trim}}
+    return {
+        "source": source,
+        "fps": fps,
+        "cameras": cameras,
+        "episodes": episodes,
+        "params": {**ANALYSIS_PARAMS, "probe_episodes": probe_episodes, "trim": trim},
+    }
 
 
 def probe_dims(video_bytes):
@@ -359,9 +364,7 @@ def pack_source(source, entries, analysis, args, out_path):
             cam = meta["camera"]["orig_name"]
             if cam in fixed and cam not in dims:
                 dims[cam] = probe_dims(read_member(tar_path, files["video.mp4"]))
-        off_aspect = {
-            c for c in fixed if not dims[c][1] or abs(dims[c][0] / dims[c][1] - args.aspect) > 0.02
-        }
+        off_aspect = {c for c in fixed if not dims[c][1] or abs(dims[c][0] / dims[c][1] - args.aspect) > 0.02}
         fixed -= off_aspect
     else:
         off_aspect = set()
@@ -574,9 +577,7 @@ def main():
                 flush=True,
             )
         except Exception as exc:  # noqa: BLE001
-            print(
-                f"[{position}/{len(todo)}] FAILED {source}: {type(exc).__name__}: {exc}", flush=True
-            )
+            print(f"[{position}/{len(todo)}] FAILED {source}: {type(exc).__name__}: {exc}", flush=True)
         finally:
             if staged:
                 shutil.rmtree(local, ignore_errors=True)
@@ -585,8 +586,7 @@ def main():
     report_path.write_text(json.dumps(report, indent=1))
     total = sum(r.get("records", 0) for r in report)
     print(
-        f"PACK_COMPLETE dataset={args.dataset} shard={args.shard} "
-        f"sources={len(report)} records={total}",
+        f"PACK_COMPLETE dataset={args.dataset} shard={args.shard} sources={len(report)} records={total}",
         flush=True,
     )
 

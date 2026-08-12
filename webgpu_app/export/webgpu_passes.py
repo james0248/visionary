@@ -84,9 +84,7 @@ def run_webgpu_passes(
         layout_rewrite = disabled(exported_paths, "--skip_singleton_reshape_rewrite")
         gqa_repeat_rewrite = disabled(exported_paths, "--skip_singleton_reshape_rewrite")
         head_projection_rewrite = disabled(exported_paths, "--skip_singleton_reshape_rewrite")
-        packed_qkv_head_projection_rewrite = disabled(
-            exported_paths, "--skip_singleton_reshape_rewrite"
-        )
+        packed_qkv_head_projection_rewrite = disabled(exported_paths, "--skip_singleton_reshape_rewrite")
     else:
         layout_rewrite = run_all(exported_paths, rewrites["singleton_reshapes"])
         gqa_repeat_rewrite = run_all(exported_paths, rewrites["gqa_repeats"])
@@ -124,18 +122,14 @@ def run_webgpu_passes(
         "packed_qkv_head_projection_rewrite": packed_qkv_head_projection_rewrite,
         "head_projection_rewrite": head_projection_rewrite,
         "packed_gemm_rewrite": packed_gemm_rewrite,
-        "packed_qkv_partial_head_split_rewrite": run_all(
-            exported_paths, rewrites["packed_qkv_partial_head_split"]
-        ),
+        "packed_qkv_partial_head_split_rewrite": run_all(exported_paths, rewrites["packed_qkv_partial_head_split"]),
         "q_head_split_gather_rewrite": run_all(exported_paths, rewrites["q_head_split_gather"]),
         "slide_static_cache_rewrite": {
             name: {"enabled": False, "reason": "full-cache entry graph has no static slide inputs"}
             for name, path in exported_paths.items()
         },
         "rmsnorm_rewrite": run_all(exported_paths, rewrites["rmsnorm"]),
-        "skip_simplified_layer_norm_rewrite": run_all(
-            exported_paths, rewrites["skip_simplified_layer_norm"]
-        ),
+        "skip_simplified_layer_norm_rewrite": run_all(exported_paths, rewrites["skip_simplified_layer_norm"]),
         "gather_index_rewrite": run_all(exported_paths, rewrites["gather_index"]),
         "rotary_embedding_rewrite": (
             run_all(exported_paths, rewrites["rotary_embedding"])
@@ -154,15 +148,9 @@ def run_webgpu_passes(
             name: rewrites["fuse_mha_attention"](path, enabled=options.fuse_mha_attention)
             for name, path in exported_paths.items()
         },
-        "attention_einsum_matmul_rewrite": disabled(
-            exported_paths, "attention Einsum -> MatMul is WASM-only"
-        ),
-        "static_head_merge_wasm_rewrite": disabled(
-            exported_paths, "static head merge Reshape is WASM-only"
-        ),
-        "singleton_key_attention_wasm_rewrite": disabled(
-            exported_paths, "singleton-key attention bypass is WASM-only"
-        ),
+        "attention_einsum_matmul_rewrite": disabled(exported_paths, "attention Einsum -> MatMul is WASM-only"),
+        "static_head_merge_wasm_rewrite": disabled(exported_paths, "static head merge Reshape is WASM-only"),
+        "singleton_key_attention_wasm_rewrite": disabled(exported_paths, "singleton-key attention bypass is WASM-only"),
         "decoder_rmsnorm_primitive_wasm_rewrite": disabled(
             exported_paths, "decoder RMSNorm primitive rewrite is WASM-only"
         ),
@@ -177,22 +165,16 @@ def run_webgpu_passes(
             for name, path in exported_paths.items()
         },
         "attention_scale_folding": {
-            name: rewrites["attention_scale_folding"](
-                path, enabled=not options.skip_attention_scale_folding
-            )
+            name: rewrites["attention_scale_folding"](path, enabled=not options.skip_attention_scale_folding)
             for name, path in exported_paths.items()
         },
         "zero_softmax_bias_add_prune": run_all(exported_paths, rewrites["zero_softmax_bias_adds"]),
         "spatial_qk_head_layout_rewrite": {
-            name: rewrites["spatial_qk_head_layout"](
-                path, enabled=not options.skip_spatial_qk_head_layout_rewrite
-            )
+            name: rewrites["spatial_qk_head_layout"](path, enabled=not options.skip_spatial_qk_head_layout_rewrite)
             for name, path in exported_paths.items()
         },
         "temporal_attention_bhsd_rewrite": {
-            name: rewrites["temporal_attention_bhsd"](
-                path, enabled=not options.skip_temporal_attention_bhsd_rewrite
-            )
+            name: rewrites["temporal_attention_bhsd"](path, enabled=not options.skip_temporal_attention_bhsd_rewrite)
             for name, path in exported_paths.items()
         },
         "final_z_only_rewrite": {

@@ -65,9 +65,7 @@ def restore_params(cfg: OmegaConf, checkpoint_dir: str, step: int | None, sample
     sharding = jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
     abstract_state = jax.tree_util.tree_map(
         lambda leaf: (
-            jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, sharding=sharding)
-            if hasattr(leaf, "shape")
-            else leaf
+            jax.ShapeDtypeStruct(leaf.shape, leaf.dtype, sharding=sharding) if hasattr(leaf, "shape") else leaf
         ),
         abstract_state,
     )

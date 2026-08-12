@@ -162,9 +162,7 @@ class DynamicsModel(nn.Module):
         )(z.astype(self.dtype))
 
         num_tokens = 1 + 1 + self.num_registers + num_obs_tokens
-        tokens = jnp.concatenate(
-            [action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2
-        )
+        tokens = jnp.concatenate([action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2)
 
         spatial_rope = create_temporal_rope(self.base, self.head_dim, num_tokens)
         temporal_rope = create_temporal_rope(self.base, self.head_dim, seq_len)
@@ -173,9 +171,7 @@ class DynamicsModel(nn.Module):
         query_positions = jnp.arange(seq_len)[:, None]
         key_positions = jnp.arange(seq_len)[None, :]
         temporal_mask = key_positions <= query_positions
-        temporal_mask = temporal_mask & (
-            key_positions >= query_positions - (self.context_length - 1)
-        )
+        temporal_mask = temporal_mask & (key_positions >= query_positions - (self.context_length - 1))
         temporal_mask = jnp.broadcast_to(
             temporal_mask[None, :, :],
             (batch_size, seq_len, seq_len),
@@ -246,9 +242,9 @@ class DynamicsModel(nn.Module):
         past_mask_z = past_mask[None, :, None, None]
         past_mask_t = jnp.broadcast_to(past_mask[None, :], (batch_size, seq_len))
 
-        noised_prefix = context_tau * z_prefix.astype(jnp.float32) + (
-            1.0 - context_tau
-        ) * z_context_noise.astype(jnp.float32)
+        noised_prefix = context_tau * z_prefix.astype(jnp.float32) + (1.0 - context_tau) * z_context_noise.astype(
+            jnp.float32
+        )
         base_z = jnp.where(
             past_mask_z,
             noised_prefix,
@@ -270,9 +266,7 @@ class DynamicsModel(nn.Module):
             step_levels = base_step_levels.at[:, target_index].set(sample_step_level)
             signal_levels = base_signal_levels.at[:, target_index].set(sample_signal_level)
             z_input = base_z.at[:, target_index].set(current_z)
-            predicted = self(z_input, actions, step_levels, signal_levels)[:, target_index].astype(
-                jnp.float32
-            )
+            predicted = self(z_input, actions, step_levels, signal_levels)[:, target_index].astype(jnp.float32)
 
             tau = jnp.float32(sample_signal_level / sample_step_count)
             velocity = (predicted - current_z) / jnp.maximum(1.0 - tau, 1e-6)
@@ -400,8 +394,7 @@ class DynamicsModel(nn.Module):
 
             bootstrap_target = jax.lax.stop_gradient((b1 + b2) / 2.0)
             bootstrap_loss = (
-                (z_pred_1[bootstrap_slice] - z_noised_bootstrap)
-                - (1.0 - tau_bootstrap) * bootstrap_target
+                (z_pred_1[bootstrap_slice] - z_noised_bootstrap) - (1.0 - tau_bootstrap) * bootstrap_target
             ) ** 2
             weighted_bootstrap_loss = loss_weight[bootstrap_slice] * bootstrap_loss
             bootstrap_loss_metric = jnp.mean(weighted_bootstrap_loss)
@@ -424,9 +417,7 @@ class DynamicsModel(nn.Module):
             "active_bootstrap_loss": bootstrap_loss_metric,
             "mean_tau": jnp.mean(tau),
             "mean_step_size": jnp.mean(step_sizes),
-            "min_step_fraction": jnp.mean(
-                (step_levels == self.max_step_size - 1).astype(jnp.float32)
-            ),
+            "min_step_fraction": jnp.mean((step_levels == self.max_step_size - 1).astype(jnp.float32)),
             "bootstrap_active_fraction": jnp.mean(bootstrap_row_mask.astype(jnp.float32)),
             "bootstrap_active_rows": jnp.asarray(bootstrap_rows, dtype=jnp.float32),
             "bootstrap_active_rows_global": jnp.asarray(bootstrap_rows, dtype=jnp.float32),

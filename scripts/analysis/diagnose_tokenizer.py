@@ -98,14 +98,10 @@ def main():
             method=Tokenizer.reconstruct,
             rngs={"sample": jax.random.key(args.seed + 1)},
         )
-        reconstructed = preprocessor.patches_to_images(
-            reconstructed_patches.astype(jnp.float32)
-        )
+        reconstructed = preprocessor.patches_to_images(reconstructed_patches.astype(jnp.float32))
         mask_images = preprocessor.mask_to_images(mask).astype(original.dtype)
         masked = original * (1.0 - mask_images)
-        panels = jax.device_get(
-            [jnp.clip(p, 0.0, 1.0) for p in (original, masked, reconstructed)]
-        )
+        panels = jax.device_get([jnp.clip(p, 0.0, 1.0) for p in (original, masked, reconstructed)])
         imageio.imwrite(output, build_grid([np.asarray(p) for p in panels], rng))
         print(output)
         return
@@ -148,10 +144,7 @@ def main():
     }
 
     panels = jax.device_get(
-        [
-            jnp.clip(p, 0.0, 1.0)
-            for p in (original, reconstructed, zero_latent, shuffled_latent, mean_baseline)
-        ]
+        [jnp.clip(p, 0.0, 1.0) for p in (original, reconstructed, zero_latent, shuffled_latent, mean_baseline)]
     )
     imageio.imwrite(
         output,

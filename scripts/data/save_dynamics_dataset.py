@@ -108,19 +108,14 @@ class BuildConfig:
             raise ValueError(f"Expected frame_length > 0, got {args.frame_length}")
         if not 0 <= args.chunk_overlap < args.chunk_length:
             raise ValueError(
-                f"Expected 0 <= chunk_overlap < chunk_length, got "
-                f"{args.chunk_overlap=} {args.chunk_length=}"
+                f"Expected 0 <= chunk_overlap < chunk_length, got {args.chunk_overlap=} {args.chunk_length=}"
             )
         if encode_window_length <= 0:
-            raise ValueError(
-                f"Expected encode_window_length > 0, got {encode_window_length}"
-            )
+            raise ValueError(f"Expected encode_window_length > 0, got {encode_window_length}")
         if args.encode_batch_size <= 0:
             raise ValueError(f"Expected encode_batch_size > 0, got {args.encode_batch_size}")
         if args.encode_episode_batch_size <= 0:
-            raise ValueError(
-                f"Expected encode_episode_batch_size > 0, got {args.encode_episode_batch_size}"
-            )
+            raise ValueError(f"Expected encode_episode_batch_size > 0, got {args.encode_episode_batch_size}")
         if args.read_workers <= 0:
             raise ValueError(f"Expected read_workers > 0, got {args.read_workers}")
         if args.prefetch_episodes <= 0:
@@ -250,8 +245,7 @@ class TokenizerEncoder:
 
         window_refs: list[tuple[int, int, int, int]] = []
         encoded = [
-            np.empty((len(frames), *self.latents_per_frame), dtype=self.build_cfg.latent_dtype)
-            for frames in episodes
+            np.empty((len(frames), *self.latents_per_frame), dtype=self.build_cfg.latent_dtype) for frames in episodes
         ]
         frame_shape = episodes[0].shape[1:]
         frame_dtype = episodes[0].dtype
@@ -284,9 +278,7 @@ class TokenizerEncoder:
         for batch_start in range(0, len(window_refs), self.build_cfg.encode_batch_size):
             batch_frames.fill(0)
             batch_lengths.fill(0)
-            batch_window_refs = window_refs[
-                batch_start : batch_start + self.build_cfg.encode_batch_size
-            ]
+            batch_window_refs = window_refs[batch_start : batch_start + self.build_cfg.encode_batch_size]
 
             for window_idx, (episode_idx, start, stop, _) in enumerate(batch_window_refs):
                 length = stop - start
@@ -359,9 +351,7 @@ def write_split(
         if not pending_episodes:
             return
 
-        latents_batch = encoder.encode_episodes(
-            [arrays["frames"] for _, arrays in pending_episodes]
-        )
+        latents_batch = encoder.encode_episodes([arrays["frames"] for _, arrays in pending_episodes])
         for (episode_id, arrays), latents in zip(pending_episodes, latents_batch, strict=True):
             bounds = record_bounds(
                 int(arrays["frames"].shape[0]),
@@ -490,9 +480,7 @@ def create_parser() -> argparse.ArgumentParser:
         default=min(8, os.cpu_count() or 1),
         help="Number of threads used to build ArrayRecord payload bytes after encoding.",
     )
-    parser.add_argument(
-        "--records_per_shard", type=int, default=1024, help="Maximum records per .arecord shard."
-    )
+    parser.add_argument("--records_per_shard", type=int, default=1024, help="Maximum records per .arecord shard.")
     parser.add_argument(
         "--latent_dtype",
         choices=("float16", "float32"),

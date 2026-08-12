@@ -57,12 +57,8 @@ def main():
     patches = preprocessor.preprocess_video(video_u8)
     batch = {"video": jnp.asarray(patches)}
 
-    params = model.init(
-        {"params": jax.random.key(0), "sample": jax.random.key(1)}, batch
-    )
-    state = TokenizerTrainState.create(
-        apply_fn=model.apply, params=params, tx=build_optimizer(cfg)
-    )
+    params = model.init({"params": jax.random.key(0), "sample": jax.random.key(1)}, batch)
+    state = TokenizerTrainState.create(apply_fn=model.apply, params=params, tx=build_optimizer(cfg))
     n_params = sum(x.size for x in jax.tree.leaves(params))
 
     mesh = jax.sharding.Mesh(np.asarray(jax.local_devices()), ("data",))
@@ -72,17 +68,14 @@ def main():
     from visionary.models.dreamer4.tokenizer import Tokenizer as _Tok
 
     def fwd_fn(state_, batch_, key_, step_, lpips_weight, lpips_frame_stride, preprocessor):
-        recon, mask, latent = state_.apply_fn(
-            state_.params, batch_, method=_Tok.reconstruct, rngs={"sample": key_}
-        )
+        recon, mask, latent = state_.apply_fn(state_.params, batch_, method=_Tok.reconstruct, rngs={"sample": key_})
         return state_, {"loss": jnp.mean(jnp.square(recon))}
 
     def grad_fn(state_, batch_, key_, step_, lpips_weight, lpips_frame_stride, preprocessor):
         def loss_fn(p):
-            recon, mask, latent = state_.apply_fn(
-                p, batch_, method=_Tok.reconstruct, rngs={"sample": key_}
-            )
+            recon, mask, latent = state_.apply_fn(p, batch_, method=_Tok.reconstruct, rngs={"sample": key_})
             return jnp.mean(jnp.square(recon))
+
         loss, grads = jax.value_and_grad(loss_fn)(state_.params)
         gnorm = jnp.sqrt(sum(jnp.sum(jnp.square(g)) for g in jax.tree.leaves(grads)))
         return state_, {"loss": loss + 0 * gnorm}
@@ -97,13 +90,23 @@ def main():
 
     def run(step_idx, state):
         return jit_step(
-            state, batch, key, step_idx,
-            float(cfg.lpips_weight), int(cfg.lpips_frame_stride), preprocessor,
+            state,
+            batch,
+            key,
+            step_idx,
+            float(cfg.lpips_weight),
+            int(cfg.lpips_frame_stride),
+            preprocessor,
         )
 
     lowered = jit_step.lower(
-        state, batch, key, 0,
-        float(cfg.lpips_weight), int(cfg.lpips_frame_stride), preprocessor,
+        state,
+        batch,
+        key,
+        0,
+        float(cfg.lpips_weight),
+        int(cfg.lpips_frame_stride),
+        preprocessor,
     )
     compiled = lowered.compile()
     cost = compiled.cost_analysis()

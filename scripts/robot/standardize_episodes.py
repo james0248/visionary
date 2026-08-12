@@ -206,9 +206,7 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
     cameras = sorted({p.parent.name.removeprefix("observation.images.") for p in video_files})
     issues = []
     if len(video_files) != len(episodes) * len(cameras):
-        issues.append(
-            f"video_count={len(video_files)} episodes={len(episodes)} cameras={len(cameras)}"
-        )
+        issues.append(f"video_count={len(video_files)} episodes={len(episodes)} cameras={len(cameras)}")
 
     writer = ShardWriter(out_dir)
     tmp = Path(out_dir) / "_tmp.mp4"
@@ -228,9 +226,7 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
         language = annotations.get(ep_idx) or (ep.get("tasks") or [""])[0]
         npz = frames_npz_bytes(actions, state)
         for cam_idx, cam in enumerate(cameras):
-            vids = list(
-                raw.glob(f"videos/chunk-*/observation.images.{cam}/episode_{ep_idx:06d}.mp4")
-            )
+            vids = list(raw.glob(f"videos/chunk-*/observation.images.{cam}/episode_{ep_idx:06d}.mp4"))
             if not vids:
                 issues.append(f"ep{ep_idx}/{cam}: missing video")
                 continue
@@ -268,10 +264,7 @@ def process_so101_repo(source, raw_dir, out_dir, ann_dir, report):
         "source": source,
         "fps": fps,
         "episodes": len(episodes),
-        "cameras": [
-            {"index": i, "orig_name": c, "name_hint": camera_name_hint(c)}
-            for i, c in enumerate(cameras)
-        ],
+        "cameras": [{"index": i, "orig_name": c, "name_hint": camera_name_hint(c)} for i, c in enumerate(cameras)],
         "entries": written,
         "blank_skipped": blank,
         "action_dims": sorted(action_dims),
@@ -288,9 +281,7 @@ def bridge_episode_table(raw):
     # stays columnar: materializing all 50k rows as dicts costs 2.5 GB per worker
     import pyarrow as pa
 
-    return pa.concat_tables(
-        [read_parquet(f) for f in sorted(raw.glob("meta/episodes/chunk-*/*.parquet"))]
-    )
+    return pa.concat_tables([read_parquet(f) for f in sorted(raw.glob("meta/episodes/chunk-*/*.parquet"))])
 
 
 def bridge_camera_keys(names):
@@ -335,9 +326,7 @@ def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_table, da
         ep_idx = int(ep["episode_index"])
         key = (ep["data/chunk_index"], ep["data/file_index"])
         if key not in data_cache:
-            table = read_parquet(
-                raw / "data" / f"chunk-{key[0]:03d}" / f"file-{key[1]:03d}.parquet"
-            )
+            table = read_parquet(raw / "data" / f"chunk-{key[0]:03d}" / f"file-{key[1]:03d}.parquet")
             data_cache.clear()
             data_cache[key] = (
                 np.asarray(table.column("episode_index").to_numpy()),
@@ -351,9 +340,7 @@ def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_table, da
         t0 = ep[f"videos/{cam}/from_timestamp"]
         t1 = ep[f"videos/{cam}/to_timestamp"]
         try:
-            n_frames, width, height = transcode(
-                src, tmp, extra_in=["-ss", str(t0), "-t", str(t1 - t0)]
-            )
+            n_frames, width, height = transcode(src, tmp, extra_in=["-ss", str(t0), "-t", str(t1 - t0)])
         except subprocess.CalledProcessError as exc:
             issues.append(f"ep{ep_idx}: transcode failed: {exc.stderr[-200:]}")
             continue
@@ -424,9 +411,7 @@ def process_soar_split(tfrecord_paths, split_name, out_dir, fps, report):
                 language = lang_values[0].decode()
             success = bool(feats["episode_metadata/success"].int64_list.value[0])
             image_keys = sorted(
-                k
-                for k in feats
-                if k.startswith("steps/observation/image") and feats[k].bytes_list.value
+                k for k in feats if k.startswith("steps/observation/image") and feats[k].bytes_list.value
             )
             npz = frames_npz_bytes(actions, state)
             for cam_idx, key in enumerate(image_keys):
@@ -439,9 +424,7 @@ def process_soar_split(tfrecord_paths, split_name, out_dir, fps, report):
                 frames_dir.mkdir()
                 for i, jpeg in enumerate(jpegs):
                     (frames_dir / f"{i:06d}.jpg").write_bytes(jpeg)
-                n_frames, width, height = transcode(
-                    frames_dir / "%06d.jpg", tmp, extra_in=["-framerate", str(fps)]
-                )
+                n_frames, width, height = transcode(frames_dir / "%06d.jpg", tmp, extra_in=["-framerate", str(fps)])
                 shutil.rmtree(frames_dir, ignore_errors=True)
                 if looks_blank(tmp, n_frames):
                     blank += 1
@@ -539,16 +522,18 @@ def bridge_main(args, report):
         try:
             for name in ("meta", "data"):
                 (work / name).symlink_to(cache / name)
-            run([
-                "gcloud", "storage", "cp",
-                f"{args.raw}/bridge_v2/videos/{cam}/chunk-{vchunk:03d}/file-{vfile:03d}.mp4",
-                str(video_dir / f"file-{vfile:03d}.mp4"),
-            ])
+            run(
+                [
+                    "gcloud",
+                    "storage",
+                    "cp",
+                    f"{args.raw}/bridge_v2/videos/{cam}/chunk-{vchunk:03d}/file-{vfile:03d}.mp4",
+                    str(video_dir / f"file-{vfile:03d}.mp4"),
+                ]
+            )
             out_dir = work / "out"
             out_dir.mkdir(parents=True)
-            process_bridge_video(
-                cam, vchunk, vfile, work, out_dir, episode_table, data_cache, report
-            )
+            process_bridge_video(cam, vchunk, vfile, work, out_dir, episode_table, data_cache, report)
             gcs_rsync(out_dir, dst_prefix)
             gcs_mark_done(dst_prefix)
             print(f"[{position}/{len(todo)}] done {source}", flush=True)
@@ -628,8 +613,7 @@ def main():
     report_path.write_text(json.dumps(report, indent=2))
     total_issues = sum(len(m.get("issues", [])) for m in report)
     print(
-        f"ARCHIVE_COMPLETE dataset={args.dataset} shard={args.shard} "
-        f"sources={len(report)} issues={total_issues}",
+        f"ARCHIVE_COMPLETE dataset={args.dataset} shard={args.shard} sources={len(report)} issues={total_issues}",
         flush=True,
     )
 

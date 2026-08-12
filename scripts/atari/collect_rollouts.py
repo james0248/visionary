@@ -94,10 +94,7 @@ def make_repeated_action_entries(
         entries.append(_repeated_action_entry(group))
 
     if not entries:
-        raise RuntimeError(
-            "Expected at least one recorded ALE frame for "
-            f"env={env_idx} outer_step={step_count}."
-        )
+        raise RuntimeError(f"Expected at least one recorded ALE frame for env={env_idx} outer_step={step_count}.")
     return entries
 
 
@@ -128,9 +125,7 @@ def collect_rollouts_for_checkpoint(
             raw = recorders[i].pop_frames()
             if done[i]:
                 continue
-            episode_buffers[i].extend(
-                make_repeated_action_entries(raw, frame_skip, i, step_count)
-            )
+            episode_buffers[i].extend(make_repeated_action_entries(raw, frame_skip, i, step_count))
 
         episode_done = (terminated | truncated) & ~done
         for i in range(n_envs):

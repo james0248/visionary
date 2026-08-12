@@ -7,13 +7,10 @@ from visionary.models.dreamer4.transformer import (
     SpatioTemporalTransformer,
     create_spatial_rope,
     create_temporal_rope,
-    pad_rope_for_latents,
 )
 
 
-def create_spatial_mask(
-    num_image_tokens: int, num_latent_tokens: int, encoder: bool
-) -> jnp.ndarray:
+def create_spatial_mask(num_image_tokens: int, num_latent_tokens: int, encoder: bool) -> jnp.ndarray:
     n_img, n_lat = num_image_tokens, num_latent_tokens
 
     latent_to_latent = jnp.ones((n_lat, n_lat), dtype=bool)
@@ -41,17 +38,17 @@ def create_temporal_mask(independent: jnp.ndarray, t: int) -> jnp.ndarray:
 
 
 def build_rope_embeddings(
-    base: float,
-    head_dim: int,
-    x_len: int,
-    y_len: int,
-    num_latents: int,
-    seq_len: int,
+    base: float, head_dim: int, x_len: int, y_len: int, num_latents: int, seq_len: int
 ) -> tuple[tuple[jnp.ndarray, jnp.ndarray], tuple[jnp.ndarray, jnp.ndarray]]:
-    spatial_rope = pad_rope_for_latents(
-        *create_spatial_rope(base, head_dim, x_len, y_len),
-        num_latents,
+    # Pad spatial rope for latent tokens
+    rope_cos, rope_sin = create_spatial_rope(base, head_dim, x_len, y_len)
+    latent_cos = jnp.ones((num_latents, rope_cos.shape[-1]), dtype=rope_cos.dtype)
+    latent_sin = jnp.zeros((num_latents, rope_sin.shape[-1]), dtype=rope_sin.dtype)
+    spatial_rope = (
+        jnp.concatenate([latent_cos, rope_cos], axis=0),
+        jnp.concatenate([latent_sin, rope_sin], axis=0),
     )
+
     temporal_rope = create_temporal_rope(base, head_dim, seq_len)
     return spatial_rope, temporal_rope
 
@@ -89,9 +86,7 @@ class TokenizerEncoder(nn.Module):
         x = nn.Dense(self.model_dim, dtype=self.dtype)(x)
 
         # Apply masking to patches
-        mask_token = self.param(
-            "mask_token", nn.initializers.normal(stddev=0.02), (self.model_dim,)
-        ).astype(self.dtype)
+        mask_token = self.param("mask_token", nn.initializers.normal(stddev=0.02), (self.model_dim,)).astype(self.dtype)
         if mask is None:
             mask = jnp.zeros((batch_size, seq_len, num_tokens), dtype=bool)
         x = jnp.where(jnp.expand_dims(mask, axis=-1), mask_token, x)
@@ -102,9 +97,7 @@ class TokenizerEncoder(nn.Module):
             nn.initializers.normal(stddev=0.02),
             (self.num_latents, self.model_dim),
         ).astype(self.dtype)
-        latent_tokens = jnp.broadcast_to(
-            latent_tokens, (batch_size, seq_len, self.num_latents, self.model_dim)
-        )
+        latent_tokens = jnp.broadcast_to(latent_tokens, (batch_size, seq_len, self.num_latents, self.model_dim))
         x = jnp.concatenate([latent_tokens, x], axis=2)
 
         spatial_rope, temporal_rope = build_rope_embeddings(
@@ -179,9 +172,7 @@ class TokenizerDecoder(nn.Module):
             nn.initializers.normal(stddev=0.02),
             (num_tokens, self.model_dim),
         ).astype(self.dtype)
-        image_tokens = jnp.broadcast_to(
-            image_tokens, (batch_size, seq_len, num_tokens, self.model_dim)
-        )
+        image_tokens = jnp.broadcast_to(image_tokens, (batch_size, seq_len, num_tokens, self.model_dim))
 
         latent = nn.Dense(self.model_dim, dtype=self.dtype)(latent)
         x = jnp.concatenate([latent, image_tokens], axis=2)

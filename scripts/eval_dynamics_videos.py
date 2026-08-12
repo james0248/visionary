@@ -44,9 +44,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s", force=True)
     parser = argparse.ArgumentParser(description="Render dynamics rollout videos.")
     parser.add_argument("--checkpoint_dir", required=True, help="Dynamics checkpoint directory.")
-    parser.add_argument(
-        "--tokenizer_checkpoint_dir", required=True, help="Tokenizer checkpoint directory."
-    )
+    parser.add_argument("--tokenizer_checkpoint_dir", required=True, help="Tokenizer checkpoint directory.")
     parser.add_argument("--data_dir", required=True, help="Eval latent ArrayRecord directory.")
     parser.add_argument("--output_dir", required=True, help="Where to write mp4 files.")
     parser.add_argument("--num_videos", type=int, default=20)
@@ -97,8 +95,7 @@ def main() -> None:
     parser.add_argument(
         "--from_export",
         action="store_true",
-        help="Load weights-only exports from <checkpoint_dir>/model/<step> instead "
-        "of the full train state.",
+        help="Load weights-only exports from <checkpoint_dir>/model/<step> instead of the full train state.",
     )
     parser.add_argument("--context_tau", type=float, default=0.9)
     parser.add_argument("--fps", type=int, default=30)
@@ -187,14 +184,10 @@ def main() -> None:
             "total": total,
         }
 
-    selected = (
-        [int(i) for i in args.indices.split(",")] if args.indices else list(range(args.num_videos))
-    )
+    selected = [int(i) for i in args.indices.split(",")] if args.indices else list(range(args.num_videos))
     first = sample_for(selected[0])
     if args.from_export:
-        export_cfg, params = restore_model_export_single_device(
-            args.checkpoint_dir, step=args.step
-        )
+        export_cfg, params = restore_model_export_single_device(args.checkpoint_dir, step=args.step)
         model = instantiate(export_cfg)
         step = args.step
         logger.info("Restored dynamics export from step %d", step)
@@ -209,21 +202,15 @@ def main() -> None:
         )
         logger.info("Restored dynamics params from step %d", step)
 
-    tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(
-        args.tokenizer_checkpoint_dir
-    )
+    tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(args.tokenizer_checkpoint_dir)
     tokenizer = instantiate(tokenizer_cfg)
-    preprocessor = TokenizerPreprocessor.from_config(
-        restore_preprocessor_export(args.tokenizer_checkpoint_dir)
-    )
+    preprocessor = TokenizerPreprocessor.from_config(restore_preprocessor_export(args.tokenizer_checkpoint_dir))
 
     @functools.partial(jax.jit, static_argnames=("generated_frames",))
     def rollout(params, video, actions, seed, generated_frames):
         video = jnp.asarray(video, dtype=jnp.float32)
         actions = None if args.action_source == "none" else jnp.asarray(actions, dtype=jnp.float32)
-        primed = (
-            jnp.zeros_like(video).at[:, : args.context_frames].set(video[:, : args.context_frames])
-        )
+        primed = jnp.zeros_like(video).at[:, : args.context_frames].set(video[:, : args.context_frames])
         context_key, sample_key = jax.random.split(jax.random.key(seed))
         context_noise = jax.random.normal(context_key, video.shape, dtype=jnp.float32)
         sample_noise = jax.random.normal(
@@ -255,9 +242,7 @@ def main() -> None:
             if piece.shape[1] < chunk:  # keep one compiled shape
                 pad = chunk - piece.shape[1]
                 piece = jnp.pad(piece, ((0, 0), (0, pad), (0, 0), (0, 0)))
-                pieces.append(
-                    np.asarray(jax.device_get(decode_chunk(tokenizer_variables, piece)))[:, :-pad]
-                )
+                pieces.append(np.asarray(jax.device_get(decode_chunk(tokenizer_variables, piece)))[:, :-pad])
             else:
                 pieces.append(np.asarray(jax.device_get(decode_chunk(tokenizer_variables, piece))))
         return np.concatenate(pieces, axis=1)
@@ -328,9 +313,7 @@ def main() -> None:
                 row.extend([separator, part])
             frames.append(np.concatenate(row, axis=1))
         tag = "" if args.action_source == "true" else f"_act-{args.action_source}"
-        path = (
-            output_dir / f"rollout_{step}_{index:02d}{tag}_s{args.sample_steps}_psnr{psnr:.1f}.mp4"
-        )
+        path = output_dir / f"rollout_{step}_{index:02d}{tag}_s{args.sample_steps}_psnr{psnr:.1f}.mp4"
         imageio.mimsave(path, frames, fps=args.fps)
         summary.append(
             {

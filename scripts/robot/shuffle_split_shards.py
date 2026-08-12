@@ -47,9 +47,7 @@ def main():
     print(f"{len(paths)} input files, {len(source):,} records, fd limit {limit}", flush=True)
 
     out = Path(args.output_dir)
-    writers = {
-        split: ShardWriter(out / split, args.records_per_shard) for split in ("train", "eval")
-    }
+    writers = {split: ShardWriter(out / split, args.records_per_shard) for split in ("train", "eval")}
     counts = {"train": 0, "eval": 0}
     payload = {"train": 0, "eval": 0}
     lengths = {"train": [], "eval": []}
@@ -85,10 +83,13 @@ def main():
         "payload_bytes": payload,
     }
     (out / "shuffle_summary.json").write_text(json.dumps(summary, indent=1))
-    print(f"train {counts['train']:,} records / {shards['train']} shards "
-          f"({payload['train'] / GB:.1f} GB), "
-          f"eval {counts['eval']:,} records / {shards['eval']} shards "
-          f"({payload['eval'] / GB:.1f} GB) -> {out}", flush=True)
+    print(
+        f"train {counts['train']:,} records / {shards['train']} shards "
+        f"({payload['train'] / GB:.1f} GB), "
+        f"eval {counts['eval']:,} records / {shards['eval']} shards "
+        f"({payload['eval'] / GB:.1f} GB) -> {out}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

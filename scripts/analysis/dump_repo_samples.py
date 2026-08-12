@@ -27,9 +27,7 @@ def main() -> None:
     wanted = set(args.repos.split(","))
     counts: dict[str, int] = {}
     out = Path(args.out)
-    source = grain.ArrayRecordDataSource(
-        sorted(str(p) for p in Path(args.shards_dir).glob("*.arecord"))
-    )
+    source = grain.ArrayRecordDataSource(sorted(str(p) for p in Path(args.shards_dir).glob("*.arecord")))
     for i in range(len(source)):
         with np.load(io.BytesIO(source[i])) as data:
             repo = str(data["repo"])

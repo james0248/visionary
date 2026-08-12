@@ -111,10 +111,7 @@ def diagnose_shard(
     try:
         for record_idx in record_indices:
             if record_idx < 0 or record_idx >= report.num_records:
-                raise ValueError(
-                    f"Requested record {record_idx} outside [0, {report.num_records}) "
-                    f"for {shard_path}"
-                )
+                raise ValueError(f"Requested record {record_idx} outside [0, {report.num_records}) for {shard_path}")
             report.records_checked += 1
             try:
                 record = reader.read([record_idx])[0]

@@ -112,9 +112,7 @@ def main() -> None:
     if need_raw and not args.raw_shards_dir:
         parser.error("--raw_shards_dir is required unless --space latent --no_video")
 
-    latents = grain.ArrayRecordDataSource(
-        sorted(str(p) for p in Path(args.data_dir).glob("*.arecord"))
-    )
+    latents = grain.ArrayRecordDataSource(sorted(str(p) for p in Path(args.data_dir).glob("*.arecord")))
     raw_index = build_raw_index(args.raw_shards_dir) if need_raw else None
 
     def sample_for(index: int, action_mode: str = "real"):
@@ -161,20 +159,14 @@ def main() -> None:
         )
         logger.info("Restored dynamics params from step %d", step)
 
-    tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(
-        args.tokenizer_checkpoint_dir
-    )
+    tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(args.tokenizer_checkpoint_dir)
     tokenizer = instantiate(tokenizer_cfg)
-    preprocessor = TokenizerPreprocessor.from_config(
-        restore_preprocessor_export(args.tokenizer_checkpoint_dir)
-    )
+    preprocessor = TokenizerPreprocessor.from_config(restore_preprocessor_export(args.tokenizer_checkpoint_dir))
 
     @jax.jit
     def rollout_full(params, video, actions, seed):
         video = jnp.asarray(video, jnp.float32)
-        primed = jnp.zeros_like(video).at[:, : args.context_frames].set(
-            video[:, : args.context_frames]
-        )
+        primed = jnp.zeros_like(video).at[:, : args.context_frames].set(video[:, : args.context_frames])
         ck, sk = jax.random.split(jax.random.key(seed))
         return model.apply(
             params,
@@ -182,7 +174,8 @@ def main() -> None:
             jnp.asarray(actions, jnp.float32),
             jax.random.normal(ck, video.shape, jnp.float32),
             jax.random.normal(
-                sk, (video.shape[0], video.shape[1] - args.context_frames, *video.shape[2:]),
+                sk,
+                (video.shape[0], video.shape[1] - args.context_frames, *video.shape[2:]),
                 jnp.float32,
             ),
             args.context_frames,
@@ -251,15 +244,15 @@ def main() -> None:
         roll = np.asarray(jax.device_get(rollout_full(params, video, actions, index)))[0]
         tf = truth.copy()
         for t in range(args.context_frames, total):
-            tf[t] = np.asarray(
-                jax.device_get(tf_one(params, video, actions, t, 10_000 + 100 * index + t))
-            )[0]
+            tf[t] = np.asarray(jax.device_get(tf_one(params, video, actions, t, 10_000 + 100 * index + t)))[0]
 
         frames = list(range(args.context_frames, total))
         raw = None
         if need_raw:
             raw = decode_video_window(
-                raw_index[sample["key"]], sample["absolute_start"], sample["span"],
+                raw_index[sample["key"]],
+                sample["absolute_start"],
+                sample["span"],
                 tuple(preprocessor.resize_shape),
             )[:: args.stride][:total]
 
@@ -349,8 +342,9 @@ def main() -> None:
                 cells = []
                 for t in worst:
                     cell = imgs[t].copy()
-                    cv2.putText(cell, f"{name} t={t}", (3, 12), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.35, (255, 255, 0), 1, cv2.LINE_AA)
+                    cv2.putText(
+                        cell, f"{name} t={t}", (3, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1, cv2.LINE_AA
+                    )
                     cells.append(cell)
                 rows.append(np.concatenate(cells, axis=1))
             sheet = np.concatenate(rows, axis=0)

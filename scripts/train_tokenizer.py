@@ -56,7 +56,6 @@ def parse_auto_bool(value: Any, auto_value: bool) -> bool:
     raise ValueError(f"Expected a boolean or 'auto', got {value!r}")
 
 
-
 def build_wsd_schedule(cfg) -> optax.Schedule:
     total = int(cfg.total_steps)
     warmup = max(int(total * cfg.optimizer.warmup_ratio), 1)
@@ -118,8 +117,7 @@ def build_fsdp_mesh(cfg: DictConfig) -> tuple[Mesh, bool, int]:
         raise ValueError(f"fsdp.data_axis_size must be >= 1, got {data_axis_size}")
     if device_count % data_axis_size != 0:
         raise ValueError(
-            "fsdp.data_axis_size must divide jax.device_count(); got "
-            f"{data_axis_size=} and device_count={device_count}"
+            f"fsdp.data_axis_size must divide jax.device_count(); got {data_axis_size=} and device_count={device_count}"
         )
 
     fsdp_axis_size = device_count // data_axis_size
@@ -227,9 +225,11 @@ def host_local_batch(batch, mesh: Mesh, pspec: P):
         for s in x.addressable_shards:
             start = s.index[0].start if x.ndim and s.index else 0
             shards.setdefault(start or 0, s.data)
-        return np.concatenate(
-            [np.asarray(shards[k]) for k in sorted(shards)], axis=0
-        ) if x.ndim else np.asarray(next(iter(shards.values())))
+        return (
+            np.concatenate([np.asarray(shards[k]) for k in sorted(shards)], axis=0)
+            if x.ndim
+            else np.asarray(next(iter(shards.values())))
+        )
 
     return jax.tree_util.tree_map(to_local, batch)
 
@@ -341,9 +341,7 @@ def update_loss_ema(
     lpips_loss = lpips_loss.astype(jnp.float32)
     step_size = jnp.asarray(1.0 - LOSS_RMS_DECAY, dtype=mse_loss.dtype)
     return state.replace(
-        mse_sq_ema=optax.incremental_update(
-            jnp.square(mse_loss), state.mse_sq_ema.astype(mse_loss.dtype), step_size
-        ),
+        mse_sq_ema=optax.incremental_update(jnp.square(mse_loss), state.mse_sq_ema.astype(mse_loss.dtype), step_size),
         lpips_sq_ema=optax.incremental_update(
             jnp.square(lpips_loss),
             state.lpips_sq_ema.astype(lpips_loss.dtype),
@@ -374,9 +372,7 @@ def compute_loss_metrics(
     lpips_rms = jnp.sqrt(state.lpips_sq_ema.astype(mse_loss.dtype) + LOSS_RMS_EPS)
     if lpips_weight > 0:
         stride = max(int(lpips_frame_stride), 1)
-        lpips_loss = compute_lpips_loss(
-            original[:, ::stride], reconstructed[:, ::stride], preprocessor
-        )
+        lpips_loss = compute_lpips_loss(original[:, ::stride], reconstructed[:, ::stride], preprocessor)
     else:
         lpips_loss = jnp.zeros((), dtype=mse_loss.dtype)
     normalized_lpips_loss = lpips_loss / jax.lax.stop_gradient(lpips_rms)
@@ -513,9 +509,7 @@ def build_reconstruction_grid(
 ) -> np.ndarray:
     total_frames = originals.shape[0]
     num_frames = min(int(num_frames), total_frames)
-    frame_indices = np.random.default_rng(frame_seed).choice(
-        total_frames, size=num_frames, replace=False
-    )
+    frame_indices = np.random.default_rng(frame_seed).choice(total_frames, size=num_frames, replace=False)
 
     originals = originals[frame_indices]
     reconstructions = reconstructions[frame_indices]
@@ -534,10 +528,7 @@ def build_reconstruction_grid(
         )
     row_sep = np.full((2, rows[0].shape[1], 3), 255, dtype=np.uint8)
     return np.concatenate(
-        [
-            row if idx == 0 else np.concatenate([row_sep, row], axis=0)
-            for idx, row in enumerate(rows)
-        ],
+        [row if idx == 0 else np.concatenate([row_sep, row], axis=0) for idx, row in enumerate(rows)],
         axis=0,
     )
 
@@ -618,8 +609,7 @@ def main(cfg: DictConfig):
     prefetch_buffer_size = int(cfg.dataset.prefetch_buffer_size)
     effective_read_threads = max(worker_count, 1) * num_threads
     logger.info(
-        "Data loader settings: worker_count=%d num_threads=%d "
-        "prefetch_buffer_size=%d effective_read_threads=%d",
+        "Data loader settings: worker_count=%d num_threads=%d prefetch_buffer_size=%d effective_read_threads=%d",
         worker_count,
         num_threads,
         prefetch_buffer_size,
@@ -810,9 +800,7 @@ def main(cfg: DictConfig):
             resume_step = int(resume_spec)
 
     if resume_step is not None:
-        state = checkpoint_manager.restore(
-            target=state, step=resume_step, extra_items=iterator_items()
-        )
+        state = checkpoint_manager.restore(target=state, step=resume_step, extra_items=iterator_items())
         logger.info("Resumed tokenizer training from step %d", int(state.step))
 
     step = int(jax.device_get(state.step))
@@ -832,8 +820,7 @@ def main(cfg: DictConfig):
     timing_start_step = step
     timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
     logger.info(
-        "Asynchronous timing mode enabled for tokenizer training; timing logs are averaged "
-        "over each logging window."
+        "Asynchronous timing mode enabled for tokenizer training; timing logs are averaged over each logging window."
     )
     while True:
         step_start = time.monotonic()
@@ -941,8 +928,7 @@ def main(cfg: DictConfig):
 
         if timing_stats is not None:
             logger.info(
-                "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, compute: %.3fs, "
-                "wall: %.3fs, eval: %.3fs",
+                "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, compute: %.3fs, wall: %.3fs, eval: %.3fs",
                 step,
                 timing_stats["sps"],
                 timing_stats["data_time"],

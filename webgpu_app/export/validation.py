@@ -22,9 +22,7 @@ def run_ort(path: Path, feeds: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return {output.name: value for output, value in zip(session.get_outputs(), outputs)}
 
 
-def compare_arrays(
-    expected: np.ndarray, actual: np.ndarray, atol: float, rtol: float
-) -> dict[str, Any]:
+def compare_arrays(expected: np.ndarray, actual: np.ndarray, atol: float, rtol: float) -> dict[str, Any]:
     expected = expected.astype(np.float32) if expected.dtype == np.float16 else expected
     actual = actual.astype(np.float32) if actual.dtype == np.float16 else actual
     diff = np.abs(expected - actual)

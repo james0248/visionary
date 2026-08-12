@@ -46,11 +46,7 @@ def check_record(args) -> dict:
     src = grain.ArrayRecordDataSource([shard])
     try:
         with np.load(io.BytesIO(src[index])) as data:
-            missing = [
-                k
-                for k in ("video", "length", "actions", "state", "repo", "episode", "camera")
-                if k not in data
-            ]
+            missing = [k for k in ("video", "length", "actions", "state", "repo", "episode", "camera") if k not in data]
             if missing:
                 return {"ok": False, "error": f"missing fields: {missing}"}
             video = bytes(data["video"])

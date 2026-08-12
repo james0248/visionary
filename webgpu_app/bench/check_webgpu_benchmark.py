@@ -66,9 +66,7 @@ def main() -> int:
         if baseline_entry is None:
             print(f"{name}: p95={latest_p95:.3f}ms (no baseline)")
             continue
-        baseline_latency = baseline_entry.get("latency") or baseline_entry.get("timing", {}).get(
-            "streaming_frame"
-        )
+        baseline_latency = baseline_entry.get("latency") or baseline_entry.get("timing", {}).get("streaming_frame")
         if baseline_latency is None:
             print(f"{name}: p95={latest_p95:.3f}ms (baseline has no comparable latency)")
             continue

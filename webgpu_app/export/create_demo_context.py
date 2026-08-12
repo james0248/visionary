@@ -59,9 +59,7 @@ def parse_action_meanings(value: str | None, num_actions: int) -> dict[str, str]
     else:
         meanings = [item.strip() for item in value.split(",")]
     if len(meanings) != num_actions:
-        raise ValueError(
-            f"Expected {num_actions} action meanings, got {len(meanings)}: {meanings}"
-        )
+        raise ValueError(f"Expected {num_actions} action meanings, got {len(meanings)}: {meanings}")
     return {str(index): meaning for index, meaning in enumerate(meanings)}
 
 
@@ -103,13 +101,10 @@ def main() -> None:
     frames = np.asarray(data["frames"])
     actions = np.asarray(data["actions"], dtype=np.int32)
     if args.prefix_frames <= 0 or args.prefix_frames > args.context_length:
-        raise ValueError(
-            f"--prefix_frames must be in [1, context_length], got {args.prefix_frames}."
-        )
+        raise ValueError(f"--prefix_frames must be in [1, context_length], got {args.prefix_frames}.")
     if args.start < 0 or args.start + args.prefix_frames > len(frames):
         raise ValueError(
-            f"Prefix window [{args.start}, {args.start + args.prefix_frames}) is outside "
-            f"episode length {len(frames)}."
+            f"Prefix window [{args.start}, {args.start + args.prefix_frames}) is outside episode length {len(frames)}."
         )
 
     prefix_frames = frames[args.start : args.start + args.prefix_frames]
@@ -192,9 +187,7 @@ def main() -> None:
         "arrays": {
             "z": write_array(prefix.with_suffix(".z.f32.bin"), z),
             "display_z": write_array(prefix.with_suffix(".display_z.f32.bin"), display_z),
-            "display_pixels": write_array(
-                prefix.with_suffix(".display_pixels.u8.bin"), display_pixels
-            ),
+            "display_pixels": write_array(prefix.with_suffix(".display_pixels.u8.bin"), display_pixels),
             "actions": write_array(prefix.with_suffix(".actions.i32.bin"), context_actions),
             "step_levels": write_array(prefix.with_suffix(".step_levels.i32.bin"), step_levels),
             "signal_levels": write_array(prefix.with_suffix(".signal_levels.i32.bin"), signal_levels),

@@ -76,9 +76,7 @@ class ShardedTokenizerEncoder:
         self.batch_size = batch_size
         self.latent_dtype = latent_dtype
 
-        self.tokenizer_cfg, variables = restore_model_export_single_device(
-            checkpoint_dir, step=step
-        )
+        self.tokenizer_cfg, variables = restore_model_export_single_device(checkpoint_dir, step=step)
         self.preprocessor_cfg = restore_preprocessor_export(checkpoint_dir, step=step)
         self.model = instantiate(self.tokenizer_cfg)
         self.preprocessor = TokenizerPreprocessor.from_config(self.preprocessor_cfg)
@@ -100,10 +98,7 @@ class ShardedTokenizerEncoder:
 
     def encode_episodes(self, episodes: list[np.ndarray]) -> list[np.ndarray]:
         window_refs: list[tuple[int, int, int, int]] = []
-        encoded = [
-            np.empty((len(patches), *self.latents_per_frame), dtype=self.latent_dtype)
-            for patches in episodes
-        ]
+        encoded = [np.empty((len(patches), *self.latents_per_frame), dtype=self.latent_dtype) for patches in episodes]
         for episode_idx, patches in enumerate(episodes):
             prev_stop = 0
             for start in chunk_starts(len(patches), self.window_length, self.window_overlap):
@@ -114,9 +109,7 @@ class ShardedTokenizerEncoder:
             return encoded
 
         token_shape = episodes[0].shape[1:]
-        batch = np.zeros(
-            (self.batch_size, self.window_length, *token_shape), dtype=episodes[0].dtype
-        )
+        batch = np.zeros((self.batch_size, self.window_length, *token_shape), dtype=episodes[0].dtype)
         lengths = np.zeros((self.batch_size,), dtype=np.int32)
 
         for batch_start in range(0, len(window_refs), self.batch_size):
@@ -128,9 +121,7 @@ class ShardedTokenizerEncoder:
                 lengths[window_idx] = stop - start
 
             sharded = jax.device_put(batch, self.batch_sharding)
-            latents = np.asarray(
-                jax.device_get(self.encode_fn(self.variables, sharded)), dtype=np.float32
-            )
+            latents = np.asarray(jax.device_get(self.encode_fn(self.variables, sharded)), dtype=np.float32)
             for window_idx, (episode_idx, start, stop, overlap) in enumerate(refs):
                 encoded[episode_idx][start + overlap : stop] = latents[
                     window_idx, overlap : lengths[window_idx]
@@ -165,9 +156,7 @@ def load_stream(
     frames, actions, state = frames[:length], actions[:length], state[:length]
     if copy > 0:
         # one draw per episode; per-window draws would jump brightness mid-episode
-        frames = augment.random_map(
-            {"video": frames}, np.random.default_rng([seed, episode_id, copy])
-        )["video"]
+        frames = augment.random_map({"video": frames}, np.random.default_rng([seed, episode_id, copy]))["video"]
 
     return Stream(
         episode_id=episode_id,
@@ -218,9 +207,7 @@ def encode_stream_record(stream: Stream, latents: np.ndarray, start: int, stop: 
     actions = stream.arrays["actions"]
     payload: dict[str, Any] = {key: value[start:stop] for key, value in stream.arrays.items()}
     payload["frames"] = latents[start:stop]
-    payload["prev_action"] = (
-        actions[start - 1] if start > 0 else np.zeros(actions.shape[1:], dtype=actions.dtype)
-    )
+    payload["prev_action"] = actions[start - 1] if start > 0 else np.zeros(actions.shape[1:], dtype=actions.dtype)
     payload["episode_id"] = np.asarray(stream.episode_id, dtype=np.int64)
     payload["start_index"] = np.asarray(start, dtype=np.int32)
     payload.update(stream.provenance)
@@ -341,9 +328,7 @@ def open_split_source(input_dir: Path, split: str) -> grain.ArrayRecordDataSourc
 
 
 def create_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Encode packed video shards into chunked ArrayRecord dynamics data."
-    )
+    parser = argparse.ArgumentParser(description="Encode packed video shards into chunked ArrayRecord dynamics data.")
     parser.add_argument("--checkpoint_dir", required=True, help="Tokenizer checkpoint directory.")
     parser.add_argument("--input_dir", required=True, help="Shard root with train/ and eval/.")
     parser.add_argument("--output_dir", required=True, help="Output directory for latent shards.")
@@ -351,8 +336,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--frame_length",
         type=int,
         required=True,
-        help="Minimum frames per output record; shorter streams are skipped. "
-        "Must be >= the dynamics batch_length.",
+        help="Minimum frames per output record; shorter streams are skipped. Must be >= the dynamics batch_length.",
     )
     parser.add_argument("--step", type=int, help="Checkpoint step to restore. Defaults to latest.")
     parser.add_argument("--seed", type=int, default=42, help="Augmentation seed.")
@@ -362,9 +346,7 @@ def create_parser() -> argparse.ArgumentParser:
         default=512,
         help="Frames stored per output record before the tail chunk.",
     )
-    parser.add_argument(
-        "--chunk_overlap", type=int, default=0, help="Overlap between output records, in frames."
-    )
+    parser.add_argument("--chunk_overlap", type=int, default=0, help="Overlap between output records, in frames.")
     parser.add_argument(
         "--encode_window_length",
         type=int,
@@ -389,15 +371,9 @@ def create_parser() -> argparse.ArgumentParser:
         default=8,
         help="Loaded streams grouped into one encode pass.",
     )
-    parser.add_argument(
-        "--read_workers", type=int, default=8, help="Threads decoding and patchifying video."
-    )
-    parser.add_argument(
-        "--prefetch_episodes", type=int, default=8, help="Streams queued ahead of the encoder."
-    )
-    parser.add_argument(
-        "--records_per_shard", type=int, default=1024, help="Maximum records per .arecord shard."
-    )
+    parser.add_argument("--read_workers", type=int, default=8, help="Threads decoding and patchifying video.")
+    parser.add_argument("--prefetch_episodes", type=int, default=8, help="Streams queued ahead of the encoder.")
+    parser.add_argument("--records_per_shard", type=int, default=1024, help="Maximum records per .arecord shard.")
     parser.add_argument(
         "--latent_dtype",
         choices=("float16", "float32"),
@@ -431,9 +407,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="First stream index to encode; episode ids stay global, so ranged "
         "runs compose into one resumable dataset.",
     )
-    parser.add_argument(
-        "--stream_stop", type=int, help="Stop stream index (exclusive). Defaults to the split end."
-    )
+    parser.add_argument("--stream_stop", type=int, help="Stop stream index (exclusive). Defaults to the split end.")
     return parser
 
 
@@ -445,9 +419,7 @@ def main() -> None:
     if jax.process_count() > 1:
         raise RuntimeError("Single-host script; run one process and it uses every local device.")
     if args.encode_batch_size % jax.local_device_count() != 0:
-        raise ValueError(
-            f"encode_batch_size must be divisible by the {jax.local_device_count()} local devices"
-        )
+        raise ValueError(f"encode_batch_size must be divisible by the {jax.local_device_count()} local devices")
     if not 0 <= args.encode_window_overlap < args.encode_window_length:
         raise ValueError("Expected 0 <= encode_window_overlap < encode_window_length")
 
@@ -485,8 +457,7 @@ def main() -> None:
     normalizer = build_action_normalizer("continuous", str(stats_path))
 
     split_stats = {
-        split: write_split(split, sources[split], encoder, args, normalizer, output_dir / split)
-        for split in splits
+        split: write_split(split, sources[split], encoder, args, normalizer, output_dir / split) for split in splits
     }
 
     metadata = {

@@ -24,17 +24,18 @@ import numpy as np
 from visionary.dataset import decode_video_window
 
 FLAG_DETAIL = {
-    "stale_head": "head_idle_s", "stale_tail": "tail_idle_s", "mid_pause": "mid_gap_s",
-    "action_jump": "max_vel_deg_s", "no_motion": None, "too_short": "duration_s",
+    "stale_head": "head_idle_s",
+    "stale_tail": "tail_idle_s",
+    "mid_pause": "mid_gap_s",
+    "action_jump": "max_vel_deg_s",
+    "no_motion": None,
+    "too_short": "duration_s",
     "gripper_only": None,
 }
 
 
 def load_analyses(analysis_dir: Path) -> dict[str, dict]:
-    return {
-        path.stem: json.loads(path.read_text())
-        for path in sorted(analysis_dir.rglob("*.json"))
-    }
+    return {path.stem: json.loads(path.read_text()) for path in sorted(analysis_dir.rglob("*.json"))}
 
 
 def read_member(tar_path: Path, spec: dict) -> bytes:
@@ -43,10 +44,10 @@ def read_member(tar_path: Path, spec: dict) -> bytes:
         return f.read(spec["size"])
 
 
-def find_video(processed_dir: Path, source: str, camera: str | None,
-               episode: int | None = None) -> bytes | None:
-    for source_dir in processed_dir.glob(f"*/{source}") if not (processed_dir / source).exists() \
-            else [processed_dir / source]:
+def find_video(processed_dir: Path, source: str, camera: str | None, episode: int | None = None) -> bytes | None:
+    for source_dir in (
+        processed_dir.glob(f"*/{source}") if not (processed_dir / source).exists() else [processed_dir / source]
+    ):
         for tar_path in sorted(source_dir.glob("shard-*.tar")):
             index = json.loads(tar_path.with_suffix(".index.json").read_text())
             for name in sorted(index):
@@ -60,9 +61,17 @@ def find_video(processed_dir: Path, source: str, camera: str | None,
     return None
 
 
-def render(video: bytes, out: Path, title: str, subtitle: str, colour: tuple[int, int, int],
-           bounds: tuple[int, int] | None = None, fps: float = 30,
-           hw: tuple[int, int] = (180, 240), max_seconds: float | None = None) -> bool:
+def render(
+    video: bytes,
+    out: Path,
+    title: str,
+    subtitle: str,
+    colour: tuple[int, int, int],
+    bounds: tuple[int, int] | None = None,
+    fps: float = 30,
+    hw: tuple[int, int] = (180, 240),
+    max_seconds: float | None = None,
+) -> bool:
     try:
         limit = int(max_seconds * fps) if max_seconds else 10**9
         frames = decode_video_window(video, 0, limit, decode_hw=hw)
@@ -83,8 +92,7 @@ def render(video: bytes, out: Path, title: str, subtitle: str, colour: tuple[int
         cv2.rectangle(frame, (0, 0), (frame.shape[1] - 1, frame.shape[0] - 1), shade, 3)
         cv2.rectangle(frame, (0, 0), (frame.shape[1], 30), (0, 0, 0), -1)
         cv2.putText(frame, title, (4, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.34, shade, 1)
-        cv2.putText(frame, f"{subtitle}  {i / fps:5.1f}s", (4, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (200, 200, 200), 1)
+        cv2.putText(frame, f"{subtitle}  {i / fps:5.1f}s", (4, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (200, 200, 200), 1)
         out_frames.append(frame)
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -101,8 +109,7 @@ def best_fixed_camera(analysis: dict) -> str | None:
     return max(fixed, key=lambda cm: cm[1]["static_frac"])[0]
 
 
-def sample_flags(analyses: dict[str, dict], processed_dir: Path, out_dir: Path,
-                 per_group: int) -> None:
+def sample_flags(analyses: dict[str, dict], processed_dir: Path, out_dir: Path, per_group: int) -> None:
     by_flag = defaultdict(list)
     for source, analysis in analyses.items():
         for ep, qc in analysis["episodes"].items():
@@ -133,15 +140,20 @@ def sample_flags(analyses: dict[str, dict], processed_dir: Path, out_dir: Path,
             detail = f"{key}={r.get(key)}" if key else ""
             bounds = (r["start"], r["end"]) if "start" in r else None
             name = f"{r['source']}_ep{r['episode']:03d}.mp4"
-            if render(video, out_dir / "flags" / flag / name, f"{flag}  {detail}",
-                      f"{r['source']} ep{r['episode']}", (60, 200, 255), bounds,
-                      fps=r.get("fps", 30)):
+            if render(
+                video,
+                out_dir / "flags" / flag / name,
+                f"{flag}  {detail}",
+                f"{r['source']} ep{r['episode']}",
+                (60, 200, 255),
+                bounds,
+                fps=r.get("fps", 30),
+            ):
                 written += 1
         print(f"  {flag:16s} {len(by_flag[flag]):6d} episodes -> {written} samples")
 
 
-def sample_cameras(analyses: dict[str, dict], processed_dir: Path, out_dir: Path,
-                   per_group: int) -> None:
+def sample_cameras(analyses: dict[str, dict], processed_dir: Path, out_dir: Path, per_group: int) -> None:
     rows = []
     for source, analysis in analyses.items():
         for camera, metrics in analysis["cameras"].items():
@@ -150,11 +162,10 @@ def sample_cameras(analyses: dict[str, dict], processed_dir: Path, out_dir: Path
             rows.append(row)
     groups = defaultdict(list)
     for r in rows:
-        groups["moving" if r["moving"] else
-               ("borderline" if r.get("borderline") else "fixed")].append(r)
+        groups["moving" if r["moving"] else ("borderline" if r.get("borderline") else "fixed")].append(r)
 
     for group, records in groups.items():
-        if group == "moving":                 # spread across camera NAMES
+        if group == "moving":  # spread across camera NAMES
             by_name = defaultdict(list)
             for r in records:
                 by_name[r["camera"]].append(r)
@@ -168,7 +179,7 @@ def sample_cameras(analyses: dict[str, dict], processed_dir: Path, out_dir: Path
                     break
                 if len(picks) >= per_group:
                     break
-        else:                                  # spread across the static_frac range
+        else:  # spread across the static_frac range
             records = sorted(records, key=lambda r: r["static_frac"])
             step = max(len(records) // max(per_group, 1), 1)
             picks = records[::step][:per_group]
@@ -179,20 +190,24 @@ def sample_cameras(analyses: dict[str, dict], processed_dir: Path, out_dir: Path
             if video is None:
                 continue
             name = f"{r['static_frac']:.2f}_{r['source']}_{r['camera']}.mp4"
-            if render(video, out_dir / "cameras" / group / name,
-                      f"{'MOVING' if r['moving'] else 'FIXED'}  \"{r['camera']}\"",
-                      f"static={r['static_frac']:.2f} shift={r['shift_p90']:.1f} {r['source']}",
-                      (80, 80, 255) if r["moving"] else (80, 255, 80), max_seconds=8):
+            if render(
+                video,
+                out_dir / "cameras" / group / name,
+                f'{"MOVING" if r["moving"] else "FIXED"}  "{r["camera"]}"',
+                f"static={r['static_frac']:.2f} shift={r['shift_p90']:.1f} {r['source']}",
+                (80, 80, 255) if r["moving"] else (80, 255, 80),
+                max_seconds=8,
+            ):
                 written += 1
         print(f"  {group:12s} {len(groups[group]):6d} cameras -> {written} samples")
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--analysis-dir", required=True,
-                    help="dir of per-source analysis JSONs from pack_tokenizer_dataset.py")
-    ap.add_argument("--processed-dir", required=True,
-                    help="local processed tree: [<dataset>/]<source>/shard-*.tar")
+    ap.add_argument(
+        "--analysis-dir", required=True, help="dir of per-source analysis JSONs from pack_tokenizer_dataset.py"
+    )
+    ap.add_argument("--processed-dir", required=True, help="local processed tree: [<dataset>/]<source>/shard-*.tar")
     ap.add_argument("--out-dir", default="outputs/samples")
     ap.add_argument("--per-group", type=int, default=6)
     ap.add_argument("--flags", action="store_true", help="only episode-flag samples")

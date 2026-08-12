@@ -21,8 +21,7 @@ def simplify_file(path: Path) -> dict[str, Any]:
         from onnxsim import simplify
     except ImportError as exc:
         raise ImportError(
-            "onnxsim is required for --simplify_onnx. Install it with "
-            "`uv add --group onnx 'onnx-simplifier==0.4.36'`."
+            "onnxsim is required for --simplify_onnx. Install it with `uv add --group onnx 'onnx-simplifier==0.4.36'`."
         ) from exc
 
     before = op_counts(path)

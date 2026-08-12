@@ -15,8 +15,7 @@ DEVICES_PER_PROCESS = 4
 def child(args):
     os.environ["JAX_PLATFORMS"] = "cpu"
     os.environ["XLA_FLAGS"] = (
-        os.environ.get("XLA_FLAGS", "")
-        + f" --xla_force_host_platform_device_count={DEVICES_PER_PROCESS}"
+        os.environ.get("XLA_FLAGS", "") + f" --xla_force_host_platform_device_count={DEVICES_PER_PROCESS}"
     )
     import jax
 
@@ -77,8 +76,13 @@ def launch_round(data_dir: Path, ckpt_dir: Path, total_steps: int, tag: str) -> 
         procs.append(
             subprocess.Popen(
                 [
-                    sys.executable, __file__,
-                    "--child", "--process-id", str(pid), "--", *overrides,
+                    sys.executable,
+                    __file__,
+                    "--child",
+                    "--process-id",
+                    str(pid),
+                    "--",
+                    *overrides,
                 ],
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -92,9 +96,7 @@ def launch_round(data_dir: Path, ckpt_dir: Path, total_steps: int, tag: str) -> 
         for pid, code in enumerate(codes):
             if code:
                 print(f"--- proc{pid} ({tag}) exit={code}, log tail ---")
-                print("\n".join(
-                    (data_dir / f"proc{pid}_{tag}.log").read_text().splitlines()[-30:]
-                ))
+                print("\n".join((data_dir / f"proc{pid}_{tag}.log").read_text().splitlines()[-30:]))
         raise SystemExit(f"preflight {tag} FAILED: exit codes {codes}")
     print(f"preflight {tag}: all {NUM_PROCESSES} processes exited 0")
 
@@ -105,14 +107,14 @@ def stage_data(data_dir: Path, n_train: int, n_eval: int) -> None:
         out = data_dir / split
         out.mkdir(parents=True, exist_ok=True)
         shards = [f"{base}/{split}/shard-{i:05d}.arecord" for i in range(count)]
-        subprocess.run(
-            ["gcloud", "storage", "cp", "-n", *shards, str(out)], check=True
-        )
+        subprocess.run(["gcloud", "storage", "cp", "-n", *shards, str(out)], check=True)
         for name in ("lengths.json", "fps.json"):
             full = json.loads(
                 subprocess.run(
                     ["gcloud", "storage", "cat", f"{base}/{split}/{name}"],
-                    check=True, capture_output=True, text=True,
+                    check=True,
+                    capture_output=True,
+                    text=True,
                 ).stdout
             )
             (out / name).write_text(json.dumps(full[: count * 256]))

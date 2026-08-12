@@ -40,11 +40,7 @@ def _export_steps(export_dir: epath.Path) -> list[int]:
     if not export_dir.exists():
         return []
 
-    return sorted(
-        int(path.name)
-        for path in export_dir.iterdir()
-        if path.is_dir() and path.name.isdigit()
-    )
+    return sorted(int(path.name) for path in export_dir.iterdir() if path.is_dir() and path.name.isdigit())
 
 
 def resolve_model_export_step(directory: str | PathLike[str], step: int | None) -> int:
@@ -243,9 +239,9 @@ def restore_model_export_single_device(
         fallback_sharding=single_device_sharding,
     )
     variables = jax.tree_util.tree_map(
-        lambda value: jax.device_put(jax.device_get(value), single_device_sharding)
-        if hasattr(value, "shape")
-        else value,
+        lambda value: (
+            jax.device_put(jax.device_get(value), single_device_sharding) if hasattr(value, "shape") else value
+        ),
         variables,
     )
     return config, variables
@@ -261,9 +257,7 @@ def restore_preprocessor_export(
 
     model_step = latest_model_export_step(directory) if step is None else int(step)
     if model_step is None:
-        raise FileNotFoundError(
-            f"No preprocessor or model exports found in {preprocessor_export_dir(directory)}"
-        )
+        raise FileNotFoundError(f"No preprocessor or model exports found in {preprocessor_export_dir(directory)}")
 
     model_config = load_model_export_config(directory, step=model_step)
     return _preprocessor_config_from_model_config(model_config)
@@ -332,10 +326,7 @@ class CheckpointManager:
     ) -> bool:
         args = ocp.args.Composite(
             state=ocp.args.StandardSave(state),
-            **{
-                name: grain_checkpoint.CheckpointSave(item)
-                for name, item in (extra_items or {}).items()
-            },
+            **{name: grain_checkpoint.CheckpointSave(item) for name, item in (extra_items or {}).items()},
         )
 
         saved = self._manager.save(step, args=args, metrics=metrics, force=force)
@@ -362,17 +353,13 @@ class CheckpointManager:
         abstract_target = jax.tree_util.tree_map(ocp.utils.to_shape_dtype_struct, target)
         restore_args = ocp.args.Composite(
             state=ocp.args.StandardRestore(abstract_target),
-            **{
-                name: grain_checkpoint.CheckpointRestore(item)
-                for name, item in (extra_items or {}).items()
-            },
+            **{name: grain_checkpoint.CheckpointRestore(item) for name, item in (extra_items or {}).items()},
         )
         try:
             restored = self._manager.restore(step, args=restore_args)["state"]
         except ValueError as err:
-            should_retry_without_iterators = (
-                extra_items
-                and any(message in str(err) for message in GRAIN_ITERATOR_RESTORE_MISMATCHES)
+            should_retry_without_iterators = extra_items and any(
+                message in str(err) for message in GRAIN_ITERATOR_RESTORE_MISMATCHES
             )
             if not should_retry_without_iterators:
                 raise

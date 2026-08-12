@@ -46,9 +46,7 @@ def _array_record_source_with_paths(data_dir: str) -> tuple[grain.ArrayRecordDat
     return grain.ArrayRecordDataSource(path_strings), path_strings
 
 
-def _describe_record_location(
-    source: grain.ArrayRecordDataSource, paths: list[str], idx: int
-) -> str:
+def _describe_record_location(source: grain.ArrayRecordDataSource, paths: list[str], idx: int) -> str:
     if hasattr(source, "_reader_idx_and_position"):
         try:
             reader_idx, position = source._reader_idx_and_position(idx)
@@ -85,9 +83,7 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
                 )
         except Exception as exc:
             location = _describe_record_location(self._source, self._paths, idx)
-            raise ValueError(
-                f"Failed to decode dynamics record idx={idx} ({location}) from {self._data_dir}"
-            ) from exc
+            raise ValueError(f"Failed to decode dynamics record idx={idx} ({location}) from {self._data_dir}") from exc
         return DynamicsDataset(
             video=video,
             actions=actions,
@@ -139,9 +135,7 @@ class VideoDataSource(grain.RandomAccessDataSource):
                 video = np.asarray(data["frames"])
         except Exception as exc:
             location = _describe_record_location(self._source, self._paths, idx)
-            raise ValueError(
-                f"Failed to decode video record idx={idx} ({location}) from {self._data_dir}"
-            ) from exc
+            raise ValueError(f"Failed to decode video record idx={idx} ({location}) from {self._data_dir}") from exc
         return VideoDataset(video=video)
 
 
@@ -232,9 +226,7 @@ class VideoBytesDataSource(grain.RandomAccessDataSource):
                 }
         except Exception as exc:
             location = _describe_record_location(self._source, self._paths, idx)
-            raise ValueError(
-                f"Failed to decode video record idx={idx} ({location}) from {self._data_dir}"
-            ) from exc
+            raise ValueError(f"Failed to decode video record idx={idx} ({location}) from {self._data_dir}") from exc
 
 
 class DecodeRandomVideoClip(grain.RandomMapTransform):
@@ -326,12 +318,7 @@ class AugmentVideoClip(grain.RandomMapTransform):
             top = int(rng.integers(0, height - crop_h + 1))
             left = int(rng.integers(0, width - crop_w + 1))
             video = video[:, top : top + crop_h, left : left + crop_w, :]
-            video = np.stack(
-                [
-                    cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR)
-                    for frame in video
-                ]
-            )
+            video = np.stack([cv2.resize(frame, (width, height), interpolation=cv2.INTER_LINEAR) for frame in video])
 
         out = video.astype(np.float32)
         if self.saturation > 0:
@@ -345,9 +332,7 @@ class AugmentVideoClip(grain.RandomMapTransform):
             out *= 1.0 + float(rng.uniform(-self.brightness, self.brightness))
         if self.hue > 0:
             shift = float(rng.uniform(-self.hue, self.hue)) * 180.0
-            hsv = np.stack(
-                [cv2.cvtColor(f, cv2.COLOR_RGB2HSV) for f in np.clip(out, 0, 255).astype(np.uint8)]
-            )
+            hsv = np.stack([cv2.cvtColor(f, cv2.COLOR_RGB2HSV) for f in np.clip(out, 0, 255).astype(np.uint8)])
             hsv[..., 0] = (hsv[..., 0].astype(np.float32) + shift) % 180
             out = np.stack([cv2.cvtColor(f, cv2.COLOR_HSV2RGB) for f in hsv]).astype(np.float32)
 

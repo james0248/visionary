@@ -195,9 +195,7 @@ def _export_dot_product_attention(
     num_heads = int(query.shape[-2])
     num_kv_heads = int(key.shape[-2])
     if num_heads % num_kv_heads != 0:
-        raise ValueError(
-            f"num_heads must be divisible by num_kv_heads, got {num_heads=} {num_kv_heads=}."
-        )
+        raise ValueError(f"num_heads must be divisible by num_kv_heads, got {num_heads=} {num_kv_heads=}.")
 
     if scale is None:
         scale = jnp.asarray(1.0 / (query.shape[-1] ** 0.5), dtype=query.dtype)
@@ -221,9 +219,7 @@ def _export_dot_product_attention(
             k_head = key[..., kv_idx, :]
             v_head = value[..., kv_idx, :]
 
-            logits = (jnp.einsum("bqhd,bkd->bhqk", q_group, k_head) * scale).astype(
-                jnp.float32
-            )
+            logits = (jnp.einsum("bqhd,bkd->bhqk", q_group, k_head) * scale).astype(jnp.float32)
             if mask is not None:
                 mask = mask.astype(logits.dtype)
                 logits = logits + (1.0 - mask) * jnp.asarray(-1.0e9, dtype=logits.dtype)
@@ -524,9 +520,7 @@ def _attention_for_export_bnsh(
     num_heads = int(query.shape[1])
     num_kv_heads = int(key.shape[1])
     if num_heads % num_kv_heads != 0:
-        raise ValueError(
-            f"num_heads must be divisible by num_kv_heads, got {num_heads=} {num_kv_heads=}."
-        )
+        raise ValueError(f"num_heads must be divisible by num_kv_heads, got {num_heads=} {num_kv_heads=}.")
     if scale is None:
         scale = jnp.asarray(1.0 / (query.shape[-1] ** 0.5), dtype=query.dtype)
     else:
@@ -548,9 +542,7 @@ def _attention_for_export_bnsh(
             q_group = query[:, group_start : group_start + repeat, :, :]
             k_head = key[:, kv_idx, :, :]
             v_head = value[:, kv_idx, :, :]
-            logits = (jnp.einsum("bhqd,bkd->bhqk", q_group, k_head) * scale).astype(
-                jnp.float32
-            )
+            logits = (jnp.einsum("bhqd,bkd->bhqk", q_group, k_head) * scale).astype(jnp.float32)
             if mask is not None:
                 mask = mask.astype(logits.dtype)
                 logits = logits + (1.0 - mask) * jnp.asarray(-1.0e9, dtype=logits.dtype)
@@ -941,9 +933,7 @@ class _CachedSpatioTemporalTransformer(nn.Module):
             temporal_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
 
-        candidate_cache_length = jnp.minimum(cache_length + 1, self.context_length).astype(
-            jnp.int32
-        )
+        candidate_cache_length = jnp.minimum(cache_length + 1, self.context_length).astype(jnp.int32)
         x = _ExportRMSNorm(dtype=self.dtype, name="final_norm")(x)
 
         return (
@@ -1042,9 +1032,7 @@ class _CachedSpatioTemporalTransformer(nn.Module):
             temporal_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
 
-        candidate_cache_length = jnp.minimum(cache_length + 1, self.context_length).astype(
-            jnp.int32
-        )
+        candidate_cache_length = jnp.minimum(cache_length + 1, self.context_length).astype(jnp.int32)
         x = _ExportRMSNorm(dtype=self.dtype, name="final_norm")(x)
 
         return x, tuple(candidate_ks), tuple(candidate_vs), candidate_cache_length
@@ -1109,12 +1097,8 @@ class _CachedSpatioTemporalTransformer(nn.Module):
                 cache_length,
                 attention_mask,
             )
-            entry_ks.append(
-                rearrange(k, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens)
-            )
-            entry_vs.append(
-                rearrange(v, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens)
-            )
+            entry_ks.append(rearrange(k, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens))
+            entry_vs.append(rearrange(v, "(b n) one h d -> b n one h d", b=batch_size, n=total_tokens))
             block_idx += 1
             temporal_idx += 1
             x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
@@ -1366,16 +1350,12 @@ class _CachedDynamicsModel(nn.Module):
             dtype=self.dtype,
             name="Dense_0",
         )(z.astype(self.dtype))
-        tokens = jnp.concatenate(
-            [action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2
-        )
+        tokens = jnp.concatenate([action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2)
         total_tokens = 1 + 1 + int(self.cfg.num_registers) + num_obs_tokens
         observation_offset = 1 + 1 + int(self.cfg.num_registers)
         return tokens, total_tokens, observation_offset
 
-    def _project_output(
-        self, hidden: jnp.ndarray, observation_offset: int, token_dim: int
-    ) -> jnp.ndarray:
+    def _project_output(self, hidden: jnp.ndarray, observation_offset: int, token_dim: int) -> jnp.ndarray:
         observation_hidden = hidden[:, :, observation_offset:, :]
         return nn.Dense(
             token_dim,
@@ -1394,22 +1374,14 @@ class _CachedDynamicsModel(nn.Module):
         signal_levels: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         _, seq_len, _, token_dim = z.shape
-        tokens, total_tokens, observation_offset = self._tokens(
-            z, actions, step_levels, signal_levels
-        )
-        spatial_rope = _export_create_temporal_rope(
-            float(self.cfg.base), int(self.cfg.head_dim), total_tokens
-        )
-        temporal_rope = _export_create_temporal_rope(
-            float(self.cfg.base), int(self.cfg.head_dim), seq_len
-        )
+        tokens, total_tokens, observation_offset = self._tokens(z, actions, step_levels, signal_levels)
+        spatial_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), total_tokens)
+        temporal_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), seq_len)
         spatial_mask = jnp.ones((total_tokens, total_tokens), dtype=bool)
         query_positions = jnp.arange(seq_len)[:, None]
         key_positions = jnp.arange(seq_len)[None, :]
         temporal_mask = key_positions <= query_positions
-        temporal_mask = temporal_mask & (
-            key_positions >= query_positions - (int(self.cfg.context_length) - 1)
-        )
+        temporal_mask = temporal_mask & (key_positions >= query_positions - (int(self.cfg.context_length) - 1))
         temporal_mask = jnp.broadcast_to(temporal_mask[None], (z.shape[0], seq_len, seq_len))
         hidden, k_cache, v_cache = self.transformer.prefill(
             tokens,
@@ -1456,12 +1428,8 @@ class _CachedDynamicsModel(nn.Module):
         cache_length: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         _, _, _, token_dim = z.shape
-        tokens, total_tokens, observation_offset = self._tokens(
-            z, actions, step_levels, signal_levels
-        )
-        spatial_rope = _export_create_temporal_rope(
-            float(self.cfg.base), int(self.cfg.head_dim), total_tokens
-        )
+        tokens, total_tokens, observation_offset = self._tokens(z, actions, step_levels, signal_levels)
+        spatial_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), total_tokens)
         full_temporal_rope = _export_create_temporal_rope(
             float(self.cfg.base),
             int(self.cfg.head_dim),
@@ -1506,21 +1474,15 @@ class _CachedDynamicsModel(nn.Module):
         clamp_position_index: bool = True,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         _, _, _, token_dim = z.shape
-        tokens, total_tokens, observation_offset = self._tokens(
-            z, actions, step_levels, signal_levels
-        )
-        spatial_rope = _export_create_temporal_rope(
-            float(self.cfg.base), int(self.cfg.head_dim), total_tokens
-        )
+        tokens, total_tokens, observation_offset = self._tokens(z, actions, step_levels, signal_levels)
+        spatial_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), total_tokens)
         full_temporal_rope = _export_create_temporal_rope(
             float(self.cfg.base),
             int(self.cfg.head_dim),
             int(self.cfg.context_length) + 1,
         )
         pos = (
-            jnp.minimum(position_index[0], int(self.cfg.context_length))
-            if clamp_position_index
-            else position_index[0]
+            jnp.minimum(position_index[0], int(self.cfg.context_length)) if clamp_position_index else position_index[0]
         )
         temporal_rope = (
             jnp.take(full_temporal_rope[0], pos, axis=0)[None],
@@ -1553,13 +1515,9 @@ class _CachedDynamicsModel(nn.Module):
         v_caches: tuple[jnp.ndarray, ...],
         cache_length: jnp.ndarray,
     ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
-        tokens, total_tokens, observation_offset = self._tokens(
-            z, actions, step_levels, signal_levels
-        )
+        tokens, total_tokens, observation_offset = self._tokens(z, actions, step_levels, signal_levels)
         token_dim = z.shape[-1]
-        spatial_rope = _export_create_temporal_rope(
-            float(self.cfg.base), int(self.cfg.head_dim), total_tokens
-        )
+        spatial_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), total_tokens)
         full_temporal_rope = _export_create_temporal_rope(
             float(self.cfg.base),
             int(self.cfg.head_dim),
@@ -1571,17 +1529,15 @@ class _CachedDynamicsModel(nn.Module):
             jnp.take(full_temporal_rope[1], pos, axis=0)[None],
         )
         spatial_mask = jnp.ones((total_tokens, total_tokens), dtype=bool)
-        hidden, candidate_ks, candidate_vs, candidate_cache_length = (
-            self.transformer.step_layer_cache(
-                tokens,
-                total_tokens,
-                spatial_rope,
-                spatial_mask,
-                temporal_rope,
-                k_caches,
-                v_caches,
-                cache_length,
-            )
+        hidden, candidate_ks, candidate_vs, candidate_cache_length = self.transformer.step_layer_cache(
+            tokens,
+            total_tokens,
+            spatial_rope,
+            spatial_mask,
+            temporal_rope,
+            k_caches,
+            v_caches,
+            cache_length,
         )
         pred_z = self._project_output(hidden, observation_offset, token_dim)
         candidate_ks = tuple(cache.astype(jnp.float32) for cache in candidate_ks)
@@ -1603,21 +1559,15 @@ class _CachedDynamicsModel(nn.Module):
         clamp_position_index: bool = True,
     ) -> jnp.ndarray:
         _, _, _, token_dim = z.shape
-        tokens, total_tokens, observation_offset = self._tokens(
-            z, actions, step_levels, signal_levels
-        )
-        spatial_rope = _export_create_temporal_rope(
-            float(self.cfg.base), int(self.cfg.head_dim), total_tokens
-        )
+        tokens, total_tokens, observation_offset = self._tokens(z, actions, step_levels, signal_levels)
+        spatial_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), total_tokens)
         full_temporal_rope = _export_create_temporal_rope(
             float(self.cfg.base),
             int(self.cfg.head_dim),
             int(self.cfg.context_length) + 1,
         )
         pos = (
-            jnp.minimum(position_index[0], int(self.cfg.context_length))
-            if clamp_position_index
-            else position_index[0]
+            jnp.minimum(position_index[0], int(self.cfg.context_length)) if clamp_position_index else position_index[0]
         )
         temporal_rope = (
             jnp.take(full_temporal_rope[0], pos, axis=0)[None],
@@ -1650,12 +1600,8 @@ class _CachedDynamicsModel(nn.Module):
         cache_length: jnp.ndarray,
     ) -> jnp.ndarray:
         _, _, _, token_dim = z.shape
-        tokens, total_tokens, observation_offset = self._tokens(
-            z, actions, step_levels, signal_levels
-        )
-        spatial_rope = _export_create_temporal_rope(
-            float(self.cfg.base), int(self.cfg.head_dim), total_tokens
-        )
+        tokens, total_tokens, observation_offset = self._tokens(z, actions, step_levels, signal_levels)
+        spatial_rope = _export_create_temporal_rope(float(self.cfg.base), int(self.cfg.head_dim), total_tokens)
         full_temporal_rope = _export_create_temporal_rope(
             float(self.cfg.base),
             int(self.cfg.head_dim),
@@ -1859,9 +1805,7 @@ class _CachedDynamicsModel(nn.Module):
             dtype=jnp.int32,
         )
         if self.cache_update == "slide":
-            context_position_index = jnp.asarray(
-                [int(self.cfg.context_length) - 1], dtype=jnp.int32
-            )
+            context_position_index = jnp.asarray([int(self.cfg.context_length) - 1], dtype=jnp.int32)
         else:
             context_position_index = position_index
         _, context_k, context_v, context_cache_length = self.step(
@@ -2062,9 +2006,7 @@ class _CachedDynamicsModel(nn.Module):
         cache_length: jnp.ndarray,
         context_tau: float,
         sample_steps: int,
-    ) -> tuple[
-        jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray
-    ]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...], jnp.ndarray]:
         final_z, pred_z = self.sample_step_layer_cache(
             sample_noise,
             actions,
@@ -2096,9 +2038,7 @@ class _CachedDynamicsModel(nn.Module):
             dtype=jnp.int32,
         )
         if self.cache_update == "slide":
-            context_position_index = jnp.asarray(
-                [int(self.cfg.context_length) - 1], dtype=jnp.int32
-            )
+            context_position_index = jnp.asarray([int(self.cfg.context_length) - 1], dtype=jnp.int32)
         else:
             context_position_index = position_index
         _, context_ks, context_vs, context_cache_length = self.step_layer_cache(
@@ -2112,6 +2052,7 @@ class _CachedDynamicsModel(nn.Module):
             cache_length,
         )
         return final_z, pred_z, context_ks, context_vs, context_cache_length
+
 
 @contextmanager
 def export_overrides():
@@ -2181,8 +2122,7 @@ def onnx_apply_tokenizer_decode_z(
 
         if num_obs_tokens is not None and token_count != int(num_obs_tokens):
             raise ValueError(
-                "decode_z dynamics token count mismatch: "
-                f"got shape={tuple(z.shape)}, num_obs_tokens={num_obs_tokens}."
+                f"decode_z dynamics token count mismatch: got shape={tuple(z.shape)}, num_obs_tokens={num_obs_tokens}."
             )
         if token_dim % channel_dim != 0:
             raise ValueError(
@@ -2203,11 +2143,7 @@ def onnx_apply_tokenizer_decode_z(
         # the unpack is emitted as Reshape.
         chunks = jnp.split(z, latents_per_obs, axis=-1)
         latent = jnp.concatenate(
-            [
-                chunk[:, :, obs_index : obs_index + 1, :]
-                for obs_index in range(token_count)
-                for chunk in chunks
-            ],
+            [chunk[:, :, obs_index : obs_index + 1, :] for obs_index in range(token_count) for chunk in chunks],
             axis=2,
         )
         return model.apply(variables, latent, method=Tokenizer.decode)
@@ -2529,9 +2465,7 @@ apply_dynamics_cached_prefill = onnx_apply_dynamics_cached_prefill
 apply_dynamics_cached_prefill_layer_cache = onnx_apply_dynamics_cached_prefill_layer_cache
 apply_dynamics_cached_step = onnx_apply_dynamics_cached_step
 apply_dynamics_cached_sample_step = onnx_apply_dynamics_cached_sample_step
-apply_dynamics_cached_sample_step_append_context = (
-    onnx_apply_dynamics_cached_sample_step_append_context
-)
+apply_dynamics_cached_sample_step_append_context = onnx_apply_dynamics_cached_sample_step_append_context
 apply_dynamics_cached_sample_step_append_context_layer_cache = (
     onnx_apply_dynamics_cached_sample_step_append_context_layer_cache
 )

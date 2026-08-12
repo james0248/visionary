@@ -134,9 +134,7 @@ class TokenizerPreprocessor:
         squeeze_batch = mask.ndim == 3
         if squeeze_batch:
             mask = mask[None]
-        patch_mask = jnp.broadcast_to(mask[..., None], (*mask.shape, self.patch_dim)).astype(
-            jnp.float32
-        )
+        patch_mask = jnp.broadcast_to(mask[..., None], (*mask.shape, self.patch_dim)).astype(jnp.float32)
         images = self.patches_to_images(patch_mask)
         return images[0] if squeeze_batch else images
 

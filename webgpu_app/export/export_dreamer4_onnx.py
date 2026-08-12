@@ -61,9 +61,7 @@ MANIFEST_NAME = "breakout_onnx_manifest.json"
 def sample_export_names(sample_steps: int) -> dict[str, str]:
     suffix = f"s{sample_steps}"
     return {
-        "append_context_slide_entry": (
-            f"breakout_dynamics_sample_append_context_slide_entry_b1_t1_{suffix}"
-        ),
+        "append_context_slide_entry": (f"breakout_dynamics_sample_append_context_slide_entry_b1_t1_{suffix}"),
     }
 
 
@@ -113,9 +111,7 @@ def export_full_wasm_headtime_dynamics_model(
     rewrites = {
         "mha_gqa_pretranspose": rewrite_split_mha_gqa_pretranspose_for_wasm(output_path),
         "cache_bhntd": rewrite_split_cache_bhntd_for_wasm(output_path),
-        "head_split_unsqueeze_concat": rewrite_head_split_unsqueeze_concats_for_wasm(
-            output_path
-        ),
+        "head_split_unsqueeze_concat": rewrite_head_split_unsqueeze_concats_for_wasm(output_path),
         "identity_head_gather": rewrite_identity_head_gathers_for_wasm(output_path),
         "packed_qkv_head_groups": rewrite_packed_qkv_head_groups_for_wasm(output_path),
         "swiglu_rank2": rewrite_swiglu_rank2_islands_for_webgpu(output_path),
@@ -440,10 +436,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--export_cached",
         action="store_true",
-        help=(
-            "Export the browser hot path: single-frame decoder graphs and the full-cache "
-            "dynamics entry graph."
-        ),
+        help=("Export the browser hot path: single-frame decoder graphs and the full-cache dynamics entry graph."),
     )
     return parser.parse_args()
 
@@ -454,9 +447,7 @@ def require_static_phase1_args(args: argparse.Namespace) -> None:
     if args.seq_len != 64:
         raise ValueError("Phase 1 ONNX export supports only --seq_len 64.")
     if args.sample_steps <= 0 or args.sample_steps & (args.sample_steps - 1):
-        raise ValueError(
-            f"--sample_steps must be a positive power of two, got {args.sample_steps}."
-        )
+        raise ValueError(f"--sample_steps must be a positive power of two, got {args.sample_steps}.")
 
 
 def seeded_inputs(
@@ -541,9 +532,7 @@ def ensure_static_int32_output(path: Path, output_name: str, value: int) -> dict
             "reason": f"{output_name!r} already exists",
         }
 
-    model.graph.initializer.append(
-        onnx.numpy_helper.from_array(np.asarray([value], dtype=np.int32), name=output_name)
-    )
+    model.graph.initializer.append(onnx.numpy_helper.from_array(np.asarray([value], dtype=np.int32), name=output_name))
     external_data_path(path).unlink(missing_ok=True)
     onnx.save_model(model, path.as_posix(), save_as_external_data=False)
     return {
@@ -596,17 +585,11 @@ def prune_graph_to_outputs(model: onnx.ModelProto) -> dict[str, int]:
     value_info_count_before = len(model.graph.value_info)
 
     kept_nodes = [node for node in model.graph.node if node_key(node) in required_nodes]
-    kept_initializers = [
-        initializer
-        for initializer in model.graph.initializer
-        if initializer.name in required_values
-    ]
+    kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in required_values]
     graph_io = {value.name for value in model.graph.input}
     graph_io.update(value.name for value in model.graph.output)
     kept_value_info = [
-        value
-        for value in model.graph.value_info
-        if value.name in required_values or value.name in graph_io
+        value for value in model.graph.value_info if value.name in required_values or value.name in graph_io
     ]
 
     del model.graph.node[:]
@@ -690,9 +673,7 @@ def rewrite_entry_final_z_only_for_webgpu(path: Path, enabled: bool = True) -> d
     kept_outputs = [output for output in model.graph.output if output.name != "pred_z"]
     del model.graph.output[:]
     model.graph.output.extend(kept_outputs)
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in {"pred_z", discarded_final_z}
-    ]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in {"pred_z", discarded_final_z}]
     del model.graph.value_info[:]
     model.graph.value_info.extend(kept_value_info)
 
@@ -749,9 +730,7 @@ def simplify_onnx_for_webgpu(path: Path) -> dict[str, Any]:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            f"onnxsim subprocess for {path} did not return JSON.\n"
-            f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
+            f"onnxsim subprocess for {path} did not return JSON.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         ) from exc
 
 
@@ -791,9 +770,7 @@ def rewrite_slide_static_cache_ops_for_webgpu(path: Path) -> dict[str, Any]:
     model = onnx.load(path.as_posix(), load_external_data=True)
 
     value_shapes: dict[str, tuple[int, ...]] = {}
-    for value_info in itertools.chain(
-        model.graph.input, model.graph.output, model.graph.value_info
-    ):
+    for value_info in itertools.chain(model.graph.input, model.graph.output, model.graph.value_info):
         tensor_type = value_info.type.tensor_type
         if tensor_type.HasField("shape"):
             dims = []
@@ -994,12 +971,10 @@ def rewrite_slide_static_cache_ops_for_webgpu(path: Path) -> dict[str, Any]:
         "rewrites": len(rewrites),
         "rewrite_examples": rewrites[:12],
         "tracked_ops_before": {
-            op: int(before.get(op, 0))
-            for op in ("Min", "Reshape", "Unsqueeze", "Split", "Concat", "Cast")
+            op: int(before.get(op, 0)) for op in ("Min", "Reshape", "Unsqueeze", "Split", "Concat", "Cast")
         },
         "tracked_ops_after": {
-            op: int(after.get(op, 0))
-            for op in ("Min", "Reshape", "Unsqueeze", "Split", "Concat", "Cast")
+            op: int(after.get(op, 0)) for op in ("Min", "Reshape", "Unsqueeze", "Split", "Concat", "Cast")
         },
     }
 
@@ -1093,10 +1068,7 @@ def _singleton_layout_plan(
         for remove_count in range(len(output_shape) - len(input_shape), len(candidate_axes) + 1):
             for axes_tuple in itertools.combinations(candidate_axes, remove_count):
                 axes = list(axes_tuple)
-                if (
-                    tuple(dim for axis, dim in enumerate(output_shape) if axis not in axes)
-                    == input_shape
-                ):
+                if tuple(dim for axis, dim in enumerate(output_shape) if axis not in axes) == input_shape:
                     return ([], axes)
 
     if len(input_shape) > len(output_shape):
@@ -1104,10 +1076,7 @@ def _singleton_layout_plan(
         for remove_count in range(len(input_shape) - len(output_shape), len(candidate_axes) + 1):
             for axes_tuple in itertools.combinations(candidate_axes, remove_count):
                 axes = list(axes_tuple)
-                if (
-                    tuple(dim for axis, dim in enumerate(input_shape) if axis not in axes)
-                    == output_shape
-                ):
+                if tuple(dim for axis, dim in enumerate(input_shape) if axis not in axes) == output_shape:
                     return (axes, [])
 
     if [dim for dim in input_shape if dim != 1] != [dim for dim in output_shape if dim != 1]:
@@ -1135,11 +1104,7 @@ def rewrite_singleton_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
     inferred = onnx.shape_inference.infer_shapes(model)
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
 
     rewritten_nodes: list[onnx.NodeProto] = []
@@ -1171,9 +1136,7 @@ def rewrite_singleton_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
         current_name = node.input[0]
         if squeeze_axes:
             axes_name = f"{node.name or node.output[0]}__squeeze_axes"
-            new_initializers.append(
-                onnx.numpy_helper.from_array(np.asarray(squeeze_axes, dtype=np.int64), axes_name)
-            )
+            new_initializers.append(onnx.numpy_helper.from_array(np.asarray(squeeze_axes, dtype=np.int64), axes_name))
             squeeze_output = node.output[0] if not unsqueeze_axes else f"{node.output[0]}__squeezed"
             rewritten_nodes.append(
                 onnx.helper.make_node(
@@ -1186,9 +1149,7 @@ def rewrite_singleton_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
             current_name = squeeze_output
         if unsqueeze_axes:
             axes_name = f"{node.name or node.output[0]}__unsqueeze_axes"
-            new_initializers.append(
-                onnx.numpy_helper.from_array(np.asarray(unsqueeze_axes, dtype=np.int64), axes_name)
-            )
+            new_initializers.append(onnx.numpy_helper.from_array(np.asarray(unsqueeze_axes, dtype=np.int64), axes_name))
             rewritten_nodes.append(
                 onnx.helper.make_node(
                     "Unsqueeze",
@@ -1284,15 +1245,10 @@ def rewrite_squeeze_concat_for_webgpu(path: Path, enabled: bool = True) -> dict[
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializers = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
@@ -1356,9 +1312,7 @@ def rewrite_squeeze_concat_for_webgpu(path: Path, enabled: bool = True) -> dict[
             continue
         if any(shape[axis] != 1 for shape in input_shapes for axis in normalized_axes):
             continue
-        expected_squeezed = tuple(
-            dim for axis, dim in enumerate(input_shapes[0]) if axis not in normalized_axes
-        )
+        expected_squeezed = tuple(dim for axis, dim in enumerate(input_shapes[0]) if axis not in normalized_axes)
         if any(shape != expected_squeezed for shape in output_shapes):
             continue
         if any(squeeze_axes(squeeze) != axes for squeeze in squeezes[1:] if squeeze):
@@ -1374,25 +1328,15 @@ def rewrite_squeeze_concat_for_webgpu(path: Path, enabled: bool = True) -> dict[
 
         first_shape = input_shapes[0]
         if any(
-            any(
-                dim != first_shape[axis]
-                for axis, dim in enumerate(shape)
-                if axis != original_concat_axis
-            )
+            any(dim != first_shape[axis] for axis, dim in enumerate(shape) if axis != original_concat_axis)
             for shape in input_shapes[1:]
         ):
             continue
 
         expected_unsqueezed_output = list(first_shape)
-        expected_unsqueezed_output[original_concat_axis] = sum(
-            shape[original_concat_axis] for shape in input_shapes
-        )
+        expected_unsqueezed_output[original_concat_axis] = sum(shape[original_concat_axis] for shape in input_shapes)
         if (
-            tuple(
-                dim
-                for axis, dim in enumerate(expected_unsqueezed_output)
-                if axis not in normalized_axes
-            )
+            tuple(dim for axis, dim in enumerate(expected_unsqueezed_output) if axis not in normalized_axes)
             != concat_output_shape
         ):
             continue
@@ -1400,9 +1344,7 @@ def rewrite_squeeze_concat_for_webgpu(path: Path, enabled: bool = True) -> dict[
         prefix = concat.name or concat.output[0]
         concat_before_squeeze = f"{prefix}__pre_squeeze_concat"
         axes_name = f"{prefix}__factored_squeeze_axes"
-        new_initializers.append(
-            onnx.numpy_helper.from_array(np.asarray(normalized_axes, dtype=np.int64), axes_name)
-        )
+        new_initializers.append(onnx.numpy_helper.from_array(np.asarray(normalized_axes, dtype=np.int64), axes_name))
         replacements[node_key(concat)] = [
             onnx.helper.make_node(
                 "Concat",
@@ -1469,9 +1411,7 @@ def rewrite_squeeze_concat_for_webgpu(path: Path, enabled: bool = True) -> dict[
     }
 
 
-def rewrite_unsqueeze_transpose_squeeze_for_webgpu(
-    path: Path, enabled: bool = True
-) -> dict[str, Any]:
+def rewrite_unsqueeze_transpose_squeeze_for_webgpu(path: Path, enabled: bool = True) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
         return {
@@ -1485,8 +1425,7 @@ def rewrite_unsqueeze_transpose_squeeze_for_webgpu(
 
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializers = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
@@ -1663,9 +1602,7 @@ def rewrite_spatial_qk_head_layout_for_webgpu(path: Path, enabled: bool = True) 
         return tuple(int(axis) for axis in axes)
 
     def replace_axes_initializer(name: str, axes: tuple[int, ...]) -> None:
-        initializers[name].CopyFrom(
-            onnx.numpy_helper.from_array(np.asarray(axes, dtype=np.int64), name)
-        )
+        initializers[name].CopyFrom(onnx.numpy_helper.from_array(np.asarray(axes, dtype=np.int64), name))
 
     rewrites = Counter()
     examples: list[dict[str, Any]] = []
@@ -1673,11 +1610,7 @@ def rewrite_spatial_qk_head_layout_for_webgpu(path: Path, enabled: bool = True) 
     stale_value_info: set[str] = set()
 
     for transpose in model.graph.node:
-        if (
-            transpose.op_type != "Transpose"
-            or len(transpose.input) != 1
-            or len(transpose.output) != 1
-        ):
+        if transpose.op_type != "Transpose" or len(transpose.input) != 1 or len(transpose.output) != 1:
             continue
         if tuple(int(axis) for axis in attr_value(transpose, "perm", ())) != (0, 2, 1, 3):
             continue
@@ -1738,9 +1671,7 @@ def rewrite_spatial_qk_head_layout_for_webgpu(path: Path, enabled: bool = True) 
         if any(node is None or node.op_type != "Unsqueeze" for node in unsqueezes):
             continue
         if any(
-            len(consumers.get(node.output[0], [])) != 1
-            or len(node.input) < 2
-            or node.input[1] not in initializers
+            len(consumers.get(node.output[0], [])) != 1 or len(node.input) < 2 or node.input[1] not in initializers
             for node in unsqueezes
             if node is not None
         ):
@@ -1777,9 +1708,7 @@ def rewrite_spatial_qk_head_layout_for_webgpu(path: Path, enabled: bool = True) 
                     "rotary": rotary.name,
                     "post_transpose": post_transpose.name if post_transpose is not None else None,
                     "post_consumer": post_consumer.name if post_consumer is not None else None,
-                    "post_consumer_op": post_consumer.op_type
-                    if post_consumer is not None
-                    else None,
+                    "post_consumer_op": post_consumer.op_type if post_consumer is not None else None,
                     "concat": concat.name,
                     "heads": len(concat.input),
                     "old_unsqueeze_axes": [0, 2],
@@ -1791,9 +1720,7 @@ def rewrite_spatial_qk_head_layout_for_webgpu(path: Path, enabled: bool = True) 
 
     if rewrites:
         kept_nodes = [node for node in model.graph.node if node_key(node) not in skip_nodes]
-        kept_value_info = [
-            value for value in model.graph.value_info if value.name not in stale_value_info
-        ]
+        kept_value_info = [value for value in model.graph.value_info if value.name not in stale_value_info]
         del model.graph.node[:]
         model.graph.node.extend(kept_nodes)
         del model.graph.value_info[:]
@@ -1836,11 +1763,7 @@ def rewrite_temporal_attention_bhsd_for_webgpu(path: Path, enabled: bool = True)
     inferred = onnx.shape_inference.infer_shapes(model)
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
@@ -1948,9 +1871,7 @@ def rewrite_temporal_attention_bhsd_for_webgpu(path: Path, enabled: bool = True)
         ):
             return None
         current_inputs = [
-            input_name
-            for input_name in concat.input
-            if value_shapes.get(input_name, (None, None, None, None))[1] == 1
+            input_name for input_name in concat.input if value_shapes.get(input_name, (None, None, None, None))[1] == 1
         ]
         if len(current_inputs) != 1:
             return None
@@ -1962,18 +1883,14 @@ def rewrite_temporal_attention_bhsd_for_webgpu(path: Path, enabled: bool = True)
 
     def single_attention_value(score: onnx.NodeProto) -> onnx.NodeProto | None:
         softmax_consumers = [
-            node
-            for node in consumers.get(score.output[0], [])
-            if node.op_type == "Softmax" and len(node.output) == 1
+            node for node in consumers.get(score.output[0], []) if node.op_type == "Softmax" and len(node.output) == 1
         ]
         if len(softmax_consumers) != 1:
             return None
         value_nodes = [
             node
             for node in consumers.get(softmax_consumers[0].output[0], [])
-            if node.op_type == "Einsum"
-            and equation(node) == "bhqk,bkhd->bqhd"
-            and len(node.input) >= 2
+            if node.op_type == "Einsum" and equation(node) == "bhqk,bkhd->bqhd" and len(node.input) >= 2
         ]
         if len(value_nodes) != 1:
             return None
@@ -1985,11 +1902,7 @@ def rewrite_temporal_attention_bhsd_for_webgpu(path: Path, enabled: bool = True)
     examples: list[dict[str, Any]] = []
 
     for score in model.graph.node:
-        if (
-            score.op_type != "Einsum"
-            or equation(score) != "bqhd,bkhd->bhqk"
-            or len(score.input) < 2
-        ):
+        if score.op_type != "Einsum" or equation(score) != "bqhd,bkhd->bhqk" or len(score.input) < 2:
             continue
 
         q_trace = trace_temporal_rope_output(score.input[0])
@@ -2192,8 +2105,7 @@ def rewrite_entry_cache_io_bhntd_for_webgpu(path: Path, enabled: bool = True) ->
 
     initializer_by_name = {initializer.name: initializer for initializer in model.graph.initializer}
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -2220,11 +2132,7 @@ def rewrite_entry_cache_io_bhntd_for_webgpu(path: Path, enabled: bool = True) ->
     examples: list[dict[str, Any]] = []
 
     for node in model.graph.node:
-        if (
-            node.op_type != "Slice"
-            or len(node.input) < 4
-            or node.input[0] not in {"k_cache", "v_cache"}
-        ):
+        if node.op_type != "Slice" or len(node.input) < 4 or node.input[0] not in {"k_cache", "v_cache"}:
             continue
         starts_name, ends_name, axes_name = node.input[1], node.input[2], node.input[3]
         if not all(name in initializer_arrays for name in (starts_name, ends_name, axes_name)):
@@ -2315,9 +2223,7 @@ def rewrite_entry_cache_io_bhntd_for_webgpu(path: Path, enabled: bool = True) ->
     }
 
 
-def rewrite_prefill_cache_outputs_bhntd_for_webgpu(
-    path: Path, enabled: bool = True
-) -> dict[str, Any]:
+def rewrite_prefill_cache_outputs_bhntd_for_webgpu(path: Path, enabled: bool = True) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
         return {
@@ -2408,9 +2314,7 @@ def rewrite_prefill_cache_outputs_bhntd_for_webgpu(
     }
 
 
-def fold_attention_scale_into_query_norm_for_webgpu(
-    path: Path, enabled: bool = True
-) -> dict[str, Any]:
+def fold_attention_scale_into_query_norm_for_webgpu(path: Path, enabled: bool = True) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
         return {
@@ -2424,8 +2328,7 @@ def fold_attention_scale_into_query_norm_for_webgpu(
 
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializers = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     initializer_by_name = {initializer.name: initializer for initializer in model.graph.initializer}
     producer = {output: node for node in model.graph.node for output in node.output}
@@ -2592,11 +2495,7 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
     inferred = onnx.shape_inference.infer_shapes(model)
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
 
     consumers: dict[str, list[onnx.NodeProto]] = {}
@@ -2659,9 +2558,7 @@ def rewrite_gqa_repeats_for_webgpu(path: Path) -> dict[str, Any]:
             compact_shape_name = f"{source_producer.name or node.name}__gqa_compact_shape"
             compact_output = f"{source_producer.output[0]}__gqa_compact"
             new_initializers.append(
-                onnx.numpy_helper.from_array(
-                    np.asarray(compact_shape, dtype=np.int64), compact_shape_name
-                )
+                onnx.numpy_helper.from_array(np.asarray(compact_shape, dtype=np.int64), compact_shape_name)
             )
             replacement_nodes.append(
                 onnx.helper.make_node(
@@ -2778,16 +2675,10 @@ def rewrite_packed_qkv_head_projection_for_webgpu(
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializers = {initializer.name: initializer for initializer in model.graph.initializer}
-    initializer_arrays = {
-        name: onnx.numpy_helper.to_array(initializer) for name, initializer in initializers.items()
-    }
+    initializer_arrays = {name: onnx.numpy_helper.to_array(initializer) for name, initializer in initializers.items()}
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
         for input_name in node.input:
@@ -2876,9 +2767,7 @@ def rewrite_packed_qkv_head_projection_for_webgpu(
             split_outputs.append(f"{reshape.output[0]}__packed_qkv_head")
             unsqueeze_outputs.append(reshape.output[0])
 
-        first_gemm = min(
-            (item[0] for item in ordered), key=lambda node: list(model.graph.node).index(node)
-        )
+        first_gemm = min((item[0] for item in ordered), key=lambda node: list(model.graph.node).index(node))
         prefix = first_gemm.name or first_gemm.output[0]
         packed_weight_name = f"{prefix}__packed_qkv_head_weight"
         packed_output_name = f"{prefix}__packed_qkv_head_output"
@@ -2887,12 +2776,8 @@ def rewrite_packed_qkv_head_projection_for_webgpu(
         packed_weight = np.concatenate(weights, axis=1)
         new_initializers.extend(
             [
-                onnx.numpy_helper.from_array(
-                    packed_weight.astype(weights[0].dtype), packed_weight_name
-                ),
-                onnx.numpy_helper.from_array(
-                    np.asarray(split_sizes, dtype=np.int64), split_sizes_name
-                ),
+                onnx.numpy_helper.from_array(packed_weight.astype(weights[0].dtype), packed_weight_name),
+                onnx.numpy_helper.from_array(np.asarray(split_sizes, dtype=np.int64), split_sizes_name),
                 onnx.numpy_helper.from_array(np.asarray([0], dtype=np.int64), unsqueeze_axes_name),
             ]
         )
@@ -2990,15 +2875,10 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
     inferred = onnx.shape_inference.infer_shapes(model)
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializers = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     initializer_names = set(initializers)
     consumers: dict[str, list[onnx.NodeProto]] = {}
@@ -3081,9 +2961,7 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
                         axes = [axis for axis, dim in enumerate(output_shape) if dim == 1]
                         axes_name = f"{reshape.name or reshape.output[0]}__head_unsqueeze_axes"
                         new_initializers.append(
-                            onnx.numpy_helper.from_array(
-                                np.asarray(axes, dtype=np.int64), axes_name
-                            )
+                            onnx.numpy_helper.from_array(np.asarray(axes, dtype=np.int64), axes_name)
                         )
                         replacement_nodes.append(
                             onnx.helper.make_node(
@@ -3118,8 +2996,7 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
             and input_shape[:2].count(1) == 1
             and input_shape[-2] >= 2
             and input_shape[-1] >= 8
-            and output_shape
-            == (max(input_shape[0], input_shape[1]), input_shape[2] * input_shape[3])
+            and output_shape == (max(input_shape[0], input_shape[1]), input_shape[2] * input_shape[3])
         ):
             weight = initializers.get(gemm_consumer.input[1])
             if weight is not None and weight.shape[0] == output_shape[-1]:
@@ -3180,8 +3057,7 @@ def rewrite_head_projection_reshapes_for_webgpu(path: Path) -> dict[str, Any]:
     retained_initializers = [
         initializer
         for initializer in model.graph.initializer
-        if initializer.name in initializer_names
-        or any(initializer.name in node.input for node in model.graph.node)
+        if initializer.name in initializer_names or any(initializer.name in node.input for node in model.graph.node)
     ]
     del model.graph.initializer[:]
     model.graph.initializer.extend(retained_initializers)
@@ -3220,11 +3096,7 @@ def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> d
     inferred = onnx.shape_inference.infer_shapes(model)
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     consumers: dict[str, list[onnx.NodeProto]] = {}
     for node in model.graph.node:
@@ -3244,9 +3116,7 @@ def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> d
         return attrs == {"alpha": 1.0, "beta": 0.0, "transA": 0, "transB": 0}
 
     def add_i64_initializer(name: str, values: list[int]) -> str:
-        new_initializers.append(
-            onnx.numpy_helper.from_array(np.asarray(values, dtype=np.int64), name)
-        )
+        new_initializers.append(onnx.numpy_helper.from_array(np.asarray(values, dtype=np.int64), name))
         return name
 
     def singleton_axes_for_head_shape(shape: tuple[int, ...], head_axis: int) -> list[int]:
@@ -3282,9 +3152,7 @@ def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> d
             head_count = output_shape[-2]
             head_dim = output_shape[-1]
             head_axis = len(output_shape) - 2
-            split_outputs = [
-                f"{reshape.output[0]}__flat_head_{head_idx}" for head_idx in range(head_count)
-            ]
+            split_outputs = [f"{reshape.output[0]}__flat_head_{head_idx}" for head_idx in range(head_count)]
             split_sizes = add_i64_initializer(
                 f"{reshape.name or reshape.output[0]}__split_sizes",
                 [head_dim] * head_count,
@@ -3355,9 +3223,7 @@ def rewrite_head_projection_reshapes_with_layout_ops_for_webgpu(path: Path) -> d
             head_count = input_shape[-2]
             head_dim = input_shape[-1]
             head_axis = len(input_shape) - 2
-            split_outputs = [
-                f"{reshape.output[0]}__ranked_head_{head_idx}" for head_idx in range(head_count)
-            ]
+            split_outputs = [f"{reshape.output[0]}__ranked_head_{head_idx}" for head_idx in range(head_count)]
             split_sizes = add_i64_initializer(
                 f"{reshape.name or reshape.output[0]}__merge_split_sizes",
                 [1] * head_count,
@@ -3475,8 +3341,7 @@ def rewrite_rmsnorm_for_webgpu(path: Path) -> dict[str, Any]:
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializers = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = {}
     for node in model.graph.node:
@@ -3508,9 +3373,7 @@ def rewrite_rmsnorm_for_webgpu(path: Path) -> dict[str, Any]:
             candidate = producer.get(input_name)
             if candidate is not None and candidate.op_type == "Div":
                 div = candidate
-                scale_input = (
-                    scale_mul.input[1] if input_name == scale_mul.input[0] else scale_mul.input[0]
-                )
+                scale_input = scale_mul.input[1] if input_name == scale_mul.input[0] else scale_mul.input[0]
                 break
         if div is None or scale_input is None or scale_input not in initializers:
             continue
@@ -3639,11 +3502,7 @@ def fuse_skip_simplified_layer_norm_for_webgpu(path: Path) -> dict[str, Any]:
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializers = {initializer.name: initializer for initializer in model.graph.initializer}
     producer = {output: node for node in model.graph.node for output in node.output}
@@ -3674,9 +3533,7 @@ def fuse_skip_simplified_layer_norm_for_webgpu(path: Path) -> dict[str, Any]:
             return name
         alias = f"{name}__skip_sln_1d"
         if alias not in initializers and alias not in gamma_aliases.values():
-            new_initializers.append(
-                onnx.numpy_helper.from_array(value.reshape((width,)).astype(value.dtype), alias)
-            )
+            new_initializers.append(onnx.numpy_helper.from_array(value.reshape((width,)).astype(value.dtype), alias))
         gamma_aliases[name] = alias
         return alias
 
@@ -3790,16 +3647,10 @@ def pack_sibling_gemms_for_webgpu(
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializers = {initializer.name: initializer for initializer in model.graph.initializer}
-    initializer_arrays = {
-        name: onnx.numpy_helper.to_array(initializer) for name, initializer in initializers.items()
-    }
+    initializer_arrays = {name: onnx.numpy_helper.to_array(initializer) for name, initializer in initializers.items()}
 
     def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
         for attr in node.attribute:
@@ -3943,9 +3794,7 @@ def pack_sibling_gemms_for_webgpu(
                 rewritten_nodes.extend(replacements[node.name])
             else:
                 rewritten_nodes.append(node)
-        used_inputs = {
-            input_name for node in rewritten_nodes for input_name in node.input if input_name
-        }
+        used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
         kept_initializers = [
             initializer
             for initializer in model.graph.initializer
@@ -3981,9 +3830,7 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializers = {initializer.name: initializer for initializer in model.graph.initializer}
-    initializer_arrays = {
-        name: onnx.numpy_helper.to_array(initializer) for name, initializer in initializers.items()
-    }
+    initializer_arrays = {name: onnx.numpy_helper.to_array(initializer) for name, initializer in initializers.items()}
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
         for input_name in node.input:
@@ -3997,9 +3844,7 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
 
     def split_sizes(node: onnx.NodeProto) -> tuple[int, ...] | None:
         if len(node.input) >= 2 and node.input[1] in initializer_arrays:
-            return tuple(
-                int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1)
-            )
+            return tuple(int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1))
         return None
 
     replacements: dict[str, onnx.NodeProto] = {}
@@ -4042,11 +3887,7 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
                 new_sizes.append(int(size))
                 new_outputs.append(output_name)
                 continue
-            if (
-                len(child.output) != 2
-                or len(child.output) != len(child_sizes)
-                or sum(child_sizes) != int(size)
-            ):
+            if len(child.output) != 2 or len(child.output) != len(child_sizes) or sum(child_sizes) != int(size):
                 new_sizes.append(int(size))
                 new_outputs.append(output_name)
                 continue
@@ -4060,9 +3901,7 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
             continue
 
         size_name = f"{split.name or split.output[0]}__partial_head_split_sizes"
-        new_initializers.append(
-            onnx.numpy_helper.from_array(np.asarray(new_sizes, dtype=np.int64), size_name)
-        )
+        new_initializers.append(onnx.numpy_helper.from_array(np.asarray(new_sizes, dtype=np.int64), size_name))
         rewritten = onnx.helper.make_node(
             "Split",
             [split.input[0], size_name],
@@ -4105,9 +3944,7 @@ def rewrite_packed_qkv_split_partial_heads_for_webgpu(path: Path) -> dict[str, A
             continue
         rewritten_nodes.append(replacements.get(key, node))
 
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in stale_value_info
-    ]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.value_info[:]
@@ -4139,8 +3976,7 @@ def rewrite_q_head_split_gather_for_webgpu(path: Path) -> dict[str, Any]:
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -4156,9 +3992,7 @@ def rewrite_q_head_split_gather_for_webgpu(path: Path) -> dict[str, Any]:
     def axes_input(node: onnx.NodeProto) -> tuple[int, ...] | None:
         if len(node.input) < 2 or node.input[1] not in initializer_arrays:
             return None
-        return tuple(
-            int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1)
-        )
+        return tuple(int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1))
 
     indices_name = "head_gather_indices_8x32"
     unsqueeze_axis0_name = "head_gather_unsqueeze_axis0"
@@ -4182,9 +4016,7 @@ def rewrite_q_head_split_gather_for_webgpu(path: Path) -> dict[str, Any]:
             continue
         if len(split.input) < 2 or split.input[1] not in initializer_arrays:
             continue
-        split_sizes = tuple(
-            int(value) for value in np.asarray(initializer_arrays[split.input[1]]).reshape(-1)
-        )
+        split_sizes = tuple(int(value) for value in np.asarray(initializer_arrays[split.input[1]]).reshape(-1))
         if split_sizes != (32, 32, 32, 32, 32, 32, 32, 32):
             continue
 
@@ -4294,9 +4126,7 @@ def rewrite_q_head_split_gather_for_webgpu(path: Path) -> dict[str, Any]:
             continue
         rewritten_nodes.extend(replacements.get(key, [node]))
 
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in stale_value_info
-    ]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.value_info[:]
@@ -4327,8 +4157,7 @@ def remove_zero_softmax_bias_adds_for_webgpu(path: Path) -> dict[str, Any]:
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -4396,15 +4225,9 @@ def remove_zero_softmax_bias_adds_for_webgpu(path: Path) -> dict[str, Any]:
                 node.input[index] = replacements[input_name]
         rewritten_nodes.append(node)
 
-    used_inputs = {
-        input_name for node in rewritten_nodes for input_name in node.input if input_name
-    }
-    kept_initializers = [
-        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
-    ]
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in stale_value_info
-    ]
+    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.initializer[:]
@@ -4437,8 +4260,7 @@ def rewrite_cache_layer_slices_as_gather_for_webgpu(path: Path) -> dict[str, Any
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -4490,9 +4312,7 @@ def rewrite_cache_layer_slices_as_gather_for_webgpu(path: Path) -> dict[str, Any
                     squeeze = slice_consumers[0]
                     gather_index_name = f"{key}__layer_gather_index"
                     new_initializers.append(
-                        onnx.numpy_helper.from_array(
-                            np.asarray(layer, dtype=np.int64), gather_index_name
-                        )
+                        onnx.numpy_helper.from_array(np.asarray(layer, dtype=np.int64), gather_index_name)
                     )
                     replacement = onnx.helper.make_node(
                         "Gather",
@@ -4529,12 +4349,8 @@ def rewrite_cache_layer_slices_as_gather_for_webgpu(path: Path) -> dict[str, Any
         }
 
     used_inputs = {input_name for node in new_nodes for input_name in node.input if input_name}
-    kept_initializers = [
-        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
-    ]
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in stale_value_info
-    ]
+    kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(new_nodes)
     del model.graph.initializer[:]
@@ -4590,10 +4406,7 @@ def rewrite_split_mha_gqa_pretranspose_for_wasm(
             consumers[input_name].append(node)
 
     existing_value_names = {
-        value.name
-        for value in (
-            list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info)
-        )
+        value.name for value in (list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info))
     }
     existing_value_names.update(initializer.name for initializer in model.graph.initializer)
     existing_value_names.update(output for node in model.graph.node for output in node.output)
@@ -4667,9 +4480,7 @@ def rewrite_split_mha_gqa_pretranspose_for_wasm(
             if gather_key in replacements:
                 continue
 
-            compact_bnsd_name = unique_value_name(
-                f"{gather.input[0]}__compact_bnsd_for_{transpose.output[0]}"
-            )
+            compact_bnsd_name = unique_value_name(f"{gather.input[0]}__compact_bnsd_for_{transpose.output[0]}")
             compact_transpose = onnx.helper.make_node(
                 "Transpose",
                 [gather.input[0]],
@@ -4726,12 +4537,8 @@ def rewrite_split_mha_gqa_pretranspose_for_wasm(
             new_nodes.append(node)
 
     used_inputs = {input_name for node in new_nodes for input_name in node.input if input_name}
-    kept_initializers = [
-        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
-    ]
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in stale_value_info
-    ]
+    kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(new_nodes)
     del model.graph.initializer[:]
@@ -4783,11 +4590,7 @@ def rewrite_split_cache_bhntd_for_wasm(
 
     model = onnx.load(path.as_posix(), load_external_data=True)
     graph_inputs = {value.name: value for value in model.graph.input}
-    cache_shapes = {
-        name: _tensor_shape(graph_inputs[name])
-        for name in ("k_cache", "v_cache")
-        if name in graph_inputs
-    }
+    cache_shapes = {name: _tensor_shape(graph_inputs[name]) for name in ("k_cache", "v_cache") if name in graph_inputs}
     if set(cache_shapes) != {"k_cache", "v_cache"}:
         return {
             "enabled": False,
@@ -4841,8 +4644,7 @@ def rewrite_split_cache_bhntd_for_wasm(
 
     initializer_by_name = {initializer.name: initializer for initializer in model.graph.initializer}
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
@@ -4851,10 +4653,7 @@ def rewrite_split_cache_bhntd_for_wasm(
             consumers[input_name].append(node)
 
     existing_value_names = {
-        value.name
-        for value in (
-            list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info)
-        )
+        value.name for value in (list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info))
     }
     existing_value_names.update(initializer.name for initializer in model.graph.initializer)
     existing_value_names.update(output for node in model.graph.node for output in node.output)
@@ -4908,11 +4707,7 @@ def rewrite_split_cache_bhntd_for_wasm(
     swapped_initializers: set[str] = set()
 
     for node in model.graph.node:
-        if (
-            node.op_type != "Slice"
-            or len(node.input) < 4
-            or node.input[0] not in {"k_cache", "v_cache"}
-        ):
+        if node.op_type != "Slice" or len(node.input) < 4 or node.input[0] not in {"k_cache", "v_cache"}:
             continue
         starts_name, ends_name, axes_name = node.input[1], node.input[2], node.input[3]
         if not all(name in initializer_arrays for name in (starts_name, ends_name, axes_name)):
@@ -4930,11 +4725,7 @@ def rewrite_split_cache_bhntd_for_wasm(
         rewrites["cache_slice_bounds_seen"] += 1
 
     for gather in list(model.graph.node):
-        if (
-            gather.op_type != "Gather"
-            or len(gather.input) < 2
-            or int(attr_value(gather, "axis", -1)) != 1
-        ):
+        if gather.op_type != "Gather" or len(gather.input) < 2 or int(attr_value(gather, "axis", -1)) != 1:
             continue
         transpose = producer.get(gather.input[0])
         if (
@@ -5058,9 +4849,7 @@ def rewrite_split_cache_bhntd_for_wasm(
     }
 
 
-def fuse_manual_gqa_attention_for_webgpu(
-    path: Path, enabled: bool, fuse_spatial: bool = False
-) -> dict[str, Any]:
+def fuse_manual_gqa_attention_for_webgpu(path: Path, enabled: bool, fuse_spatial: bool = False) -> dict[str, Any]:
     before = op_counts(path)
     if not enabled:
         return {
@@ -5079,15 +4868,10 @@ def fuse_manual_gqa_attention_for_webgpu(
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializers = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = {}
     for node in model.graph.node:
@@ -5165,9 +4949,7 @@ def fuse_manual_gqa_attention_for_webgpu(
                 factored = False
                 break
         if factored and factored_concat is not None:
-            if int(attr_value(factored_concat, "axis", 0)) == 3 and list(
-                factored_concat.input
-            ) == list(split.output):
+            if int(attr_value(factored_concat, "axis", 0)) == 3 and list(factored_concat.input) == list(split.output):
                 squeeze = single_consumer(factored_concat.output[0], "Squeeze")
                 axes = squeeze_axes(squeeze) if squeeze is not None else None
                 if axes is not None and 2 in axes and all(axis in (0, 1, 2) for axis in axes):
@@ -5253,9 +5035,7 @@ def fuse_manual_gqa_attention_for_webgpu(
                 split_sizes_name,
             )
         )
-        new_initializers.append(
-            onnx.numpy_helper.from_array(np.asarray([2], dtype=np.int64), squeeze_axes_name)
-        )
+        new_initializers.append(onnx.numpy_helper.from_array(np.asarray([2], dtype=np.int64), squeeze_axes_name))
         split_outputs = [f"{prefix}__ranked_head_{idx}" for idx in range(num_heads)]
         flat_outputs = [f"{prefix}__flat_head_{idx}" for idx in range(num_heads)]
         nodes = [
@@ -5324,11 +5104,7 @@ def fuse_manual_gqa_attention_for_webgpu(
         first = None
         scale = None
         mul: onnx.NodeProto | None = None
-        if (
-            softmax_input is not None
-            and softmax_input.op_type == "Mul"
-            and len(softmax_input.input) == 2
-        ):
+        if softmax_input is not None and softmax_input.op_type == "Mul" and len(softmax_input.input) == 2:
             mul = softmax_input
             for input_name in mul.input:
                 candidate = producer.get(input_name)
@@ -5539,9 +5315,7 @@ def fuse_manual_gqa_attention_for_webgpu(
         if gqa_squeeze_axes:
             squeeze_axes_name = f"{prefix}__gqa_output_squeeze_axes"
             new_initializers.append(
-                onnx.numpy_helper.from_array(
-                    np.asarray(gqa_squeeze_axes, dtype=np.int64), squeeze_axes_name
-                )
+                onnx.numpy_helper.from_array(np.asarray(gqa_squeeze_axes, dtype=np.int64), squeeze_axes_name)
             )
             gqa_nodes.append(
                 onnx.helper.make_node(
@@ -5599,14 +5373,8 @@ def fuse_manual_gqa_attention_for_webgpu(
             else:
                 rewritten_nodes.append(node)
 
-        used_inputs = {
-            input_name for node in rewritten_nodes for input_name in node.input if input_name
-        }
-        kept_initializers = [
-            initializer
-            for initializer in model.graph.initializer
-            if initializer.name in used_inputs
-        ]
+        used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+        kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
         del model.graph.node[:]
         model.graph.node.extend(rewritten_nodes)
         del model.graph.initializer[:]
@@ -5670,15 +5438,10 @@ def fuse_manual_mha_attention_for_webgpu(
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializers = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     producer = {output: node for node in model.graph.node for output in node.output}
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
@@ -5845,12 +5608,8 @@ def fuse_manual_mha_attention_for_webgpu(
         num_heads = int(shape[2])
         split_sizes_name = f"{prefix}__split_sizes"
         squeeze_axes_name = f"{prefix}__squeeze_axes"
-        new_initializers.append(
-            onnx.numpy_helper.from_array(np.ones((num_heads,), dtype=np.int64), split_sizes_name)
-        )
-        new_initializers.append(
-            onnx.numpy_helper.from_array(np.asarray([2], dtype=np.int64), squeeze_axes_name)
-        )
+        new_initializers.append(onnx.numpy_helper.from_array(np.ones((num_heads,), dtype=np.int64), split_sizes_name))
+        new_initializers.append(onnx.numpy_helper.from_array(np.asarray([2], dtype=np.int64), squeeze_axes_name))
         split_outputs = [f"{prefix}__ranked_head_{idx}" for idx in range(num_heads)]
         concat_output = f"{prefix}__pre_squeeze_flat"
         flat_name = f"{prefix}__flat"
@@ -5934,12 +5693,7 @@ def fuse_manual_mha_attention_for_webgpu(
         score_shape: tuple[int, ...] | None,
         output_shape: tuple[int, ...] | None,
     ) -> tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]] | None:
-        if (
-            score_shape is None
-            or output_shape is None
-            or len(score_shape) != 4
-            or len(output_shape) != 4
-        ):
+        if score_shape is None or output_shape is None or len(score_shape) != 4 or len(output_shape) != 4:
             return None
         batch, num_heads, query_tokens, key_tokens = (int(dim) for dim in score_shape)
         if (
@@ -5974,18 +5728,12 @@ def fuse_manual_mha_attention_for_webgpu(
         first, scale, mul = parse_scaled_score(softmax.input[0])
         if first is None and include_attention_bias:
             candidate_add = producer.get(softmax.input[0])
-            if (
-                candidate_add is not None
-                and candidate_add.op_type == "Add"
-                and len(candidate_add.input) == 2
-            ):
+            if candidate_add is not None and candidate_add.op_type == "Add" and len(candidate_add.input) == 2:
                 for input_name in candidate_add.input:
                     candidate_first, candidate_scale, candidate_mul = parse_scaled_score(input_name)
                     if candidate_first is not None and candidate_scale is not None:
                         other_input = (
-                            candidate_add.input[1]
-                            if input_name == candidate_add.input[0]
-                            else candidate_add.input[0]
+                            candidate_add.input[1] if input_name == candidate_add.input[0] else candidate_add.input[0]
                         )
                         first = candidate_first
                         scale = candidate_scale
@@ -5998,12 +5746,8 @@ def fuse_manual_mha_attention_for_webgpu(
         second = single_consumer(softmax.output[0], "Einsum")
         first_equation = equation(first)
         second_equation = equation(second) if second is not None else ""
-        is_bqhd_attention = (
-            first_equation == "bqhd,bkhd->bhqk" and second_equation == "bhqk,bkhd->bqhd"
-        )
-        is_bhqd_attention = (
-            first_equation == "bhqd,bhkd->bhqk" and second_equation == "bhqk,bkhd->bqhd"
-        )
+        is_bqhd_attention = first_equation == "bqhd,bkhd->bhqk" and second_equation == "bhqk,bkhd->bqhd"
+        is_bhqd_attention = first_equation == "bhqd,bhkd->bhqk" and second_equation == "bhqk,bkhd->bqhd"
         if not (is_bqhd_attention or is_bhqd_attention):
             continue
         if is_bhqd_attention and not include_bhqd_attention:
@@ -6091,9 +5835,7 @@ def fuse_manual_mha_attention_for_webgpu(
             q_flat, q_nodes = flatten_heads(q_name, q_shape, prefix=f"{prefix}__mha_q")
             k_flat, k_nodes = transpose_kv_heads_for_mha(k_name, k_shape, prefix=f"{prefix}__mha_k")
         else:
-            q_flat, q_nodes = transpose_query_heads_for_mha(
-                q_name, q_shape, prefix=f"{prefix}__mha_q"
-            )
+            q_flat, q_nodes = transpose_query_heads_for_mha(q_name, q_shape, prefix=f"{prefix}__mha_q")
             k_flat, k_nodes = (k_name, [])
         v_flat, v_nodes = transpose_kv_heads_for_mha(v_name, v_shape, prefix=f"{prefix}__mha_v")
         mha_inputs = [q_flat, k_flat, v_flat]
@@ -6114,9 +5856,7 @@ def fuse_manual_mha_attention_for_webgpu(
         if output_squeeze_axes:
             squeeze_axes_name = f"{prefix}__mha_output_squeeze_axes"
             new_initializers.append(
-                onnx.numpy_helper.from_array(
-                    np.asarray(output_squeeze_axes, dtype=np.int64), squeeze_axes_name
-                )
+                onnx.numpy_helper.from_array(np.asarray(output_squeeze_axes, dtype=np.int64), squeeze_axes_name)
             )
             mha_nodes.append(
                 onnx.helper.make_node(
@@ -6167,14 +5907,8 @@ def fuse_manual_mha_attention_for_webgpu(
             else:
                 rewritten_nodes.append(node)
 
-        used_inputs = {
-            input_name for node in rewritten_nodes for input_name in node.input if input_name
-        }
-        kept_initializers = [
-            initializer
-            for initializer in model.graph.initializer
-            if initializer.name in used_inputs
-        ]
+        used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+        kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
         del model.graph.node[:]
         model.graph.node.extend(rewritten_nodes)
         del model.graph.initializer[:]
@@ -6390,15 +6124,10 @@ def rewrite_static_head_merges_for_wasm(path: Path, enabled: bool = True) -> dic
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -6414,9 +6143,7 @@ def rewrite_static_head_merges_for_wasm(path: Path, enabled: bool = True) -> dic
     def axes_input(node: onnx.NodeProto) -> tuple[int, ...] | None:
         if len(node.input) < 2 or node.input[1] not in initializer_arrays:
             return None
-        return tuple(
-            int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1)
-        )
+        return tuple(int(value) for value in np.asarray(initializer_arrays[node.input[1]]).reshape(-1))
 
     replacements: dict[str, list[onnx.NodeProto]] = {}
     skip_nodes: set[str] = set()
@@ -6472,9 +6199,7 @@ def rewrite_static_head_merges_for_wasm(path: Path, enabled: bool = True) -> dic
             or any(concat_shape[axis] != 1 for axis in normalized_axes)
         ):
             continue
-        expected_shape = tuple(
-            dim for index, dim in enumerate(concat_shape) if index not in normalized_axes
-        )
+        expected_shape = tuple(dim for index, dim in enumerate(concat_shape) if index not in normalized_axes)
         if (
             len(expected_shape) < 2
             or any(dim <= 0 for dim in expected_shape)
@@ -6504,9 +6229,7 @@ def rewrite_static_head_merges_for_wasm(path: Path, enabled: bool = True) -> dic
         stale_value_info.update(split.output)
         stale_value_info.update(concat.output)
         rewrite_kind = (
-            "split_concat_squeeze_to_reshape"
-            if len(expected_shape) == 2
-            else "ranked_split_concat_squeeze_to_reshape"
+            "split_concat_squeeze_to_reshape" if len(expected_shape) == 2 else "ranked_split_concat_squeeze_to_reshape"
         )
         rewrites[rewrite_kind] += 1
         if len(examples) < 12:
@@ -6544,9 +6267,7 @@ def rewrite_static_head_merges_for_wasm(path: Path, enabled: bool = True) -> dic
             continue
         rewritten_nodes.extend(replacements.get(key, [node]))
 
-    kept_value_info = [
-        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
-    ]
+    kept_value_info = [value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.value_info[:]
@@ -6602,11 +6323,7 @@ def rewrite_singleton_key_attention_for_wasm(path: Path, enabled: bool = True) -
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
 
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
@@ -6684,9 +6401,7 @@ def rewrite_singleton_key_attention_for_wasm(path: Path, enabled: bool = True) -
             live_values.update(input_name for input_name in node.input if input_name)
     live_nodes.reverse()
 
-    kept_value_info = [
-        value_info for value_info in model.graph.value_info if value_info.name in live_values
-    ]
+    kept_value_info = [value_info for value_info in model.graph.value_info if value_info.name in live_values]
     del model.graph.node[:]
     model.graph.node.extend(live_nodes)
     del model.graph.value_info[:]
@@ -6717,8 +6432,7 @@ def rewrite_head_split_unsqueeze_concats_for_wasm(path: Path) -> dict[str, Any]:
     tracked_ops = ("Split", "Unsqueeze", "Concat", "Reshape", "Transpose")
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     node_by_output: dict[str, onnx.NodeProto] = {}
@@ -6770,11 +6484,7 @@ def rewrite_head_split_unsqueeze_concats_for_wasm(path: Path) -> dict[str, Any]:
     examples: list[dict[str, Any]] = []
 
     for concat in model.graph.node:
-        if (
-            concat.op_type != "Concat"
-            or len(concat.input) < 2
-            or int(attr_value(concat, "axis", 0)) != 1
-        ):
+        if concat.op_type != "Concat" or len(concat.input) < 2 or int(attr_value(concat, "axis", 0)) != 1:
             continue
         unsqueezes: list[onnx.NodeProto] = []
         split: onnx.NodeProto | None = None
@@ -6883,15 +6593,8 @@ def rewrite_head_split_unsqueeze_concats_for_wasm(path: Path) -> dict[str, Any]:
             continue
         rewritten_nodes.extend(replacements.get(key, [node]))
 
-    stale_value_info.update(
-        name
-        for nodes in replacements.values()
-        for node in nodes
-        for name in node.output[:-1]
-    )
-    kept_value_info = [
-        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
-    ]
+    stale_value_info.update(name for nodes in replacements.values() for node in nodes for name in node.output[:-1])
+    kept_value_info = [value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.value_info[:]
@@ -6922,8 +6625,7 @@ def rewrite_identity_head_gathers_for_wasm(path: Path) -> dict[str, Any]:
     tracked_ops = ("Gather", "Reshape")
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
 
     def attr_value(node: onnx.NodeProto, name: str, default: Any) -> Any:
@@ -6950,9 +6652,7 @@ def rewrite_identity_head_gathers_for_wasm(path: Path) -> dict[str, Any]:
             continue
         prefix = node_key(gather)
         shape_name = f"{prefix}__identity_gather_reshape_shape"
-        new_initializers.append(
-            onnx.numpy_helper.from_array(np.asarray((-1, 8, 32), dtype=np.int64), shape_name)
-        )
+        new_initializers.append(onnx.numpy_helper.from_array(np.asarray((-1, 8, 32), dtype=np.int64), shape_name))
         replacements[prefix] = onnx.helper.make_node(
             "Reshape",
             [gather.input[0], shape_name],
@@ -6982,19 +6682,10 @@ def rewrite_identity_head_gathers_for_wasm(path: Path) -> dict[str, Any]:
             "tracked_ops_after": {op: int(before.get(op, 0)) for op in tracked_ops},
         }
 
-    rewritten_nodes = [
-        replacements.get(node_key(node), node)
-        for node in model.graph.node
-    ]
-    used_inputs = {
-        input_name for node in rewritten_nodes for input_name in node.input if input_name
-    }
-    kept_initializers = [
-        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
-    ]
-    kept_value_info = [
-        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
-    ]
+    rewritten_nodes = [replacements.get(node_key(node), node) for node in model.graph.node]
+    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
+    kept_value_info = [value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.initializer[:]
@@ -7027,8 +6718,7 @@ def rewrite_packed_qkv_head_groups_for_wasm(path: Path) -> dict[str, Any]:
     tracked_ops = ("Split", "Unsqueeze", "Concat", "Reshape", "Transpose")
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -7057,11 +6747,7 @@ def rewrite_packed_qkv_head_groups_for_wasm(path: Path) -> dict[str, Any]:
         head_dim: int = 32,
     ) -> tuple[list[onnx.NodeProto], list[onnx.TensorProto]] | None:
         if axes == (1, 2):
-            shape = (
-                (-1, heads, 1, head_dim)
-                if concat_axis == 1
-                else (-1, 1, heads, head_dim)
-            )
+            shape = (-1, heads, 1, head_dim) if concat_axis == 1 else (-1, 1, heads, head_dim)
             shape_name = f"{prefix}__coalesced_head_group_shape_{concat_axis}"
             return (
                 [
@@ -7072,11 +6758,7 @@ def rewrite_packed_qkv_head_groups_for_wasm(path: Path) -> dict[str, Any]:
                         name=f"{prefix}__coalesced_head_group_reshape_{concat_axis}",
                     )
                 ],
-                [
-                    onnx.numpy_helper.from_array(
-                        np.asarray(shape, dtype=np.int64), shape_name
-                    )
-                ],
+                [onnx.numpy_helper.from_array(np.asarray(shape, dtype=np.int64), shape_name)],
             )
         if axes == (0, 2) and concat_axis == 2:
             shape_name = f"{prefix}__coalesced_head_group_shape"
@@ -7143,11 +6825,7 @@ def rewrite_packed_qkv_head_groups_for_wasm(path: Path) -> dict[str, Any]:
     }
 
     for split in model.graph.node:
-        if (
-            split.op_type != "Split"
-            or len(split.input) < 2
-            or int(attr_value(split, "axis", 0)) != 1
-        ):
+        if split.op_type != "Split" or len(split.input) < 2 or int(attr_value(split, "axis", 0)) != 1:
             continue
         split_sizes = int_initializer(split.input[1])
         if split_sizes not in split_patterns:
@@ -7161,9 +6839,7 @@ def rewrite_packed_qkv_head_groups_for_wasm(path: Path) -> dict[str, Any]:
         grouped_outputs: list[str] = []
         replacement_nodes: list[onnx.NodeProto] = []
         replacement_initializers = [
-            onnx.numpy_helper.from_array(
-                np.asarray(grouped_sizes, dtype=np.int64), split_sizes_name
-            )
+            onnx.numpy_helper.from_array(np.asarray(grouped_sizes, dtype=np.int64), split_sizes_name)
         ]
         eligible = True
         pair_infos: list[tuple[tuple[int, ...], str, list[onnx.NodeProto], list[onnx.NodeProto]]] = []
@@ -7196,9 +6872,7 @@ def rewrite_packed_qkv_head_groups_for_wasm(path: Path) -> dict[str, Any]:
                 break
             concat_keys = {node_key(node) for node in concat_nodes}
             for unsqueeze in unsqueezes:
-                if {
-                    node_key(node) for node in consumers.get(unsqueeze.output[0], [])
-                } != concat_keys:
+                if {node_key(node) for node in consumers.get(unsqueeze.output[0], [])} != concat_keys:
                     eligible = False
                     break
             if not eligible:
@@ -7278,15 +6952,9 @@ def rewrite_packed_qkv_head_groups_for_wasm(path: Path) -> dict[str, Any]:
             continue
         rewritten_nodes.extend(replacements.get(key, [node]))
 
-    used_inputs = {
-        input_name for node in rewritten_nodes for input_name in node.input if input_name
-    }
-    kept_initializers = [
-        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
-    ]
-    kept_value_info = [
-        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
-    ]
+    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
+    kept_value_info = [value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.initializer[:]
@@ -7315,9 +6983,7 @@ def rewrite_packed_qkv_head_groups_for_wasm(path: Path) -> dict[str, Any]:
     }
 
 
-def rewrite_decoder_rmsnorm_as_primitives_for_wasm(
-    path: Path, enabled: bool = True
-) -> dict[str, Any]:
+def rewrite_decoder_rmsnorm_as_primitives_for_wasm(path: Path, enabled: bool = True) -> dict[str, Any]:
     before = op_counts(path)
     tracked_ops = (
         "SimplifiedLayerNormalization",
@@ -7352,11 +7018,7 @@ def rewrite_decoder_rmsnorm_as_primitives_for_wasm(
         return default
 
     for node in model.graph.node:
-        if (
-            node.op_type != "SimplifiedLayerNormalization"
-            or len(node.input) < 2
-            or len(node.output) != 1
-        ):
+        if node.op_type != "SimplifiedLayerNormalization" or len(node.input) < 2 or len(node.output) != 1:
             rewritten_nodes.append(node)
             continue
 
@@ -7473,15 +7135,10 @@ def rewrite_rotary_embedding_for_webgpu(path: Path) -> dict[str, Any]:
     inferred = onnx.shape_inference.infer_shapes(model)
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializers = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     initializer_names = set(initializers)
     consumers: dict[str, list[onnx.NodeProto]] = {}
@@ -7536,9 +7193,7 @@ def rewrite_rotary_embedding_for_webgpu(path: Path) -> dict[str, Any]:
 
     position_ids_name = "rotary_position_zero_i64"
     if position_ids_name not in initializer_names:
-        model.graph.initializer.append(
-            onnx.numpy_helper.from_array(np.asarray(0, dtype=np.int64), position_ids_name)
-        )
+        model.graph.initializer.append(onnx.numpy_helper.from_array(np.asarray(0, dtype=np.int64), position_ids_name))
         initializer_names.add(position_ids_name)
 
     replacements: dict[str, onnx.NodeProto] = {}
@@ -7730,9 +7385,7 @@ def rewrite_rotary_embedding_for_webgpu(path: Path) -> dict[str, Any]:
             rewritten_nodes.append(node)
 
     retained_value_info = [
-        value_info
-        for value_info in model.graph.value_info
-        if value_info.name not in removed_value_info
+        value_info for value_info in model.graph.value_info if value_info.name not in removed_value_info
     ]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
@@ -7768,15 +7421,10 @@ def rewrite_one_position_rotary_transposes_for_webgpu(path: Path) -> dict[str, A
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -7808,12 +7456,7 @@ def rewrite_one_position_rotary_transposes_for_webgpu(path: Path) -> dict[str, A
         ):
             continue
         input_shape = value_shapes.get(pre_transpose.input[0])
-        if (
-            input_shape is None
-            or len(input_shape) != 4
-            or input_shape[1] != 1
-            or input_shape[2] not in (2, 8)
-        ):
+        if input_shape is None or len(input_shape) != 4 or input_shape[1] != 1 or input_shape[2] not in (2, 8):
             continue
         rotary_consumers = consumers.get(pre_transpose.output[0], [])
         if len(rotary_consumers) != 1 or rotary_consumers[0].op_type != "RotaryEmbedding":
@@ -7906,15 +7549,9 @@ def rewrite_one_position_rotary_transposes_for_webgpu(path: Path) -> dict[str, A
             continue
         rewritten_nodes.append(replacements.get(key, node))
 
-    used_inputs = {
-        input_name for node in rewritten_nodes for input_name in node.input if input_name
-    }
-    kept_initializers = [
-        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
-    ]
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in stale_value_info
-    ]
+    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.initializer[:]
@@ -7954,15 +7591,10 @@ def rewrite_final_output_head_slice_transposes_for_webgpu(path: Path) -> dict[st
         inferred = model
     value_shapes = {
         value.name: _tensor_shape(value)
-        for value in (
-            list(inferred.graph.input)
-            + list(inferred.graph.value_info)
-            + list(inferred.graph.output)
-        )
+        for value in (list(inferred.graph.input) + list(inferred.graph.value_info) + list(inferred.graph.output))
     }
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -8106,9 +7738,7 @@ def rewrite_final_output_head_slice_transposes_for_webgpu(path: Path) -> dict[st
             continue
         rewritten_nodes.append(node)
 
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in stale_value_info
-    ]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     model.graph.initializer.extend(new_initializers)
@@ -8140,8 +7770,7 @@ def fold_shared_gather_add_constants_for_webgpu(path: Path) -> dict[str, Any]:
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -8232,9 +7861,7 @@ def fold_shared_gather_add_constants_for_webgpu(path: Path) -> dict[str, Any]:
     kept_nodes = [node for node in model.graph.node if node_key(node) not in removed_nodes]
     del model.graph.node[:]
     model.graph.node.extend(kept_nodes)
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in output_replacements
-    ]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in output_replacements]
     del model.graph.value_info[:]
     model.graph.value_info.extend(kept_value_info)
     external_data_path(path).unlink(missing_ok=True)
@@ -8263,8 +7890,7 @@ def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
     before = op_counts(path)
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     node_by_output: dict[str, onnx.NodeProto] = {}
@@ -8398,24 +8024,17 @@ def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
                 axis == 1
                 and len(post_add_transpose_users) == 1
                 and post_add_transpose_users[0].op_type == "Transpose"
-                and tuple(int(item) for item in attr_value(post_add_transpose_users[0], "perm", ()))
-                == (0, 2, 1, 3)
+                and tuple(int(item) for item in attr_value(post_add_transpose_users[0], "perm", ())) == (0, 2, 1, 3)
             ):
                 following_transpose = post_add_transpose_users[0]
                 remove_post_add_unsqueeze = post_add_unsqueeze
                 restored_axes = (0, 1)
-            elif (
-                axis == 1
-                and len(post_add_transpose_users) == 1
-                and post_add_transpose_users[0].op_type == "Slice"
-            ):
+            elif axis == 1 and len(post_add_transpose_users) == 1 and post_add_transpose_users[0].op_type == "Slice":
                 following_transpose = post_add_unsqueeze
                 restored_axes = (0, 2)
         if following_transpose is None or restored_axes is None:
             continue
-        residual_inputs = [
-            name for name in residual_add.input if name != post_gemm_unsqueeze.output[0]
-        ]
+        residual_inputs = [name for name in residual_add.input if name != post_gemm_unsqueeze.output[0]]
         if len(residual_inputs) != 1:
             continue
         residual_input = residual_inputs[0]
@@ -8480,9 +8099,7 @@ def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
                     "removed_squeeze": post_mul_squeeze.name,
                     "residual_add": residual_add.name,
                     "removed_post_add_unsqueeze": (
-                        remove_post_add_unsqueeze.name
-                        if remove_post_add_unsqueeze is not None
-                        else None
+                        remove_post_add_unsqueeze.name if remove_post_add_unsqueeze is not None else None
                     ),
                     "restored_axes": list(restored_axes),
                 }
@@ -8508,15 +8125,9 @@ def rewrite_swiglu_rank2_islands_for_webgpu(path: Path) -> dict[str, Any]:
             rewritten_nodes.append(insert_before[key])
         rewritten_nodes.append(node)
 
-    used_inputs = {
-        input_name for node in rewritten_nodes for input_name in node.input if input_name
-    }
-    kept_initializers = [
-        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
-    ]
-    kept_value_info = [
-        value for value in model.graph.value_info if value.name not in stale_value_info
-    ]
+    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
+    kept_value_info = [value for value in model.graph.value_info if value.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.initializer[:]
@@ -8551,8 +8162,7 @@ def rewrite_consecutive_axis0_squeezes_for_wasm(path: Path) -> dict[str, Any]:
     tracked_ops = ("Squeeze",)
     model = onnx.load(path.as_posix(), load_external_data=True)
     initializer_arrays = {
-        initializer.name: onnx.numpy_helper.to_array(initializer)
-        for initializer in model.graph.initializer
+        initializer.name: onnx.numpy_helper.to_array(initializer) for initializer in model.graph.initializer
     }
     consumers: dict[str, list[onnx.NodeProto]] = defaultdict(list)
     for node in model.graph.node:
@@ -8592,9 +8202,7 @@ def rewrite_consecutive_axis0_squeezes_for_wasm(path: Path) -> dict[str, Any]:
             continue
 
         axes_name = f"{node_key(first)}__squeeze00_axes"
-        new_initializers.append(
-            onnx.numpy_helper.from_array(np.asarray([0, 1], dtype=np.int64), axes_name)
-        )
+        new_initializers.append(onnx.numpy_helper.from_array(np.asarray([0, 1], dtype=np.int64), axes_name))
         first.input[1] = axes_name
         first.output[0] = second.output[0]
         remove_nodes.add(node_key(second))
@@ -8623,15 +8231,9 @@ def rewrite_consecutive_axis0_squeezes_for_wasm(path: Path) -> dict[str, Any]:
         }
 
     rewritten_nodes = [node for node in model.graph.node if node_key(node) not in remove_nodes]
-    used_inputs = {
-        input_name for node in rewritten_nodes for input_name in node.input if input_name
-    }
-    kept_initializers = [
-        initializer for initializer in model.graph.initializer if initializer.name in used_inputs
-    ]
-    kept_value_info = [
-        value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info
-    ]
+    used_inputs = {input_name for node in rewritten_nodes for input_name in node.input if input_name}
+    kept_initializers = [initializer for initializer in model.graph.initializer if initializer.name in used_inputs]
+    kept_value_info = [value_info for value_info in model.graph.value_info if value_info.name not in stale_value_info]
     del model.graph.node[:]
     model.graph.node.extend(rewritten_nodes)
     del model.graph.initializer[:]
@@ -8896,9 +8498,7 @@ def main() -> None:
     pass_names = {
         "tokenizer_decoder_step": TOKENIZER_DECODER_STEP_NAME,
         "tokenizer_decode_z_step": TOKENIZER_DECODE_Z_STEP_NAME,
-        "dynamics_cached_sample_append_context_slide_entry": (
-            DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-        ),
+        "dynamics_cached_sample_append_context_slide_entry": (DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME),
     }
     pass_rewrites = {
         "simplify": simplify_onnx_for_webgpu,
@@ -8962,12 +8562,8 @@ def main() -> None:
     fused_mha_attention_rewrite = pass_results["fused_mha_attention_rewrite"]
     attention_einsum_matmul_rewrite = pass_results["attention_einsum_matmul_rewrite"]
     static_head_merge_wasm_rewrite = pass_results["static_head_merge_wasm_rewrite"]
-    singleton_key_attention_wasm_rewrite = pass_results[
-        "singleton_key_attention_wasm_rewrite"
-    ]
-    decoder_rmsnorm_primitive_wasm_rewrite = pass_results[
-        "decoder_rmsnorm_primitive_wasm_rewrite"
-    ]
+    singleton_key_attention_wasm_rewrite = pass_results["singleton_key_attention_wasm_rewrite"]
+    decoder_rmsnorm_primitive_wasm_rewrite = pass_results["decoder_rmsnorm_primitive_wasm_rewrite"]
     squeeze_concat_rewrite = pass_results["squeeze_concat_rewrite"]
     unsqueeze_transpose_squeeze_rewrite = pass_results["unsqueeze_transpose_squeeze_rewrite"]
     attention_scale_folding = pass_results["attention_scale_folding"]
@@ -8999,22 +8595,17 @@ def main() -> None:
             overwrite=args.overwrite,
         )
     static_output_repairs = {
-        name: {"enabled": False, "reason": "no static graph output repair needed"}
-        for name in exported_paths
+        name: {"enabled": False, "reason": "no static graph output repair needed"} for name in exported_paths
     }
     validation = {
         TOKENIZER_DECODER_NAME: {"skipped": not (args.validate and not args.export_cached)},
         DYNAMICS_UNCACHED_NAME: {"skipped": not (args.validate and not args.export_cached)},
         TOKENIZER_DECODER_STEP_NAME: {"skipped": not (args.validate and args.export_cached)},
         TOKENIZER_DECODE_Z_STEP_NAME: {"skipped": not (args.validate and args.export_cached)},
-        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME: {
-            "skipped": not (args.validate and args.export_cached)
-        },
+        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME: {"skipped": not (args.validate and args.export_cached)},
     }
     if full_wasm_headtime_dynamics_export_name is not None:
-        validation[full_wasm_headtime_dynamics_export_name] = {
-            "skipped": not (args.validate and args.export_cached)
-        }
+        validation[full_wasm_headtime_dynamics_export_name] = {"skipped": not (args.validate and args.export_cached)}
     if args.validate and not args.export_cached:
         validation[TOKENIZER_DECODER_NAME] = validate_single_output(
             path=decoder_path,
@@ -9062,14 +8653,12 @@ def main() -> None:
                 atol=args.atol,
                 rtol=args.rtol,
             )
-            sample_append_context_slide_entry_expected = (
-                dynamics_sample_append_context_slide_entry_fn(
-                    cached_inputs["z_step"],
-                    cached_inputs["z_step"],
-                    cached_inputs["actions_step"],
-                    cached_inputs["k_cache"],
-                    cached_inputs["v_cache"],
-                )
+            sample_append_context_slide_entry_expected = dynamics_sample_append_context_slide_entry_fn(
+                cached_inputs["z_step"],
+                cached_inputs["z_step"],
+                cached_inputs["actions_step"],
+                cached_inputs["k_cache"],
+                cached_inputs["v_cache"],
             )
             entry_final_z_aliases_pred_z = bool(
                 final_z_only_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME].get(
@@ -9077,9 +8666,7 @@ def main() -> None:
                 )
             )
             entry_expected = {
-                "final_z": sample_append_context_slide_entry_expected[
-                    1 if entry_final_z_aliases_pred_z else 0
-                ],
+                "final_z": sample_append_context_slide_entry_expected[1 if entry_final_z_aliases_pred_z else 0],
                 "candidate_k_entry": sample_append_context_slide_entry_expected[2],
                 "candidate_v_entry": sample_append_context_slide_entry_expected[3],
             }
@@ -9135,9 +8722,7 @@ def main() -> None:
     decoder_step_files = export_file_metadata(decoder_step_path) if args.export_cached else None
     decoder_z_step_files = export_file_metadata(decoder_z_step_path) if args.export_cached else None
     dynamics_sample_append_context_slide_entry_files = (
-        export_file_metadata(dynamics_sample_append_context_slide_entry_path)
-        if args.export_cached
-        else None
+        export_file_metadata(dynamics_sample_append_context_slide_entry_path) if args.export_cached else None
     )
     entry_manifest_final_z_aliases_pred_z = False
     if args.export_cached:
@@ -9270,9 +8855,7 @@ def main() -> None:
                     "optimization": optimization[TOKENIZER_DECODE_Z_STEP_NAME],
                     "layout_rewrite": layout_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
                     "gqa_repeat_rewrite": gqa_repeat_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
-                    "head_projection_rewrite": head_projection_rewrite[
-                        TOKENIZER_DECODE_Z_STEP_NAME
-                    ],
+                    "head_projection_rewrite": head_projection_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
                     "rmsnorm_rewrite": rmsnorm_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
                     "gather_index_rewrite": gather_index_rewrite[TOKENIZER_DECODE_Z_STEP_NAME],
                     "production_browser_ready": True,
@@ -9298,27 +8881,15 @@ def main() -> None:
                         "v_cache": tensor_spec("float32", dyn_shapes.cache),
                     },
                     "outputs": entry_manifest_outputs,
-                    "validation": validation[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-                    ],
-                    "simplification": simplification[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-                    ],
-                    "optimization": optimization[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-                    ],
-                    "layout_rewrite": layout_rewrite[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-                    ],
-                    "gqa_repeat_rewrite": gqa_repeat_rewrite[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-                    ],
+                    "validation": validation[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME],
+                    "simplification": simplification[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME],
+                    "optimization": optimization[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME],
+                    "layout_rewrite": layout_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME],
+                    "gqa_repeat_rewrite": gqa_repeat_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME],
                     "head_projection_rewrite": head_projection_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
                     ],
-                    "rmsnorm_rewrite": rmsnorm_rewrite[
-                        DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-                    ],
+                    "rmsnorm_rewrite": rmsnorm_rewrite[DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME],
                     "gather_index_rewrite": gather_index_rewrite[
                         DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
                     ],
@@ -9336,36 +8907,20 @@ def main() -> None:
 
     for entry in exports:
         entry["slide_static_cache_rewrite"] = slide_static_cache_rewrite[entry["name"]]
-        entry["packed_qkv_head_projection_rewrite"] = packed_qkv_head_projection_rewrite[
-            entry["name"]
-        ]
+        entry["packed_qkv_head_projection_rewrite"] = packed_qkv_head_projection_rewrite[entry["name"]]
         entry["packed_gemm_rewrite"] = packed_gemm_rewrite[entry["name"]]
-        entry["packed_qkv_partial_head_split_rewrite"] = packed_qkv_partial_head_split_rewrite[
-            entry["name"]
-        ]
+        entry["packed_qkv_partial_head_split_rewrite"] = packed_qkv_partial_head_split_rewrite[entry["name"]]
         entry["q_head_split_gather_rewrite"] = q_head_split_gather_rewrite[entry["name"]]
-        entry["skip_simplified_layer_norm_rewrite"] = skip_simplified_layer_norm_rewrite[
-            entry["name"]
-        ]
+        entry["skip_simplified_layer_norm_rewrite"] = skip_simplified_layer_norm_rewrite[entry["name"]]
         entry["rotary_embedding_rewrite"] = rotary_embedding_rewrite[entry["name"]]
         entry["fused_gqa_attention_rewrite"] = fused_gqa_attention_rewrite[entry["name"]]
         entry["fused_mha_attention_rewrite"] = fused_mha_attention_rewrite[entry["name"]]
-        entry["attention_einsum_matmul_rewrite"] = attention_einsum_matmul_rewrite[
-            entry["name"]
-        ]
-        entry["static_head_merge_wasm_rewrite"] = static_head_merge_wasm_rewrite[
-            entry["name"]
-        ]
-        entry["singleton_key_attention_wasm_rewrite"] = (
-            singleton_key_attention_wasm_rewrite[entry["name"]]
-        )
-        entry["decoder_rmsnorm_primitive_wasm_rewrite"] = (
-            decoder_rmsnorm_primitive_wasm_rewrite[entry["name"]]
-        )
+        entry["attention_einsum_matmul_rewrite"] = attention_einsum_matmul_rewrite[entry["name"]]
+        entry["static_head_merge_wasm_rewrite"] = static_head_merge_wasm_rewrite[entry["name"]]
+        entry["singleton_key_attention_wasm_rewrite"] = singleton_key_attention_wasm_rewrite[entry["name"]]
+        entry["decoder_rmsnorm_primitive_wasm_rewrite"] = decoder_rmsnorm_primitive_wasm_rewrite[entry["name"]]
         entry["squeeze_concat_rewrite"] = squeeze_concat_rewrite[entry["name"]]
-        entry["unsqueeze_transpose_squeeze_rewrite"] = unsqueeze_transpose_squeeze_rewrite[
-            entry["name"]
-        ]
+        entry["unsqueeze_transpose_squeeze_rewrite"] = unsqueeze_transpose_squeeze_rewrite[entry["name"]]
         entry["attention_scale_folding"] = attention_scale_folding[entry["name"]]
         entry["zero_softmax_bias_add_prune"] = zero_softmax_bias_add_prune[entry["name"]]
         entry["spatial_qk_head_layout_rewrite"] = spatial_qk_head_layout_rewrite[entry["name"]]
@@ -9376,14 +8931,10 @@ def main() -> None:
     full_wasm_headtime_dynamics = None
     if full_wasm_headtime_dynamics_model_path is not None:
         source_entry = next(
-            entry
-            for entry in exports
-            if entry["name"] == DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+            entry for entry in exports if entry["name"] == DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
         )
         cache_bhntd_rewrite = full_wasm_headtime_dynamics_rewrites.get("cache_bhntd", {})
-        headtime_cache_shape = tuple(
-            cache_bhntd_rewrite.get("cache_input_shape") or dyn_shapes.cache
-        )
+        headtime_cache_shape = tuple(cache_bhntd_rewrite.get("cache_input_shape") or dyn_shapes.cache)
         headtime_entry = copy.deepcopy(source_entry)
         headtime_entry.update(
             {
@@ -9404,9 +8955,7 @@ def main() -> None:
             "available": True,
             "export": full_wasm_headtime_dynamics_export_name,
             **export_file_metadata(full_wasm_headtime_dynamics_model_path),
-            "mha_gqa_pretranspose_rewrite": full_wasm_headtime_dynamics_rewrites.get(
-                "mha_gqa_pretranspose", {}
-            ),
+            "mha_gqa_pretranspose_rewrite": full_wasm_headtime_dynamics_rewrites.get("mha_gqa_pretranspose", {}),
             "cache_bhntd_rewrite": cache_bhntd_rewrite,
             "cache_layout": cache_bhntd_rewrite.get("cache_layout"),
             "cache_input_shape": cache_bhntd_rewrite.get("cache_input_shape"),
@@ -9421,9 +8970,7 @@ def main() -> None:
             "available": True,
             "sample_only_final_z": export_file_metadata(split_sample_path),
             "context_entry_from_final_z": export_file_metadata(split_entry_path),
-            "mha_gqa_pretranspose_rewrite": split_wasm_dynamics_rewrites.get(
-                "mha_gqa_pretranspose", {}
-            ),
+            "mha_gqa_pretranspose_rewrite": split_wasm_dynamics_rewrites.get("mha_gqa_pretranspose", {}),
             "cache_bhntd_rewrite": cache_bhntd_rewrites,
             "cache_layout": sample_cache_bhntd_rewrite.get("cache_layout"),
             "cache_input_shape": sample_cache_bhntd_rewrite.get("cache_input_shape"),
@@ -9436,12 +8983,9 @@ def main() -> None:
             "context_tau": args.context_tau,
             "sample_cache_policy": "sample_then_append_generated_context",
             "preferred_decoder_export": TOKENIZER_DECODER_STEP_NAME,
-            "preferred_full_cache_step_export": (
-                DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
-            ),
+            "preferred_full_cache_step_export": (DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME),
             "preferred_full_cache_step_export_wasm": (
-                full_wasm_headtime_dynamics_export_name
-                or DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
+                full_wasm_headtime_dynamics_export_name or DYNAMICS_CACHED_SAMPLE_APPEND_CONTEXT_SLIDE_ENTRY_NAME
             ),
             "decode_z": {
                 "source": "final_z_after_velocity_update",
@@ -9484,17 +9028,10 @@ def main() -> None:
             "post_export_spatial_gqa_fusion": args.fuse_spatial_gqa_attention,
             "post_export_mha_fusion": (
                 args.fuse_mha_attention
-                or (
-                    args.export_target == "wasm"
-                    and (args.wasm_mha_dynamics_fusion or args.wasm_mha_decoder_fusion)
-                )
+                or (args.export_target == "wasm" and (args.wasm_mha_dynamics_fusion or args.wasm_mha_decoder_fusion))
             ),
-            "wasm_mha_dynamics_fusion": (
-                args.export_target == "wasm" and args.wasm_mha_dynamics_fusion
-            ),
-            "wasm_mha_decoder_fusion": (
-                args.export_target == "wasm" and args.wasm_mha_decoder_fusion
-            ),
+            "wasm_mha_dynamics_fusion": (args.export_target == "wasm" and args.wasm_mha_dynamics_fusion),
+            "wasm_mha_decoder_fusion": (args.export_target == "wasm" and args.wasm_mha_decoder_fusion),
         },
         "layout_rewrite": {
             "singleton_reshape_to_squeeze_unsqueeze": not args.skip_singleton_reshape_rewrite,
@@ -9502,9 +9039,7 @@ def main() -> None:
             "head_projection_reshape_to_einsum": not args.skip_singleton_reshape_rewrite,
             "packed_qkv_head_projection": args.pack_qkv_head_projection,
             "squeeze_concat_factorization": not args.skip_squeeze_concat_rewrite,
-            "unsqueeze_transpose_squeeze_collapse": (
-                not args.skip_unsqueeze_transpose_squeeze_rewrite
-            ),
+            "unsqueeze_transpose_squeeze_collapse": (not args.skip_unsqueeze_transpose_squeeze_rewrite),
             "attention_scale_folding": not args.skip_attention_scale_folding,
             "zero_softmax_bias_add_prune": True,
             "spatial_qk_direct_bhsd": not args.skip_spatial_qk_head_layout_rewrite,

@@ -61,9 +61,7 @@ def prepare_output_dir(output_dir: Path, overwrite: bool) -> None:
     if output_dir.exists():
         if any(output_dir.glob("*.arecord")):
             if not overwrite:
-                raise FileExistsError(
-                    f"{output_dir} already contains .arecord files; pass --overwrite to replace it"
-                )
+                raise FileExistsError(f"{output_dir} already contains .arecord files; pass --overwrite to replace it")
             shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
