@@ -46,7 +46,7 @@ from visionary.common.checkpoint import (
 )
 from visionary.dataset import decode_video_window
 from visionary.eval.loading import build_raw_index
-from visionary.models.dreamer4.dynamics import DynamicsModel
+from visionary.models.dreamer4.dynamics import DynamicsModel, denormalize_latents, normalize_latents
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
@@ -157,10 +157,10 @@ def main() -> None:
 
     @jax.jit
     def rollout_full(params, video, actions, seed):
-        video = jnp.asarray(video, jnp.float32)
+        video = normalize_latents(video, model.latent_mean, model.latent_std)
         primed = jnp.zeros_like(video).at[:, : args.context_frames].set(video[:, : args.context_frames])
         ck, sk = jax.random.split(jax.random.key(seed))
-        return model.apply(
+        generated = model.apply(
             params,
             primed,
             jnp.asarray(actions, jnp.float32),
@@ -175,10 +175,11 @@ def main() -> None:
             sample_steps=args.sample_steps,
             method=DynamicsModel.generate_rollout,
         )
+        return denormalize_latents(generated, model.latent_mean, model.latent_std)
 
     @jax.jit
     def tf_one(params, video, actions, t, seed):
-        video = jnp.asarray(video, jnp.float32)
+        video = normalize_latents(video, model.latent_mean, model.latent_std)
         mask = (jnp.arange(video.shape[1]) < t)[None, :, None, None]
         primed = jnp.where(mask, video, 0.0)
         ck, sk = jax.random.split(jax.random.key(seed))
@@ -193,7 +194,11 @@ def main() -> None:
             sample_steps=args.sample_steps,
             method=DynamicsModel.generate_rollout,
         )
-        return jnp.take(out, t, axis=1)
+        return denormalize_latents(
+            jnp.take(out, t, axis=1),
+            model.latent_mean,
+            model.latent_std,
+        )
 
     @jax.jit
     def decode_chunk(latent_chunk):
