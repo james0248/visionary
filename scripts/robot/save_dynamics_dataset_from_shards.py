@@ -53,6 +53,45 @@ logger = logging.getLogger(__name__)
 GB = 1024**3
 
 
+class RunningLatentStats:
+    def __init__(self) -> None:
+        self.count = 0
+        self.frames = 0
+        self.mean: np.ndarray | None = None
+        self.m2: np.ndarray | None = None
+
+    def update(self, latents: np.ndarray) -> None:
+        self.frames += int(latents.shape[0])
+        for start in range(0, len(latents), 64):
+            values = latents[start : start + 64].reshape(-1, latents.shape[-1]).astype(np.float64)
+            batch_count = int(values.shape[0])
+            batch_mean = values.mean(axis=0)
+            batch_m2 = np.sum((values - batch_mean) ** 2, axis=0)
+            if self.mean is None:
+                self.count = batch_count
+                self.mean = batch_mean
+                self.m2 = batch_m2
+                continue
+            total = self.count + batch_count
+            delta = batch_mean - self.mean
+            self.mean += delta * (batch_count / total)
+            self.m2 += batch_m2 + delta**2 * (self.count * batch_count / total)
+            self.count = total
+
+    def to_dict(self) -> dict[str, Any]:
+        if self.count == 0 or self.mean is None or self.m2 is None:
+            raise ValueError("No training latents were encoded")
+        std = np.sqrt(self.m2 / self.count)
+        if not np.all(np.isfinite(std)) or np.any(std <= 0):
+            raise ValueError("Invalid training latent standard deviation")
+        return {
+            "count": self.count,
+            "frames": self.frames,
+            "mean": self.mean.tolist(),
+            "std": std.tolist(),
+        }
+
+
 @dataclass
 class Stream:
     episode_id: int
@@ -224,6 +263,7 @@ def write_split(
     args: argparse.Namespace,
     normalizer: Callable[[np.ndarray], np.ndarray],
     output_dir: Path,
+    latent_stats: RunningLatentStats | None = None,
 ) -> SplitStats:
     copies = 1 + (args.augment_copies if split_name == "train" else 0)
     # global stream indices, so episode ids stay stable across ranged runs
@@ -252,6 +292,8 @@ def write_split(
             return
         latents_batch = encoder.encode_episodes([stream.patches for stream in pending])
         for stream, latents in zip(pending, latents_batch, strict=True):
+            if latent_stats is not None:
+                latent_stats.update(latents)
             bounds = record_bounds(
                 len(latents),
                 chunk_length=args.chunk_length,
@@ -456,15 +498,36 @@ def main() -> None:
         compute_action_stats(sources["train"], stats_path)
     normalizer = build_action_normalizer("continuous", str(stats_path))
 
-    split_stats = {
-        split: write_split(split, sources[split], encoder, args, normalizer, output_dir / split) for split in splits
-    }
+    train_latent_stats = RunningLatentStats() if "train" in splits else None
+    split_stats = {}
+    for split in splits:
+        split_stats[split] = write_split(
+            split,
+            sources[split],
+            encoder,
+            args,
+            normalizer,
+            output_dir / split,
+            latent_stats=train_latent_stats if split == "train" else None,
+        )
+
+    latent_stats_payload = None
+    if train_latent_stats is not None:
+        latent_stats_payload = train_latent_stats.to_dict()
+        latent_stats_path = output_dir / "latent_stats.json"
+        latent_stats_path.write_text(json.dumps(latent_stats_payload, indent=2))
+        logger.info(
+            "Wrote latent stats over %d frames to %s",
+            latent_stats_payload["frames"],
+            latent_stats_path,
+        )
 
     metadata = {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "checkpoint_dir": args.checkpoint_dir,
         "checkpoint_step": args.step,
         "action_stats": str(stats_path),
+        "latent_stats": latent_stats_payload,
         "config": {
             "tokenizer": OmegaConf.to_container(encoder.tokenizer_cfg, resolve=True),
             "preprocessor": dict(encoder.preprocessor_cfg),

@@ -1,5 +1,6 @@
 import io
 import json
+from dataclasses import dataclass
 from typing import TypedDict
 
 import cv2
@@ -20,6 +21,25 @@ class DynamicsBatch(TypedDict):
 class DynamicsDataset(DynamicsBatch):
     rewards: np.ndarray
     prev_action: np.ndarray
+
+
+@dataclass(frozen=True)
+class LatentStats:
+    count: int
+    mean: np.ndarray
+    std: np.ndarray
+
+
+def load_latent_stats(path: str) -> LatentStats:
+    payload = json.loads(epath.Path(path).read_text())
+    mean = np.asarray(payload["mean"], dtype=np.float32)
+    std = np.asarray(payload["std"], dtype=np.float32)
+    count = int(payload["count"])
+    if mean.ndim != 1 or std.shape != mean.shape:
+        raise ValueError(f"Invalid latent statistics shapes: mean={mean.shape}, std={std.shape}")
+    if count <= 0 or not np.all(np.isfinite(mean)) or not np.all(np.isfinite(std)) or np.any(std <= 0):
+        raise ValueError(f"Invalid latent statistics in {path}")
+    return LatentStats(count=count, mean=mean, std=std)
 
 
 def _array_record_source_with_paths(data_dir: str) -> tuple[grain.ArrayRecordDataSource, list[str]]:
@@ -159,6 +179,21 @@ class RandomDynamicsCrop(grain.RandomMapTransform):
         if start_idx == 0:
             aligned[0] = prev_action
         return DynamicsBatch(video=video[indices], actions=aligned)
+
+
+class NormalizeDynamicsLatents(grain.MapTransform):
+    def __init__(self, mean: np.ndarray, std: np.ndarray):
+        self.mean = np.asarray(mean, dtype=np.float32)
+        self.std = np.maximum(np.asarray(std, dtype=np.float32), 1e-8)
+
+    def map(self, element: DynamicsBatch) -> DynamicsBatch:
+        video = np.asarray(element["video"], dtype=np.float32)
+        if video.shape[-1] != self.mean.shape[0]:
+            raise ValueError(f"Latent channel mismatch: video={video.shape[-1]}, stats={self.mean.shape[0]}")
+        return DynamicsBatch(
+            video=(video - self.mean) / self.std,
+            actions=element["actions"],
+        )
 
 
 def decode_video_window(
