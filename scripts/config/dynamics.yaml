@@ -1,4 +1,5 @@
 seed: 42
+ema_decay: 0.999
 optimizer:
   peak_lr: 3e-4
   warmup_ratio: 0.05
@@ -15,11 +16,6 @@ eval_steps: 1000
 total_steps: 1000000
 exp_name: ???
 tokenizer_exp_name: ???
-
-fsdp:
-  enabled: auto
-  data_axis_size: 8
-  log_sharding: true
 
 loss:
   bootstrap_ratio: 0.25

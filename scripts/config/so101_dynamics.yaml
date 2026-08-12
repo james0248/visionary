@@ -1,0 +1,90 @@
+seed: 42
+ema_decay: 0.999
+optimizer:
+  peak_lr: 3e-4
+  warmup_ratio: 0.05
+  decay_ratio: 0.1
+  weight_decay: 0.1
+  muon_beta: 0.95
+  ns_steps: 5
+  nesterov: true
+  adam_lr_ratio: 1.0
+  adam_b1: 0.9
+  adam_b2: 0.99
+loss:
+  bootstrap_ratio: 0.25
+  bootstrap_start_step: 100000
+log_interval: 100
+eval_steps: 1000
+total_steps: 1500000
+exp_name: dynamics_v2
+tokenizer_exp_name: tokenizer_v2
+
+dataset:
+  train_dir: data/so101/dynamics/train
+  eval_dir: data/so101/dynamics/eval
+  latent_stats: data/so101/dynamics/latent_stats.json
+  batch_size: 32
+  batch_length: 64
+  alternating_lengths:
+    enabled: true
+    short: 16
+    # past context_length, so the truncated sliding window is trained too
+    long: 64
+    long_every: 8
+    final_long_only_steps: 0
+  worker_count: 8
+  num_threads: 8
+  prefetch_buffer_size: 16
+  eval:
+    batch_length: 66
+    max_batches: 16
+
+dynamics:
+  _target_: visionary.models.dreamer4.dynamics.DynamicsModel
+  # 138M, near tokenizer parity
+  num_layers: 12
+  num_heads: 12
+  num_kv_heads: 3
+  model_dim: 1024
+  mlp_hidden_dim: 3072
+  head_dim: 64
+  num_registers: 2
+  num_obs_tokens: 256
+  num_actions: 6
+  action_mode: continuous
+  max_step_size: 8
+  # 9.6s at 5 fps
+  context_length: 48
+  temporal_layer_period: 4
+  base: 10000.0
+  remat_policy: null
+
+video_eval:
+  context_frames: 4
+  generated_frames: 30
+  sample_steps: 4
+  context_tau: 0.9
+  fps: 5
+  output_dir: artifacts/dynamics_eval/${exp_name}
+  tokenizer:
+    checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${tokenizer_exp_name}
+    checkpoint_step: null
+
+checkpoint:
+  export_interval_steps: 100000
+  manager:
+    _target_: visionary.common.checkpoint.CheckpointManager
+    directory: gs://visionary-uc1/so101/checkpoints/${exp_name}
+    options:
+      _target_: orbax.checkpoint.CheckpointManagerOptions
+      save_interval_steps: 1000
+      max_to_keep: 5
+      keep_period: 100000
+      enable_async_checkpointing: true
+  resume_step: null
+
+wandb:
+  enabled: true
+  project: visionary
+  group: so101_dynamics_v2

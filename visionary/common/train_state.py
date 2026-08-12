@@ -1,3 +1,5 @@
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 from flax.training.train_state import TrainState
@@ -23,4 +25,21 @@ class TokenizerTrainState(TrainState):
 
 
 class DynamicsTrainState(TrainState):
-    pass
+    ema_params: Any
+
+    @classmethod
+    def create(cls, apply_fn, params, tx):
+        return super().create(
+            apply_fn=apply_fn,
+            params=params,
+            tx=tx,
+            ema_params=params,
+        )
+
+    def update_ema(self, decay: float):
+        ema_params = jax.tree_util.tree_map(
+            lambda ema, online: decay * ema + (1.0 - decay) * online,
+            self.ema_params,
+            self.params,
+        )
+        return self.replace(ema_params=ema_params)
