@@ -10,6 +10,7 @@ import imageio
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import wandb
 from hydra.utils import instantiate, to_absolute_path
 from jax.experimental import mesh_utils, multihost_utils
@@ -374,6 +375,60 @@ def log_video_eval(
         )
 
 
+def build_wsd_schedule(cfg) -> optax.Schedule:
+    opt = cfg.optimizer
+    total = int(cfg.total_steps)
+    warmup = max(int(total * opt.warmup_ratio), 1)
+    decay = int(total * opt.decay_ratio)
+    stable = max(total - warmup - decay, 0)
+    return optax.join_schedules(
+        [
+            optax.linear_schedule(0.0, opt.peak_lr, warmup),
+            optax.constant_schedule(opt.peak_lr),
+            optax.linear_schedule(opt.peak_lr, 0.0, decay),
+        ],
+        boundaries=[warmup, warmup + stable],
+    )
+
+
+def build_optimizer(cfg) -> optax.GradientTransformation:
+    opt = cfg.optimizer
+    if "_target_" in opt:
+        return instantiate(opt)
+
+    schedule = build_wsd_schedule(cfg)
+    adam_ratio = float(opt.adam_lr_ratio)
+
+    def adam_schedule(step):
+        return schedule(step) * adam_ratio
+
+    def muon_dimension_numbers(params):
+        from optax.contrib import MuonDimensionNumbers
+
+        embedding_like = {"embedding", "base_token", "register_tokens"}
+
+        def mapper(path, x):
+            names = {str(getattr(key, "key", key)).lower() for key in path}
+            if names & embedding_like:
+                return None
+            return MuonDimensionNumbers() if x.ndim >= 2 else None
+
+        return jax.tree_util.tree_map_with_path(mapper, params)
+
+    return optax.contrib.muon(
+        learning_rate=schedule,
+        beta=opt.muon_beta,
+        ns_steps=opt.ns_steps,
+        nesterov=opt.nesterov,
+        weight_decay=opt.weight_decay,
+        adam_learning_rate=adam_schedule,
+        adam_b1=opt.adam_b1,
+        adam_b2=opt.adam_b2,
+        adam_weight_decay=0.0,
+        muon_weight_dimension_numbers=muon_dimension_numbers,
+    )
+
+
 @hydra.main(config_path="config", config_name="dynamics", version_base=None)
 def main(cfg: DictConfig):
     init_distributed_if_pod(logger=logger)
@@ -545,37 +600,16 @@ def main(cfg: DictConfig):
     sample_batch = next(iter(train_loaders[init_sequence_length]))
     logger.info("First batch fetch took %.1fs", time.monotonic() - _t)
 
-    overfit_batches = {init_sequence_length: sample_batch}
-    if cfg.overfit_single_batch:
-        logger.info("Overfit mode enabled: reusing one sampled batch per train sequence length.")
-        for sequence_length in train_sequence_lengths:
-            if sequence_length in overfit_batches:
-                continue
-            overfit_batches[sequence_length] = next(iter(train_loaders[sequence_length]))
-        if cfg.dataset.eval.batch_length not in overfit_batches:
-            overfit_batches[cfg.dataset.eval.batch_length] = next(
-                iter(
-                    make_loader(
-                        eval_source,
-                        sequence_length=cfg.dataset.eval.batch_length,
-                        shuffle=False,
-                        drop_remainder=fsdp_enabled,
-                        seed=cfg.seed,
-                        lengths=eval_lengths_manifest,
-                    )
-                )
-            )
-    else:
-        _t = time.monotonic()
-        eval_loader = make_loader(
-            eval_source,
-            sequence_length=cfg.dataset.eval.batch_length,
-            shuffle=False,
-            drop_remainder=fsdp_enabled,
-            seed=cfg.seed,
-            lengths=eval_lengths_manifest,
-        )
-        logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
+    _t = time.monotonic()
+    eval_loader = make_loader(
+        eval_source,
+        sequence_length=cfg.dataset.eval.batch_length,
+        shuffle=False,
+        drop_remainder=fsdp_enabled,
+        seed=cfg.seed,
+        lengths=eval_lengths_manifest,
+    )
+    logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
     key = jax.random.key(cfg.seed)
@@ -590,7 +624,7 @@ def main(cfg: DictConfig):
     logger.info("Model init took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
-    optimizer = instantiate(cfg.optimizer)
+    optimizer = build_optimizer(cfg)
     state = DynamicsTrainState.create(
         apply_fn=model.apply,
         params=params,
@@ -761,8 +795,6 @@ def main(cfg: DictConfig):
     train_iterators = {sequence_length: iter(loader) for sequence_length, loader in train_loaders.items()}
 
     def iterator_items():
-        if cfg.overfit_single_batch:
-            return None
         return {
             f"train_iterator_{sequence_length}": train_iterator
             for sequence_length, train_iterator in train_iterators.items()
@@ -824,14 +856,11 @@ def main(cfg: DictConfig):
 
         sequence_length = sequence_length_for_step(current_step)
 
-        if cfg.overfit_single_batch:
-            batch = overfit_batches[sequence_length]
-        else:
-            try:
-                batch = next(train_iterators[sequence_length])
-            except StopIteration:
-                train_iterators[sequence_length] = iter(train_loaders[sequence_length])
-                batch = next(train_iterators[sequence_length])
+        try:
+            batch = next(train_iterators[sequence_length])
+        except StopIteration:
+            train_iterators[sequence_length] = iter(train_loaders[sequence_length])
+            batch = next(train_iterators[sequence_length])
         data_done = time.monotonic()
 
         batch = local_batch_to_global(batch, batch_sharding)
@@ -871,10 +900,7 @@ def main(cfg: DictConfig):
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
             t_eval_start = time.monotonic()
             totals: dict[str, float] = {}
-            if cfg.overfit_single_batch:
-                eval_batches = [overfit_batches[cfg.dataset.eval.batch_length]]
-            else:
-                eval_batches = list(itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches))
+            eval_batches = list(itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches))
             if fsdp_enabled:
                 global_eval_batch_counts = np.asarray(
                     multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
