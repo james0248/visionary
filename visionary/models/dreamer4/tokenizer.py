@@ -290,10 +290,6 @@ class Tokenizer(nn.Module):
             dtype=self.dtype,
         )
 
-    def sample_independent(self, batch_size: int) -> jnp.ndarray:
-        rng = self.make_rng("sample")
-        return jax.random.bernoulli(rng, p=self.independent_prob, shape=(batch_size,))
-
     def sample_mask(
         self,
         video_shape: tuple[int, int, int],
@@ -341,7 +337,7 @@ class Tokenizer(nn.Module):
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         batch_size, seq_len, patch_len, patch_dim = batch["video"].shape
         if independent is None:
-            independent = self.sample_independent(batch_size)
+            independent = jax.random.bernoulli(self.make_rng("sample"), p=self.independent_prob, shape=(batch_size,))
         mask = self.sample_mask((batch_size, seq_len, patch_len), mask_prob=mask_prob)
         temporal_mask = create_temporal_mask(independent, seq_len)
         video = jnp.asarray(batch["video"], dtype=jnp.float32) / 255.0
