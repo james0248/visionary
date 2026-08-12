@@ -40,12 +40,13 @@ import numpy as np
 from hydra.utils import instantiate
 
 from visionary.common.checkpoint import (
+    resolve_model_export_step,
     restore_model_export_single_device,
     restore_preprocessor_export,
 )
 from visionary.dataset import decode_video_window
+from visionary.eval.loading import build_raw_index
 from visionary.models.dreamer4.dynamics import DynamicsModel
-from visionary.eval.loading import build_raw_index, load_train_config, restore_params
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,6 @@ def main() -> None:
     parser.add_argument("--output", help="Metrics JSON path; defaults inside output_dir.")
     parser.add_argument("--label", default="tf", help="Tag prefixed to every output file.")
     parser.add_argument("--step", type=int)
-    parser.add_argument("--from_export", action="store_true")
     parser.add_argument("--indices", default="2,7,256")
     parser.add_argument("--context_frames", type=int, default=4)
     parser.add_argument("--total_frames", type=int, default=64)
@@ -146,18 +146,10 @@ def main() -> None:
             "total": total,
         }
 
-    first = sample_for(int(args.indices.split(",")[0]))
-    if args.from_export:
-        export_cfg, params = restore_model_export_single_device(args.checkpoint_dir, step=args.step)
-        model = instantiate(export_cfg)
-        step = args.step
-        logger.info("Restored dynamics export from step %s", step)
-    else:
-        cfg = load_train_config(args.checkpoint_dir)
-        model, params, step = restore_params(
-            cfg, args.checkpoint_dir, args.step, {"video": first["video"], "actions": first["actions"]}
-        )
-        logger.info("Restored dynamics params from step %d", step)
+    step = resolve_model_export_step(args.checkpoint_dir, args.step)
+    export_cfg, params = restore_model_export_single_device(args.checkpoint_dir, step=step)
+    model = instantiate(export_cfg)
+    logger.info("Restored dynamics export from step %d", step)
 
     tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(args.tokenizer_checkpoint_dir)
     tokenizer = instantiate(tokenizer_cfg)

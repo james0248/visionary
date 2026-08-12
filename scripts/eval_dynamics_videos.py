@@ -29,12 +29,13 @@ from hydra.utils import instantiate
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 from visionary.common.checkpoint import (
+    resolve_model_export_step,
     restore_model_export_single_device,
     restore_preprocessor_export,
 )
 from visionary.dataset import decode_video_window
+from visionary.eval.loading import build_raw_index
 from visionary.models.dreamer4.dynamics import DynamicsModel
-from visionary.eval.loading import build_raw_index, load_train_config, restore_params
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
@@ -92,11 +93,6 @@ def main() -> None:
         default=0,
         help="Offset added to the per-clip rollout noise seed; the crop stays fixed.",
     )
-    parser.add_argument(
-        "--from_export",
-        action="store_true",
-        help="Load weights-only exports from <checkpoint_dir>/model/<step> instead of the full train state.",
-    )
     parser.add_argument("--context_tau", type=float, default=0.9)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
@@ -117,9 +113,6 @@ def main() -> None:
     fixed_total = None if roll_to_end else args.context_frames + args.generated_frames
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    cfg = load_train_config(args.checkpoint_dir)
-    logger.info("Loaded training config for exp %s", cfg.get("exp_name", "?"))
 
     # read records directly rather than through DynamicsDataSource: the crop
     # offset and provenance are needed to locate the original footage
@@ -185,22 +178,10 @@ def main() -> None:
         }
 
     selected = [int(i) for i in args.indices.split(",")] if args.indices else list(range(args.num_videos))
-    first = sample_for(selected[0])
-    if args.from_export:
-        export_cfg, params = restore_model_export_single_device(args.checkpoint_dir, step=args.step)
-        model = instantiate(export_cfg)
-        step = args.step
-        logger.info("Restored dynamics export from step %d", step)
-    else:
-        # the model was initialised against the training batch_length, but the
-        # rollout only ever sees total_frames, so init at that length
-        model, params, step = restore_params(
-            cfg,
-            args.checkpoint_dir,
-            args.step,
-            {"video": first["video"], "actions": first["actions"]},
-        )
-        logger.info("Restored dynamics params from step %d", step)
+    step = resolve_model_export_step(args.checkpoint_dir, args.step)
+    export_cfg, params = restore_model_export_single_device(args.checkpoint_dir, step=step)
+    model = instantiate(export_cfg)
+    logger.info("Restored dynamics export from step %d", step)
 
     tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(args.tokenizer_checkpoint_dir)
     tokenizer = instantiate(tokenizer_cfg)

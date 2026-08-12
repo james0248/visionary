@@ -34,12 +34,13 @@ import numpy as np
 from hydra.utils import instantiate
 
 from visionary.common.checkpoint import (
+    resolve_model_export_step,
     restore_model_export_single_device,
     restore_preprocessor_export,
 )
 from visionary.dataset import decode_video_window
+from visionary.eval.loading import build_raw_index
 from visionary.models.dreamer4.dynamics import DynamicsModel
-from visionary.eval.loading import build_raw_index, load_train_config, restore_params
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 
 logger = logging.getLogger(__name__)
@@ -108,12 +109,10 @@ def main() -> None:
         picks = np.linspace(0, len(cands) - 1, min(args.frames_per_clip, len(cands)))
         return sorted({cands[int(round(p))] for p in picks})
 
-    first = sample_for(int(args.indices.split(",")[0]))
-    cfg = load_train_config(args.checkpoint_dir)
-    model, params, step = restore_params(
-        cfg, args.checkpoint_dir, args.step, {"video": first["video"], "actions": first["actions"]}
-    )
-    logger.info("Restored dynamics params from step %d", step)
+    step = resolve_model_export_step(args.checkpoint_dir, args.step)
+    export_cfg, params = restore_model_export_single_device(args.checkpoint_dir, step=step)
+    model = instantiate(export_cfg)
+    logger.info("Restored dynamics export from step %d", step)
 
     tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(args.tokenizer_checkpoint_dir)
     tokenizer = instantiate(tokenizer_cfg)
