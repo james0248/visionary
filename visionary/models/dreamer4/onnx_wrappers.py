@@ -409,7 +409,6 @@ class _ExportSpatioTemporalTransformer(nn.Module):
     mlp_hidden_dim: int
     temporal_layer_period: int = 4
     # accepted and ignored; export never runs a backward pass
-    remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 

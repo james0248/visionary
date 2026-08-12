@@ -58,9 +58,7 @@ def create_spatial_rope(base: float, head_dim: int, x_len: int, y_len: int) -> t
     return cos_emb, sin_emb
 
 
-def resolve_remat_policy(name: str | None):
-    if name is None:
-        return None
+def resolve_remat_policy(name: str):
     policy = getattr(jax.checkpoint_policies, name, None)
     if policy is None:
         raise ValueError(f"Unknown remat_policy: {name!r}")
@@ -144,7 +142,6 @@ class SpatioTemporalTransformer(nn.Module):
     mlp_hidden_dim: int
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
-    remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
@@ -178,12 +175,11 @@ class SpatioTemporalTransformer(nn.Module):
 
         # Recomputes each block in the backward pass instead of keeping its
         # activations. Same parameter tree either way, so checkpoints carry over.
-        # remat_policy names an attribute of jax.checkpoint_policies; None keeps
-        # only the block input and recomputes everything else.
+        # remat_policy names an attribute of jax.checkpoint_policies.
         block_cls = (
-            nn.remat(TransformerBlock, policy=resolve_remat_policy(self.remat_policy))
-            if self.remat
-            else TransformerBlock
+            TransformerBlock
+            if self.remat_policy is None
+            else nn.remat(TransformerBlock, policy=resolve_remat_policy(self.remat_policy))
         )
 
         def apply_block(

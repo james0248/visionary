@@ -82,7 +82,6 @@ dynamics:
   # 3.2s at 7.5Hz, same wall-clock context as the 651M/30fps run
   context_length: 24
   base: 10000.0
-  remat: false
   remat_policy: null
 
 checkpoint:

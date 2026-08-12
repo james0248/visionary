@@ -46,7 +46,6 @@ PRESETS = {
         pad_width=[0, 0],
         patch_size=16,
         base=10000.0,
-        remat=True,
         remat_policy="dots_with_no_batch_dims_saveable",
     ),
 }

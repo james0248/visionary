@@ -103,7 +103,6 @@ class DynamicsModel(nn.Module):
     action_mode: Literal["discrete", "continuous"] = "discrete"
     temporal_layer_period: int = 4
     base: float = 10000.0
-    remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
@@ -132,7 +131,6 @@ class DynamicsModel(nn.Module):
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
             temporal_layer_period=self.temporal_layer_period,
-            remat=self.remat,
             remat_policy=self.remat_policy,
             dtype=self.dtype,
         )

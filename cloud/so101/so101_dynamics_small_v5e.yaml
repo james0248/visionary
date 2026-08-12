@@ -30,7 +30,6 @@ training:
     - dataset.eval_dir=/mnt/data/dynamics/eval
     - checkpoint.manager.directory=${checkpoint_dir}
     - fsdp.data_axis_size=4
-    - dynamics.remat=true
     - dynamics.remat_policy=nothing_saveable
 
 markers:

@@ -69,7 +69,6 @@ class TokenizerEncoder(nn.Module):
     base: float
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
-    remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
@@ -109,7 +108,6 @@ class TokenizerEncoder(nn.Module):
             mlp_hidden_dim=self.mlp_hidden_dim,
             temporal_layer_period=self.temporal_layer_period,
             temporal_layer_offset=self.temporal_layer_offset,
-            remat=self.remat,
             remat_policy=self.remat_policy,
             dtype=self.dtype,
         )(
@@ -143,7 +141,6 @@ class TokenizerDecoder(nn.Module):
     base: float
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
-    remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
@@ -177,7 +174,6 @@ class TokenizerDecoder(nn.Module):
             mlp_hidden_dim=self.mlp_hidden_dim,
             temporal_layer_period=self.temporal_layer_period,
             temporal_layer_offset=self.temporal_layer_offset,
-            remat=self.remat,
             remat_policy=self.remat_policy,
             dtype=self.dtype,
         )(
@@ -218,7 +214,6 @@ class Tokenizer(nn.Module):
     base: float
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
-    remat: bool = False
     remat_policy: str | None = None
     independent_prob: float = 0.3
     mask_prob_min: float = 0.0
@@ -268,7 +263,6 @@ class Tokenizer(nn.Module):
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
-            remat=self.remat,
             remat_policy=self.remat_policy,
             dtype=self.dtype,
         )
@@ -285,7 +279,6 @@ class Tokenizer(nn.Module):
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
-            remat=self.remat,
             remat_policy=self.remat_policy,
             dtype=self.dtype,
         )
