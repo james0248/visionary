@@ -23,7 +23,12 @@ from visionary.common.checkpoint import (
     restore_preprocessor_export,
     save_model_export,
 )
-from visionary.common.jax import fold_in_many, maybe_initialize_distributed
+from visionary.common.jax import (
+    fold_in_many,
+    shard_from_host,
+    init_distributed_if_pod,
+    replicate_to_mesh,
+)
 from visionary.common.train_state import DynamicsTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import (
@@ -43,32 +48,13 @@ DATA_AXIS = "data"
 FSDP_AXIS = "fsdp"
 
 
-def cfg_select(cfg: DictConfig, path: str, default: Any) -> Any:
-    value = OmegaConf.select(cfg, path, default=default)
-    return default if value is None else value
-
-
-def parse_auto_bool(value: Any, auto_value: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    value = str(value).strip().lower()
-    if value == "auto":
-        return auto_value
-    if value in {"1", "true", "yes", "on", "enabled"}:
-        return True
-    if value in {"0", "false", "no", "off", "disabled"}:
-        return False
-    raise ValueError(f"Expected a boolean or 'auto', got {value!r}")
-
-
 def build_fsdp_mesh(cfg: DictConfig) -> tuple[Mesh, bool, int]:
     device_count = jax.device_count()
-    auto_enabled = device_count > 1 or jax.process_count() > 1
-    fsdp_enabled = parse_auto_bool(
-        cfg_select(cfg, "fsdp.enabled", "auto"),
-        auto_value=auto_enabled,
-    )
-    data_axis_size = int(cfg_select(cfg, "fsdp.data_axis_size", 1))
+    enabled = cfg.fsdp.enabled
+    if enabled == "auto":
+        enabled = device_count > 1 or jax.process_count() > 1
+    fsdp_enabled = bool(enabled)
+    data_axis_size = int(cfg.fsdp.data_axis_size)
     if data_axis_size < 1:
         raise ValueError(f"fsdp.data_axis_size must be >= 1, got {data_axis_size}")
     if device_count % data_axis_size != 0:
@@ -134,23 +120,6 @@ def make_array_shardings(
     )
 
 
-def make_global_array_from_host(value, sharding: NamedSharding):
-    if not hasattr(value, "shape") and not np.isscalar(value):
-        return value
-    dtype = np.int32 if isinstance(value, (int, np.integer)) else None
-    value = np.asarray(jax.device_get(value), dtype=dtype)
-    return jax.make_array_from_callback(
-        value.shape,
-        sharding,
-        lambda index: value[index],
-        dtype=value.dtype,
-    )
-
-
-def put_replicated(value, mesh: Mesh):
-    return jax.device_put(value, replicated_sharding(mesh))
-
-
 def put_single_device_tree(tree):
     sharding = jax.sharding.SingleDeviceSharding(jax.local_devices()[0])
     return jax.tree_util.tree_map(
@@ -159,7 +128,7 @@ def put_single_device_tree(tree):
     )
 
 
-def put_global_batch(batch: DynamicsBatch, batch_sharding: NamedSharding) -> DynamicsBatch:
+def local_batch_to_global(batch: DynamicsBatch, batch_sharding: NamedSharding) -> DynamicsBatch:
     return jax.tree_util.tree_map(
         lambda value: jax.make_array_from_process_local_data(batch_sharding, value),
         batch,
@@ -407,14 +376,14 @@ def log_video_eval(
 
 @hydra.main(config_path="config", config_name="dynamics", version_base=None)
 def main(cfg: DictConfig):
-    maybe_initialize_distributed(logger=logger)
+    init_distributed_if_pod(logger=logger)
 
     process_index = jax.process_index()
     process_count = jax.process_count()
     local_device_count = jax.local_device_count()
     is_primary_process = process_index == 0
     mesh, fsdp_enabled, fsdp_axis_size = build_fsdp_mesh(cfg)
-    log_sharding = bool(cfg_select(cfg, "fsdp.log_sharding", True))
+    log_sharding = bool(cfg.fsdp.log_sharding)
     batch_pspec = batch_partition_spec() if fsdp_enabled else P()
     batch_sharding = NamedSharding(mesh, batch_pspec)
     metrics_sharding = replicated_sharding(mesh)
@@ -636,7 +605,7 @@ def main(cfg: DictConfig):
         fsdp_enabled=fsdp_enabled,
         fsdp_axis_size=fsdp_axis_size,
     )
-    state = jax.tree_util.tree_map(make_global_array_from_host, state, state_shardings)
+    state = jax.tree_util.tree_map(shard_from_host, state, state_shardings)
     if log_sharding:
         log_sharding_summary(params, state_shardings.params, prefix="Dynamics params")
     logger.info("TrainState sharding took %.1fs", time.monotonic() - _t)
@@ -666,8 +635,8 @@ def main(cfg: DictConfig):
         out_shardings=metrics_sharding,
         static_argnames=("bootstrap_rows",),
     )
-    train_key = put_replicated(train_key, mesh)
-    eval_key = put_replicated(eval_key, mesh)
+    train_key = replicate_to_mesh(train_key, mesh)
+    eval_key = replicate_to_mesh(eval_key, mesh)
 
     video_cfg = cfg.video_eval
     video_eval_enabled = is_primary_process and process_count == 1
@@ -865,7 +834,7 @@ def main(cfg: DictConfig):
                 batch = next(train_iterators[sequence_length])
         data_done = time.monotonic()
 
-        batch = put_global_batch(batch, batch_sharding)
+        batch = local_batch_to_global(batch, batch_sharding)
         transfer_done = time.monotonic()
 
         bootstrap_rows = bootstrap_rows_for_step(current_step)
@@ -917,7 +886,7 @@ def main(cfg: DictConfig):
                 batch_metrics = jax.device_get(
                     jit_eval_step(
                         state,
-                        put_global_batch(eval_batch, batch_sharding),
+                        local_batch_to_global(eval_batch, batch_sharding),
                         eval_key,
                         jnp.asarray(step, dtype=jnp.int32),
                         jnp.asarray(batch_idx, dtype=jnp.int32),

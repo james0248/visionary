@@ -17,11 +17,6 @@ eval_steps: 1000
 total_steps: 100000
 exp_name: tokenizer_v2
 
-fsdp:
-  enabled: auto
-  data_axis_size: 16
-  log_sharding: true
-
 dataset:
   train_dir: data/so101/shards/train
   eval_dir: data/so101/shards/eval

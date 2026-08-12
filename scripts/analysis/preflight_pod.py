@@ -52,7 +52,6 @@ def build_overrides(data_dir: Path, ckpt_dir: Path, total_steps: int) -> list[st
         "dataset.prefetch_buffer_size=2",
         "dataset.eval.max_batches=2",
         "dataset.eval.log_frames=2",
-        "fsdp.data_axis_size=16",
         "tokenizer.encoder_num_layers=4",
         "tokenizer.decoder_num_layers=4",
         "tokenizer.num_latents=8",

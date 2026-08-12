@@ -2,7 +2,6 @@ import itertools
 import logging
 import time
 from functools import lru_cache
-from typing import Any
 
 import grain.python as grain
 import hydra
@@ -11,8 +10,9 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from hydra.utils import instantiate
-from jax.experimental import mesh_utils, multihost_utils
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from jax.experimental import multihost_utils
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 from omegaconf import DictConfig, OmegaConf
 
 from visionary.common.checkpoint import (
@@ -20,7 +20,14 @@ from visionary.common.checkpoint import (
     save_model_export,
     save_preprocessor_export,
 )
-from visionary.common.jax import fold_in_many, maybe_initialize_distributed
+from visionary.common.jax import (
+    data_parallel_mesh,
+    fold_in_many,
+    global_batch_to_local,
+    init_distributed_if_pod,
+    local_batch_to_global,
+)
+from visionary.common.timing import PhaseTimer
 from visionary.common.train_state import TokenizerTrainState
 from visionary.common.wandb import WandbLogger
 from visionary.dataset import VideoDataset
@@ -35,55 +42,24 @@ LPIPS_PRETRAINED_NETWORK = "alexnet"
 LOSS_RMS_DECAY = 0.99
 LOSS_RMS_EPS = 1e-8
 DATA_AXIS = "data"
-FSDP_AXIS = "fsdp"
-
-
-def cfg_select(cfg: DictConfig, path: str, default: Any) -> Any:
-    value = OmegaConf.select(cfg, path, default=default)
-    return default if value is None else value
-
-
-def parse_auto_bool(value: Any, auto_value: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    value = str(value).strip().lower()
-    if value == "auto":
-        return auto_value
-    if value in {"1", "true", "yes", "on", "enabled"}:
-        return True
-    if value in {"0", "false", "no", "off", "disabled"}:
-        return False
-    raise ValueError(f"Expected a boolean or 'auto', got {value!r}")
-
-
-def build_wsd_schedule(cfg) -> optax.Schedule:
-    total = int(cfg.total_steps)
-    warmup = max(int(total * cfg.optimizer.warmup_ratio), 1)
-    decay = int(total * cfg.optimizer.decay_ratio)
-    stable = max(total - warmup - decay, 0)
-    return optax.join_schedules(
-        [
-            optax.linear_schedule(0.0, cfg.optimizer.peak_lr, warmup),
-            optax.constant_schedule(cfg.optimizer.peak_lr),
-            optax.linear_schedule(cfg.optimizer.peak_lr, 0.0, decay),
-        ],
-        boundaries=[warmup, warmup + stable],
-    )
-
-
-def muon_dimension_numbers(params):
-    from optax.contrib import MuonDimensionNumbers
-
-    def mapper(path, x):
-        path_str = "/".join(str(getattr(key, "key", key)) for key in path).lower()
-        if "embedding" in path_str:
-            return None
-        return MuonDimensionNumbers() if x.ndim >= 2 else None
-
-    return jax.tree_util.tree_map_with_path(mapper, params)
 
 
 def build_optimizer(cfg) -> optax.GradientTransformation:
+
+    def build_wsd_schedule(cfg) -> optax.Schedule:
+        total = int(cfg.total_steps)
+        warmup = max(int(total * cfg.optimizer.warmup_ratio), 1)
+        decay = int(total * cfg.optimizer.decay_ratio)
+        stable = max(total - warmup - decay, 0)
+        return optax.join_schedules(
+            [
+                optax.linear_schedule(0.0, cfg.optimizer.peak_lr, warmup),
+                optax.constant_schedule(cfg.optimizer.peak_lr),
+                optax.linear_schedule(cfg.optimizer.peak_lr, 0.0, decay),
+            ],
+            boundaries=[warmup, warmup + stable],
+        )
+
     schedule = build_wsd_schedule(cfg)
     opt = cfg.optimizer
     adam_ratio = float(opt.adam_lr_ratio)
@@ -91,226 +67,34 @@ def build_optimizer(cfg) -> optax.GradientTransformation:
     def adam_schedule(step):
         return schedule(step) * adam_ratio
 
+    def muon_dimension_numbers(params):
+        from optax.contrib import MuonDimensionNumbers
+
+        # Do not use Muon on independent lookup vectors
+        embedding_like = {"embedding", "latent_tokens", "image_tokens"}
+
+        def mapper(path, x):
+            names = {str(getattr(key, "key", key)).lower() for key in path}
+            if names & embedding_like:
+                return None
+
+            # Apply Muon on all matrices (not 1D)
+            return MuonDimensionNumbers() if x.ndim >= 2 else None
+
+        return jax.tree_util.tree_map_with_path(mapper, params)
+
     return optax.contrib.muon(
         learning_rate=schedule,
-        beta=float(opt.muon_beta),
-        ns_steps=int(opt.ns_steps),
-        nesterov=bool(opt.nesterov),
-        weight_decay=float(opt.weight_decay),
+        beta=opt.muon_beta,
+        ns_steps=opt.ns_steps,
+        nesterov=opt.nesterov,
+        weight_decay=opt.weight_decay,
         adam_learning_rate=adam_schedule,
-        adam_b1=float(opt.adam_b1),
-        adam_b2=float(opt.adam_b2),
+        adam_b1=opt.adam_b1,
+        adam_b2=opt.adam_b2,
         adam_weight_decay=0.0,
         muon_weight_dimension_numbers=muon_dimension_numbers,
     )
-
-
-def build_fsdp_mesh(cfg: DictConfig) -> tuple[Mesh, bool, int]:
-    device_count = jax.device_count()
-    auto_enabled = device_count > 1 or jax.process_count() > 1
-    fsdp_enabled = parse_auto_bool(
-        cfg_select(cfg, "fsdp.enabled", "auto"),
-        auto_value=auto_enabled,
-    )
-    data_axis_size = int(cfg_select(cfg, "fsdp.data_axis_size", 1))
-    if data_axis_size < 1:
-        raise ValueError(f"fsdp.data_axis_size must be >= 1, got {data_axis_size}")
-    if device_count % data_axis_size != 0:
-        raise ValueError(
-            f"fsdp.data_axis_size must divide jax.device_count(); got {data_axis_size=} and device_count={device_count}"
-        )
-
-    fsdp_axis_size = device_count // data_axis_size
-    devices = mesh_utils.create_device_mesh((data_axis_size, fsdp_axis_size))
-    mesh = Mesh(devices, (DATA_AXIS, FSDP_AXIS))
-    if fsdp_enabled and fsdp_axis_size < 1:
-        raise ValueError("FSDP requested but no devices are available.")
-    return mesh, fsdp_enabled, fsdp_axis_size
-
-
-def replicated_sharding(mesh: Mesh) -> NamedSharding:
-    return NamedSharding(mesh, P())
-
-
-def batch_partition_spec() -> P:
-    return P((DATA_AXIS, FSDP_AXIS))
-
-
-def choose_fsdp_partition_spec(
-    value: Any,
-    enabled: bool,
-    fsdp_axis_size: int,
-) -> P:
-    if not hasattr(value, "shape"):
-        if not np.isscalar(value):
-            return P()
-        dtype = np.int32 if isinstance(value, (int, np.integer)) else None
-        value = np.asarray(value, dtype=dtype)
-    shape = tuple(int(dim) for dim in value.shape)
-    if not enabled or fsdp_axis_size <= 1 or not shape:
-        return P()
-
-    ranked_dims = sorted(range(len(shape)), key=lambda axis: shape[axis], reverse=True)
-    for axis in ranked_dims:
-        if shape[axis] >= fsdp_axis_size and shape[axis] % fsdp_axis_size == 0:
-            spec = [None] * len(shape)
-            spec[axis] = FSDP_AXIS
-            return P(*spec)
-    return P()
-
-
-def make_array_shardings(
-    tree,
-    mesh: Mesh,
-    fsdp_enabled: bool,
-    fsdp_axis_size: int,
-):
-    return jax.tree_util.tree_map(
-        lambda value: NamedSharding(
-            mesh,
-            choose_fsdp_partition_spec(
-                value,
-                enabled=fsdp_enabled,
-                fsdp_axis_size=fsdp_axis_size,
-            ),
-        ),
-        tree,
-    )
-
-
-def make_global_array_from_host(value, sharding: NamedSharding):
-    if not hasattr(value, "shape") and not np.isscalar(value):
-        return value
-    dtype = np.int32 if isinstance(value, (int, np.integer)) else None
-    value = np.asarray(jax.device_get(value), dtype=dtype)
-    return jax.make_array_from_callback(
-        value.shape,
-        sharding,
-        lambda index: value[index],
-        dtype=value.dtype,
-    )
-
-
-def put_replicated(value, mesh: Mesh):
-    sharding = replicated_sharding(mesh)
-    if jax.process_count() == 1:
-        return jax.device_put(value, sharding)
-    # host_local_array_to_global_array requires contiguous per-host subcubes,
-    # which TPU ICI-optimized meshes violate; assemble the replicated array
-    # from explicit per-device copies instead
-    value = jnp.asarray(value)
-    is_key = jnp.issubdtype(value.dtype, jax.dtypes.prng_key)
-    data = jax.random.key_data(value) if is_key else value
-    data = np.asarray(data)
-    arrays = [jax.device_put(data, d) for d in mesh.local_devices]
-    out = jax.make_array_from_single_device_arrays(data.shape, sharding, arrays)
-    return jax.random.wrap_key_data(out, impl=jax.random.key_impl(value)) if is_key else out
-
-
-def put_global_batch(batch: VideoDataset, batch_sharding: NamedSharding) -> VideoDataset:
-    return jax.tree_util.tree_map(
-        lambda value: jax.make_array_from_process_local_data(batch_sharding, value),
-        batch,
-    )
-
-
-def host_local_batch(batch, mesh: Mesh, pspec: P):
-    if jax.process_count() == 1:
-        return batch
-
-    # global_array_to_host_local_array requires contiguous per-host subcubes;
-    # concatenate this host's unique leading-dim shards instead
-    def to_local(x):
-        shards = {}
-        for s in x.addressable_shards:
-            start = s.index[0].start if x.ndim and s.index else 0
-            shards.setdefault(start or 0, s.data)
-        return (
-            np.concatenate([np.asarray(shards[k]) for k in sorted(shards)], axis=0)
-            if x.ndim
-            else np.asarray(next(iter(shards.values())))
-        )
-
-    return jax.tree_util.tree_map(to_local, batch)
-
-
-def log_sharding_summary(tree, shardings, prefix: str, max_entries: int = 12) -> None:
-    leaves = []
-
-    def visit(path, value, sharding):
-        if not hasattr(value, "shape"):
-            return
-        spec = sharding.spec if isinstance(sharding, NamedSharding) else P()
-        leaves.append(
-            (
-                spec != P(),
-                int(np.prod(value.shape)) if value.shape else 1,
-                jax.tree_util.keystr(path, simple=True, separator="/"),
-                tuple(int(dim) for dim in value.shape),
-                spec,
-            )
-        )
-
-    jax.tree_util.tree_map_with_path(visit, tree, shardings)
-    num_leaves = len(leaves)
-    num_sharded = sum(1 for sharded, *_ in leaves if sharded)
-    total_values = sum(size for _, size, *_ in leaves)
-    sharded_values = sum(size for sharded, size, *_ in leaves if sharded)
-    logger.info(
-        "%s sharding: %d/%d leaves sharded, %.1f%% of values in sharded leaves",
-        prefix,
-        num_sharded,
-        num_leaves,
-        100.0 * sharded_values / max(total_values, 1),
-    )
-    for sharded, size, path, shape, spec in sorted(leaves, reverse=True)[:max_entries]:
-        logger.info(
-            "%s sharding leaf: sharded=%s values=%d path=%s shape=%s spec=%s",
-            prefix,
-            sharded,
-            size,
-            path,
-            shape,
-            spec,
-        )
-
-
-def make_host_seed(*values: int) -> int:
-    seed_sequence = np.random.SeedSequence([int(value) for value in values])
-    return int(seed_sequence.generate_state(1, dtype=np.uint32)[0])
-
-
-def log_train_timing(
-    wb: WandbLogger,
-    step: int,
-    start_step: int,
-    metrics,
-    data_time: float,
-    transfer_time: float,
-    dispatch_time: float,
-) -> dict[str, float]:
-    window_steps = step - start_step
-    avg_steps = max(window_steps, 1)
-    sync_start = time.monotonic()
-    train_metrics = jax.device_get(metrics)
-    sync_time = time.monotonic() - sync_start
-
-    total_time = data_time + transfer_time + dispatch_time + sync_time
-    stats = {
-        "sps": window_steps / max(total_time, 1e-8),
-        "data_time": data_time / avg_steps,
-        "transfer_time": transfer_time / avg_steps,
-        "compute_time": (dispatch_time + sync_time) / avg_steps,
-        "wall_time": total_time / avg_steps,
-    }
-    wb.log(
-        {
-            **{k: float(v) for k, v in train_metrics.items()},
-            **{f"train/{k}": v for k, v in stats.items()},
-        },
-        step=step,
-    )
-    return stats
 
 
 @lru_cache(maxsize=1)
@@ -413,20 +197,10 @@ def train_step(
 
     def loss_fn(params):
         reconstructed, mask, latent = state.apply_fn(
-            params,
-            batch,
-            method=Tokenizer.reconstruct,
-            rngs={"sample": model_key},
+            params, batch, method=Tokenizer.reconstruct, rngs={"sample": model_key}
         )
         return compute_loss_metrics(
-            state,
-            batch,
-            reconstructed,
-            mask,
-            latent,
-            lpips_weight,
-            lpips_frame_stride,
-            preprocessor,
+            state, batch, reconstructed, mask, latent, lpips_weight, lpips_frame_stride, preprocessor
         )
 
     (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
@@ -456,22 +230,9 @@ def eval_step(
         rngs={"sample": model_key},
     )
     _, metrics = compute_loss_metrics(
-        state,
-        batch,
-        reconstructed,
-        mask,
-        latent,
-        lpips_weight,
-        lpips_frame_stride,
-        preprocessor,
+        state, batch, reconstructed, mask, latent, lpips_weight, lpips_frame_stride, preprocessor
     )
-    sampled_frames = sample_sequence_frames(
-        batch,
-        reconstructed,
-        mask,
-        preprocessor,
-        frame_key,
-    )
+    sampled_frames = sample_sequence_frames(batch, reconstructed, mask, preprocessor, frame_key)
     return metrics, sampled_frames
 
 
@@ -535,17 +296,16 @@ def build_reconstruction_grid(
 
 @hydra.main(config_path="config", config_name="tokenizer", version_base=None)
 def main(cfg: DictConfig):
-    maybe_initialize_distributed(logger=logger)
+    init_distributed_if_pod(logger=logger)
 
     process_index = jax.process_index()
     process_count = jax.process_count()
     local_device_count = jax.local_device_count()
     is_primary_process = process_index == 0
-    mesh, fsdp_enabled, fsdp_axis_size = build_fsdp_mesh(cfg)
-    log_sharding = bool(cfg_select(cfg, "fsdp.log_sharding", True))
-    batch_pspec = batch_partition_spec() if fsdp_enabled else P()
+    mesh = data_parallel_mesh(DATA_AXIS)
+    batch_pspec = P(DATA_AXIS)
     batch_sharding = NamedSharding(mesh, batch_pspec)
-    metrics_sharding = replicated_sharding(mesh)
+    metrics_sharding = NamedSharding(mesh, P())
 
     logger.info(
         "JAX backend: %s process=%d/%d local_devices=%d global_devices=%d devices=%s",
@@ -556,35 +316,16 @@ def main(cfg: DictConfig):
         jax.device_count(),
         jax.local_devices(),
     )
-    logger.info(
-        "FSDP mesh: enabled=%s mesh_shape=%s data_axis=%d fsdp_axis=%d batch_pspec=%s",
-        fsdp_enabled,
-        mesh.devices.shape,
-        mesh.shape[DATA_AXIS],
-        mesh.shape[FSDP_AXIS],
-        batch_pspec,
-    )
-    if not fsdp_enabled and process_count > 1:
-        raise ValueError(
-            "Multi-process tokenizer training requires fsdp.enabled=true or auto. "
-            "Replicated batch sharding would receive different per-process Grain batches."
-        )
-    if not fsdp_enabled and jax.device_count() > 1:
-        logger.warning(
-            "Multiple JAX devices are visible but fsdp.enabled is false; tokenizer training "
-            "will use replicated sharding."
-        )
+    logger.info("Data mesh: %d devices, batch_pspec=%s", mesh.shape[DATA_AXIS], batch_pspec)
 
     wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled) and is_primary_process)
     total_steps = int(cfg.total_steps)
 
     train_source = instantiate(cfg.dataset.source, data_dir=cfg.dataset.train_dir)
     eval_source = instantiate(cfg.dataset.source, data_dir=cfg.dataset.eval_dir)
-    logger.info(
-        "Loaded %d training videos and %d eval videos",
-        len(train_source),
-        len(eval_source),
-    )
+    logger.info("Loaded %d training videos and %d eval videos", len(train_source), len(eval_source))
+
+    # Calculate per device batch size
     batch_size_global = int(cfg.dataset.batch_size)
     if batch_size_global % process_count != 0:
         raise ValueError(
@@ -592,7 +333,7 @@ def main(cfg: DictConfig):
             f"got batch_size={batch_size_global} process_count={process_count}"
         )
     batch_size_per_process = batch_size_global // process_count
-    if fsdp_enabled and batch_size_per_process % local_device_count != 0:
+    if batch_size_per_process % local_device_count != 0:
         raise ValueError(
             "global batch_size / process_count must be divisible by "
             "jax.local_device_count() for FSDP input sharding; got "
@@ -602,8 +343,9 @@ def main(cfg: DictConfig):
         "Batch layout: global=%d per_process=%d per_device=%d",
         batch_size_global,
         batch_size_per_process,
-        batch_size_per_process // local_device_count if fsdp_enabled else batch_size_per_process,
+        batch_size_per_process // local_device_count,
     )
+
     worker_count = int(cfg.dataset.worker_count)
     num_threads = int(cfg.dataset.num_threads)
     prefetch_buffer_size = int(cfg.dataset.prefetch_buffer_size)
@@ -615,6 +357,7 @@ def main(cfg: DictConfig):
         prefetch_buffer_size,
         effective_read_threads,
     )
+
     preprocessor = TokenizerPreprocessor(
         resize_shape=tuple(cfg.tokenizer.resize_shape),
         pad_width=tuple(cfg.tokenizer.pad_width),
@@ -624,6 +367,7 @@ def main(cfg: DictConfig):
         "LPIPS settings: weight=%.3f",
         float(cfg.lpips_weight),
     )
+
     clip_transform = instantiate(cfg.dataset.clip_transform, frame_length=cfg.dataset.frame_length)
     augment_transform = instantiate(cfg.dataset.augment) if cfg.dataset.augment else None
     logger.info("Train augmentation: %s", augment_transform or "disabled")
@@ -672,7 +416,7 @@ def main(cfg: DictConfig):
     eval_loader = make_loader(
         eval_source,
         shuffle=False,
-        drop_remainder=fsdp_enabled,
+        drop_remainder=True,
         seed=int(cfg.seed),
     )
     logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
@@ -685,70 +429,35 @@ def main(cfg: DictConfig):
     key = jax.random.key(cfg.seed)
     init_key, init_sample_key, train_key, eval_key = jax.random.split(key, num=4)
     model = instantiate(cfg.tokenizer)
-    params = model.init(
-        {"params": init_key, "sample": init_sample_key},
-        sample_batch,
-        method=Tokenizer.reconstruct,
-    )
-    logger.info("Model init took %.1fs", time.monotonic() - _t)
+    optimizer = build_optimizer(cfg)
+
+    def init_state(batch):
+        params = model.init({"params": init_key, "sample": init_sample_key}, batch, method=Tokenizer.reconstruct)
+        return TokenizerTrainState.create(model.apply, params, optimizer)
+
+    state = jax.jit(init_state, out_shardings=metrics_sharding)(local_batch_to_global(sample_batch, batch_sharding))
+    state_shardings = jax.tree_util.tree_map(lambda _: metrics_sharding, state)
+    logger.info("State init took %.1fs", time.monotonic() - _t)
 
     if cfg.lpips_weight > 0:
         _t = time.monotonic()
         get_lpips_loss_fn()
         logger.info("LPIPS init took %.1fs", time.monotonic() - _t)
 
-    _t = time.monotonic()
-    optimizer = build_optimizer(cfg)
-    state = TokenizerTrainState.create(
-        model.apply,
-        params,
-        optimizer,
-    )
-    logger.info("TrainState creation took %.1fs", time.monotonic() - _t)
-
-    _t = time.monotonic()
-    state_shardings = make_array_shardings(
-        state,
-        mesh=mesh,
-        fsdp_enabled=fsdp_enabled,
-        fsdp_axis_size=fsdp_axis_size,
-    )
-    state = jax.tree_util.tree_map(make_global_array_from_host, state, state_shardings)
-    if log_sharding:
-        log_sharding_summary(params, state_shardings.params, prefix="Tokenizer params")
-    logger.info("TrainState sharding took %.1fs", time.monotonic() - _t)
-
     batch_input_shardings = {"video": batch_sharding}
-    sampled_frame_sharding = NamedSharding(mesh, batch_pspec)
     jit_train_step = jax.jit(
         train_step,
-        in_shardings=(
-            state_shardings,
-            batch_input_shardings,
-            metrics_sharding,
-            metrics_sharding,
-        ),
+        in_shardings=(state_shardings, batch_input_shardings, metrics_sharding, metrics_sharding),
         out_shardings=(state_shardings, metrics_sharding),
         static_argnames=("lpips_weight", "lpips_frame_stride", "preprocessor"),
         donate_argnums=(0,),
     )
     jit_eval_step = jax.jit(
         eval_step,
-        in_shardings=(
-            state_shardings,
-            batch_input_shardings,
-            metrics_sharding,
-            metrics_sharding,
-            metrics_sharding,
-        ),
-        out_shardings=(
-            metrics_sharding,
-            (sampled_frame_sharding, sampled_frame_sharding, sampled_frame_sharding),
-        ),
+        in_shardings=(state_shardings, batch_input_shardings, metrics_sharding, metrics_sharding, metrics_sharding),
+        out_shardings=(metrics_sharding, (batch_sharding, batch_sharding, batch_sharding)),
         static_argnames=("lpips_weight", "lpips_frame_stride", "preprocessor"),
     )
-    train_key = put_replicated(train_key, mesh)
-    eval_key = put_replicated(eval_key, mesh)
 
     _t = time.monotonic()
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
@@ -773,10 +482,8 @@ def main(cfg: DictConfig):
         if not saved:
             return
         last_checkpoint_step = int(step)
-        export_model = should_export_model(step, force=force)
-        if export_model:
+        if should_export_model(step, force=force):
             save_model_export(checkpoint_manager.directory, step, cfg.tokenizer, state.params)
-        if export_model:
             save_preprocessor_export(
                 checkpoint_manager.directory,
                 step,
@@ -818,52 +525,31 @@ def main(cfg: DictConfig):
         return
 
     timing_start_step = step
-    timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
+    timer = PhaseTimer()
     logger.info(
         "Asynchronous timing mode enabled for tokenizer training; timing logs are averaged over each logging window."
     )
     while True:
-        step_start = time.monotonic()
         current_step = step
-        try:
-            batch = next(train_iterator)
-        except StopIteration:
-            train_iterator = iter(train_dataloader)
-            batch = next(train_iterator)
-        data_done = time.monotonic()
-
-        batch = put_global_batch(batch, batch_sharding)
-        transfer_done = time.monotonic()
-
-        state, metrics = jit_train_step(
-            state,
-            batch,
-            train_key,
-            jnp.asarray(current_step, dtype=jnp.int32),
-            float(cfg.lpips_weight),
-            int(cfg.lpips_frame_stride),
-            preprocessor,
-        )
-        train_dispatched = time.monotonic()
-
-        step = current_step + 1
-        timing_data_time += data_done - step_start
-        timing_transfer_time += transfer_done - data_done
-        timing_dispatch_time += train_dispatched - transfer_done
-
-        timing_stats = None
-        if step % cfg.log_interval == 0:
-            timing_stats = log_train_timing(
-                wb,
-                step=step,
-                start_step=timing_start_step,
-                metrics=metrics,
-                data_time=timing_data_time,
-                transfer_time=timing_transfer_time,
-                dispatch_time=timing_dispatch_time,
+        with timer("data"):
+            try:
+                batch = next(train_iterator)
+            except StopIteration:
+                train_iterator = iter(train_dataloader)
+                batch = next(train_iterator)
+        with timer("transfer"):
+            batch = local_batch_to_global(batch, batch_sharding)
+        with timer("compute"):
+            state, metrics = jit_train_step(
+                state,
+                batch,
+                train_key,
+                jnp.asarray(current_step, dtype=jnp.int32),
+                float(cfg.lpips_weight),
+                int(cfg.lpips_frame_stride),
+                preprocessor,
             )
-            timing_start_step = step
-            timing_data_time = timing_transfer_time = timing_dispatch_time = 0.0
+        step = current_step + 1
 
         t_eval = 0.0
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
@@ -871,18 +557,17 @@ def main(cfg: DictConfig):
             totals: dict[str, float] = {}
             num_batches = 0
             eval_batches = list(itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches))
-            if fsdp_enabled:
-                global_eval_batch_counts = np.asarray(
-                    multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
-                )
-                eval_batches = eval_batches[: int(np.min(global_eval_batch_counts))]
+            global_eval_batch_counts = np.asarray(
+                multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
+            )
+            eval_batches = eval_batches[: int(np.min(global_eval_batch_counts))]
             vis_original_batches = []
             vis_reconstruction_batches = []
             vis_masked_batches = []
             for batch_idx, eval_batch in enumerate(eval_batches):
                 batch_metrics, sampled_frames = jit_eval_step(
                     state,
-                    put_global_batch(eval_batch, batch_sharding),
+                    local_batch_to_global(eval_batch, batch_sharding),
                     eval_key,
                     jnp.asarray(step, dtype=jnp.int32),
                     jnp.asarray(batch_idx, dtype=jnp.int32),
@@ -890,7 +575,7 @@ def main(cfg: DictConfig):
                     int(cfg.lpips_frame_stride),
                     preprocessor,
                 )
-                sampled_frames = host_local_batch(sampled_frames, mesh, batch_pspec)
+                sampled_frames = global_batch_to_local(sampled_frames)
                 sampled_frames = jax.device_get(sampled_frames)
                 batch_metrics = jax.device_get(batch_metrics)
                 for k, v in batch_metrics.items():
@@ -911,7 +596,9 @@ def main(cfg: DictConfig):
                         np.concatenate(vis_original_batches, axis=0),
                         np.concatenate(vis_reconstruction_batches, axis=0),
                         np.concatenate(vis_masked_batches, axis=0),
-                        frame_seed=make_host_seed(cfg.seed, step, num_batches),
+                        frame_seed=int(
+                            jax.random.randint(fold_in_many(eval_key, step, num_batches), (), 0, np.iinfo(np.int32).max)
+                        ),
                         num_frames=int(cfg.dataset.eval.log_frames),
                     )
                     wb.log_image(
@@ -926,22 +613,24 @@ def main(cfg: DictConfig):
         if checkpoint_manager.should_save(step):
             save_checkpoint(step)
 
-        if timing_stats is not None:
-            logger.info(
-                "Step %d - sps: %.2f, data: %.3fs, transfer: %.3fs, compute: %.3fs, wall: %.3fs, eval: %.3fs",
-                step,
-                timing_stats["sps"],
-                timing_stats["data_time"],
-                timing_stats["transfer_time"],
-                timing_stats["compute_time"],
-                timing_stats["wall_time"],
-                t_eval,
+        if step % cfg.log_interval == 0:
+            # the jitted step is async; syncing on metrics charges the device wait to compute
+            with timer("compute"):
+                train_metrics = jax.device_get(metrics)
+            timing_stats = timer.log(logger, step, step - timing_start_step, eval=t_eval)
+            timing_start_step = step
+            wb.log(
+                {
+                    **{k: float(v) for k, v in train_metrics.items()},
+                    **{f"train/{k}": v for k, v in timing_stats.items()},
+                },
+                step=step,
             )
         if step >= total_steps:
             logger.info("Reached total_steps=%d; stopping tokenizer training.", total_steps)
             break
 
-    if step >= total_steps and last_checkpoint_step != step:
+    if last_checkpoint_step != step:
         save_checkpoint(step, force=True)
     checkpoint_manager.wait_until_finished()
     checkpoint_manager.close()

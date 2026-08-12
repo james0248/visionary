@@ -10,16 +10,9 @@ eval_steps: 1000
 total_steps: 1000000
 exp_name: ???
 
-fsdp:
-  enabled: auto
-  data_axis_size: 8
-  log_sharding: true
-
 dataset:
   train_dir: /mnt/data/train/
   eval_dir: /mnt/data/eval/
-  # VideoDataSource reads decoded frames; VideoBytesDataSource reads encoded mp4
-  # and pairs with DecodeRandomVideoClip below.
   source:
     _target_: visionary.dataset.VideoDataSource
   clip_transform:
