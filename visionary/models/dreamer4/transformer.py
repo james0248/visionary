@@ -173,9 +173,7 @@ class SpatioTemporalTransformer(nn.Module):
         temporal_mask = jnp.repeat(temporal_mask, total_tokens, axis=0)
         temporal_mask = temporal_mask[:, None, :, :]
 
-        # Recomputes each block in the backward pass instead of keeping its
-        # activations. Same parameter tree either way, so checkpoints carry over.
-        # remat_policy names an attribute of jax.checkpoint_policies.
+        # Recompute activations of each block in the backward pass instead of keeping them
         block_cls = (
             TransformerBlock
             if self.remat_policy is None
@@ -198,26 +196,16 @@ class SpatioTemporalTransformer(nn.Module):
                 name=f"TransformerBlock_{block_idx}",
             )(x, rope_emb, mask)
 
-        def spatial_run(x, block_idx, count):
-            if count == 0:
-                return x, block_idx
-            x = rearrange(x, "b t n d -> (b t) n d")
-            for _ in range(count):
+        # XLA optimizes pack/unpack rearranges
+        for block_idx in range(self.num_layers):
+            temporal = block_idx % self.temporal_layer_period == self.temporal_layer_offset
+            if temporal:
+                x = rearrange(x, "b t n d -> (b n) t d")
+                x = apply_block(block_idx, x, temporal_rope_emb, temporal_mask)
+                x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
+            else:
+                x = rearrange(x, "b t n d -> (b t) n d")
                 x = apply_block(block_idx, x, spatial_rope_emb, spatial_mask)
-                block_idx += 1
-            return rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=t), block_idx
-
-        offset = self.temporal_layer_offset
-        block_idx = 0
-        num_groups = self.num_layers // self.temporal_layer_period
-        for _ in range(num_groups):
-            x, block_idx = spatial_run(x, block_idx, offset)
-
-            x = rearrange(x, "b t n d -> (b n) t d")
-            x = apply_block(block_idx, x, temporal_rope_emb, temporal_mask)
-            block_idx += 1
-            x = rearrange(x, "(b n) t d -> b t n d", b=batch_size, n=total_tokens)
-
-            x, block_idx = spatial_run(x, block_idx, self.temporal_layer_period - 1 - offset)
+                x = rearrange(x, "(b t) n d -> b t n d", b=batch_size, t=t)
 
         return nn.RMSNorm(dtype=self.dtype, name="final_norm")(x)
