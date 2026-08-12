@@ -72,7 +72,6 @@ class Attention(nn.Module):
     num_heads: int
     num_kv_heads: int
     head_dim: int
-    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -110,7 +109,6 @@ class TransformerBlock(nn.Module):
     num_kv_heads: int
     head_dim: int
     mlp_hidden_dim: int
-    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -127,7 +125,6 @@ class TransformerBlock(nn.Module):
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
-            attention_logit_soft_cap=self.attention_logit_soft_cap,
             dtype=self.dtype,
         )(x, rope_emb, mask)
 
@@ -147,7 +144,6 @@ class SpatioTemporalTransformer(nn.Module):
     mlp_hidden_dim: int
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
-    attention_logit_soft_cap: float | None = 50.0
     remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
@@ -202,7 +198,6 @@ class SpatioTemporalTransformer(nn.Module):
                 num_kv_heads=self.num_kv_heads,
                 head_dim=self.head_dim,
                 mlp_hidden_dim=self.mlp_hidden_dim,
-                attention_logit_soft_cap=self.attention_logit_soft_cap,
                 dtype=self.dtype,
                 name=f"TransformerBlock_{block_idx}",
             )(x, rope_emb, mask)

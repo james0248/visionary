@@ -313,7 +313,6 @@ class _ExportAttention(nn.Module):
     num_heads: int
     num_kv_heads: int
     head_dim: int
-    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -375,7 +374,6 @@ class _ExportTransformerBlock(nn.Module):
     num_kv_heads: int
     head_dim: int
     mlp_hidden_dim: int
-    attention_logit_soft_cap: float | None = 50.0
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -392,7 +390,6 @@ class _ExportTransformerBlock(nn.Module):
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
-            attention_logit_soft_cap=self.attention_logit_soft_cap,
             dtype=self.dtype,
             name="Attention_0",
         )(x, rope_emb, mask)
@@ -411,7 +408,6 @@ class _ExportSpatioTemporalTransformer(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     temporal_layer_period: int = 4
-    attention_logit_soft_cap: float | None = 50.0
     # accepted and ignored; export never runs a backward pass
     remat: bool = False
     remat_policy: str | None = None
@@ -449,7 +445,6 @@ class _ExportSpatioTemporalTransformer(nn.Module):
                     num_kv_heads=self.num_kv_heads,
                     head_dim=self.head_dim,
                     mlp_hidden_dim=self.mlp_hidden_dim,
-                    attention_logit_soft_cap=self.attention_logit_soft_cap,
                     dtype=self.dtype,
                     name=f"TransformerBlock_{block_idx}",
                 )(x, spatial_rope_emb, spatial_mask)
@@ -463,7 +458,6 @@ class _ExportSpatioTemporalTransformer(nn.Module):
                 num_kv_heads=self.num_kv_heads,
                 head_dim=self.head_dim,
                 mlp_hidden_dim=self.mlp_hidden_dim,
-                attention_logit_soft_cap=self.attention_logit_soft_cap,
                 dtype=self.dtype,
                 name=f"TransformerBlock_{block_idx}",
             )(x, temporal_rope_emb, temporal_mask)

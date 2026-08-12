@@ -103,7 +103,6 @@ class DynamicsModel(nn.Module):
     action_mode: Literal["discrete", "continuous"] = "discrete"
     temporal_layer_period: int = 4
     base: float = 10000.0
-    attention_logit_soft_cap: float | None = 50.0
     remat: bool = False
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
@@ -132,7 +131,6 @@ class DynamicsModel(nn.Module):
             num_kv_heads=self.num_kv_heads,
             head_dim=self.head_dim,
             mlp_hidden_dim=self.mlp_hidden_dim,
-            attention_logit_soft_cap=self.attention_logit_soft_cap,
             temporal_layer_period=self.temporal_layer_period,
             remat=self.remat,
             remat_policy=self.remat_policy,
