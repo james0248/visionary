@@ -47,17 +47,21 @@ dataset:
 
 tokenizer:
   _target_: visionary.models.dreamer4.tokenizer.Tokenizer
-  num_layers: 12
+  encoder_num_layers: 12
+  encoder_num_heads: 12
+  encoder_num_kv_heads: 3
+  encoder_model_dim: 768
+  encoder_mlp_hidden_dim: 2304
+  decoder_num_layers: 8
+  decoder_num_heads: 12
+  decoder_num_kv_heads: 3
+  decoder_model_dim: 768
+  decoder_mlp_hidden_dim: 2304
   num_latents: 256
-  num_heads: 12
-  num_kv_heads: 3
+  head_dim: 64
+  channel_dim: 16
   temporal_layer_period: 4
   temporal_layer_offset: 1
-  model_dim: 768
-  mlp_hidden_dim: 2304
-  head_dim: 64
-  decoder_num_layers: 8
-  channel_dim: 16
   resize_shape: [240, 320]
   pad_width: [0, 0]
   patch_size: 16

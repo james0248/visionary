@@ -71,7 +71,6 @@ class TokenizerEncoder(nn.Module):
     temporal_layer_offset: int = 1
     remat: bool = False
     remat_policy: str | None = None
-    bounded_latent: bool = True
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
@@ -93,22 +92,14 @@ class TokenizerEncoder(nn.Module):
 
         # Prepend latent tokens
         latent_tokens = self.param(
-            "latent_tokens",
-            nn.initializers.normal(stddev=0.02),
-            (self.num_latents, self.model_dim),
+            "latent_tokens", nn.initializers.normal(stddev=0.02), (self.num_latents, self.model_dim)
         ).astype(self.dtype)
         latent_tokens = jnp.broadcast_to(latent_tokens, (batch_size, seq_len, self.num_latents, self.model_dim))
         x = jnp.concatenate([latent_tokens, x], axis=2)
 
         spatial_rope, temporal_rope = build_rope_embeddings(
-            self.base,
-            self.head_dim,
-            self.x_len,
-            self.y_len,
-            self.num_latents,
-            seq_len,
+            self.base, self.head_dim, self.x_len, self.y_len, self.num_latents, seq_len
         )
-
         x = SpatioTemporalTransformer(
             num_layers=self.num_layers,
             model_dim=self.model_dim,
@@ -133,8 +124,7 @@ class TokenizerEncoder(nn.Module):
 
         latent = x[:, :, : self.num_latents, :]
         latent = nn.Dense(self.channel_dim, dtype=self.dtype)(latent)
-        if self.bounded_latent:
-            latent = jnp.tanh(latent)
+        latent = jnp.tanh(latent)
         return latent
 
 
@@ -168,9 +158,7 @@ class TokenizerDecoder(nn.Module):
         num_tokens = self.x_len * self.y_len
 
         image_tokens = self.param(
-            "image_tokens",
-            nn.initializers.normal(stddev=0.02),
-            (num_tokens, self.model_dim),
+            "image_tokens", nn.initializers.normal(stddev=0.02), (num_tokens, self.model_dim)
         ).astype(self.dtype)
         image_tokens = jnp.broadcast_to(image_tokens, (batch_size, seq_len, num_tokens, self.model_dim))
 
@@ -178,14 +166,8 @@ class TokenizerDecoder(nn.Module):
         x = jnp.concatenate([latent, image_tokens], axis=2)
 
         spatial_rope, temporal_rope = build_rope_embeddings(
-            self.base,
-            self.head_dim,
-            self.x_len,
-            self.y_len,
-            self.num_latents,
-            seq_len,
+            self.base, self.head_dim, self.x_len, self.y_len, self.num_latents, seq_len
         )
-
         x = SpatioTemporalTransformer(
             num_layers=self.num_layers,
             model_dim=self.model_dim,
@@ -214,14 +196,19 @@ class TokenizerDecoder(nn.Module):
 
 
 class Tokenizer(nn.Module):
-    num_layers: int
+    encoder_num_layers: int
+    decoder_num_layers: int
     num_latents: int
-    num_heads: int
-    num_kv_heads: int
+    encoder_num_heads: int
+    decoder_num_heads: int
+    encoder_num_kv_heads: int
+    decoder_num_kv_heads: int
 
-    model_dim: int
+    encoder_model_dim: int
+    decoder_model_dim: int
     head_dim: int
-    mlp_hidden_dim: int
+    encoder_mlp_hidden_dim: int
+    decoder_mlp_hidden_dim: int
     channel_dim: int
 
     patch_size: int
@@ -231,17 +218,11 @@ class Tokenizer(nn.Module):
     base: float
     temporal_layer_period: int = 4
     temporal_layer_offset: int = 1
-    decoder_num_layers: int | None = None
-    decoder_model_dim: int | None = None
-    decoder_num_heads: int | None = None
-    decoder_num_kv_heads: int | None = None
-    decoder_mlp_hidden_dim: int | None = None
     remat: bool = False
     remat_policy: str | None = None
     independent_prob: float = 0.3
     mask_prob_min: float = 0.0
     mask_prob_max: float = 0.9
-    bounded_latent: bool = True
     dtype: jnp.dtype = jnp.bfloat16
 
     @property
@@ -273,35 +254,34 @@ class Tokenizer(nn.Module):
         return int(self.patch_size) * int(self.patch_size) * 3
 
     def setup(self):
-        encoder_kwargs = dict(
-            num_layers=self.num_layers,
+        self.encoder = TokenizerEncoder(
+            num_layers=self.encoder_num_layers,
             num_latents=self.num_latents,
-            num_heads=self.num_heads,
-            num_kv_heads=self.num_kv_heads,
+            num_heads=self.encoder_num_heads,
+            num_kv_heads=self.encoder_num_kv_heads,
             temporal_layer_period=self.temporal_layer_period,
             temporal_layer_offset=self.temporal_layer_offset,
-            model_dim=self.model_dim,
+            model_dim=self.encoder_model_dim,
             head_dim=self.head_dim,
-            mlp_hidden_dim=self.mlp_hidden_dim,
+            mlp_hidden_dim=self.encoder_mlp_hidden_dim,
             channel_dim=self.channel_dim,
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
             remat=self.remat,
             remat_policy=self.remat_policy,
-            bounded_latent=self.bounded_latent,
             dtype=self.dtype,
         )
-        decoder_kwargs = dict(
-            num_layers=self.decoder_num_layers or self.num_layers,
+        self.decoder = TokenizerDecoder(
+            num_layers=self.decoder_num_layers,
             num_latents=self.num_latents,
-            num_heads=self.decoder_num_heads or self.num_heads,
-            num_kv_heads=self.decoder_num_kv_heads or self.num_kv_heads,
+            num_heads=self.decoder_num_heads,
+            num_kv_heads=self.decoder_num_kv_heads,
             temporal_layer_period=self.temporal_layer_period,
             temporal_layer_offset=self.temporal_layer_offset,
-            model_dim=self.decoder_model_dim or self.model_dim,
+            model_dim=self.decoder_model_dim,
             head_dim=self.head_dim,
-            mlp_hidden_dim=self.decoder_mlp_hidden_dim or self.mlp_hidden_dim,
+            mlp_hidden_dim=self.decoder_mlp_hidden_dim,
             x_len=self.x_len,
             y_len=self.y_len,
             base=self.base,
@@ -309,8 +289,6 @@ class Tokenizer(nn.Module):
             remat_policy=self.remat_policy,
             dtype=self.dtype,
         )
-        self.encoder = TokenizerEncoder(**encoder_kwargs)
-        self.decoder = TokenizerDecoder(**decoder_kwargs)
 
     def sample_independent(self, batch_size: int) -> jnp.ndarray:
         rng = self.make_rng("sample")
