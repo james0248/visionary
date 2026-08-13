@@ -17,20 +17,6 @@ def chunk_starts(length: int, chunk_length: int, overlap: int) -> list[int]:
     return starts
 
 
-def record_bounds(
-    length: int,
-    chunk_length: int,
-    overlap: int,
-    min_length: int,
-) -> list[tuple[int, int]]:
-    bounds = []
-    for start in chunk_starts(length, chunk_length, overlap):
-        stop = min(start + chunk_length, length)
-        if stop - start >= min_length:
-            bounds.append((start, stop))
-    return bounds
-
-
 @dataclass
 class SplitStats:
     episodes_found: int = 0
