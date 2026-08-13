@@ -26,7 +26,6 @@ class DynamicsBatch(TypedDict):
 
 
 class DynamicsDataset(DynamicsBatch):
-    rewards: np.ndarray
     prev_action: np.ndarray
 
 
@@ -90,7 +89,6 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
             with np.load(io.BytesIO(record_bytes)) as data:
                 latents = np.asarray(data["frames"])
                 actions = np.asarray(data["actions"])
-                rewards = np.asarray(data["rewards"])
                 prev_action = np.asarray(data["prev_action"])
         except Exception as exc:
             location = _describe_record_location(self._source, self._paths, idx)
@@ -98,7 +96,6 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
         return DynamicsDataset(
             video=latents,
             actions=actions,
-            rewards=rewards,
             prev_action=prev_action,
         )
 

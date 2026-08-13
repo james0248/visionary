@@ -200,7 +200,6 @@ def load_stream(
     frames = frames[:length:stride]
     actions = actions[:length:stride]
     state = state[:length:stride]
-    sampled_length = len(frames)
 
     return Stream(
         episode_id=episode_id,
@@ -208,7 +207,6 @@ def load_stream(
         arrays={
             "actions": normalizer(actions),
             "state": state,
-            "rewards": np.zeros((sampled_length,), dtype=np.float32),
         },
         provenance=provenance,
     )
