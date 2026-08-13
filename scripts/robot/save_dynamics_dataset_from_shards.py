@@ -482,8 +482,11 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
     stats_path = output_dir / "norm_stats.json"
-    logger.info("Computing action stats over the train shards")
-    compute_action_stats(sources["train"], stats_path, args.action_dim, args.target_hz)
+    if stats_path.exists():
+        logger.info("Reusing action stats at %s", stats_path)
+    else:
+        logger.info("Computing action stats over the train shards")
+        compute_action_stats(sources["train"], stats_path, args.action_dim, args.target_hz)
     normalizer = build_action_normalizer("continuous", str(stats_path))
 
     train_latent_stats = RunningLatentStats() if "train" in splits else None
