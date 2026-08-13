@@ -91,11 +91,7 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
                 latents = np.asarray(data["frames"])
                 actions = np.asarray(data["actions"])
                 rewards = np.asarray(data["rewards"])
-                prev_action = (
-                    np.asarray(data["prev_action"])
-                    if "prev_action" in data
-                    else np.full(actions.shape[1:], -1, dtype=actions.dtype)
-                )
+                prev_action = np.asarray(data["prev_action"])
         except Exception as exc:
             location = _describe_record_location(self._source, self._paths, idx)
             raise ValueError(f"Failed to decode dynamics record idx={idx} ({location}) from {self._data_dir}") from exc

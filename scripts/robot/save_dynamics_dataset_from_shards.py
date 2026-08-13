@@ -287,7 +287,6 @@ def write_split(
         target_hz=args.target_hz,
         action_dim=args.action_dim,
     )
-    record_lengths: list[int] = []
 
     def flush() -> None:
         nonlocal pending
@@ -299,7 +298,6 @@ def write_split(
                 latent_stats.update(latents)
             record_bytes = encode_stream_record(stream, latents)
             shard_writer.write(record_bytes)
-            record_lengths.append(len(latents))
             stats.records_written += 1
             stats.payload_bytes += len(record_bytes)
             stats.frames_written += len(latents)
@@ -331,7 +329,6 @@ def write_split(
         flush()
     finally:
         stats.shards_written = shard_writer.close()
-    (output_dir / "lengths.json").write_text(json.dumps(record_lengths))
     return stats
 
 
