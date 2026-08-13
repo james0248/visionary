@@ -337,20 +337,27 @@ def compute_action_stats(
     action_dim: int,
     target_hz: float,
 ) -> None:
-    chunks: list[np.ndarray] = []
-    seen: set[tuple[str, int]] = set()
-    for idx in range(len(source)):
+    def read_one(idx: int) -> tuple[tuple[str, int], np.ndarray] | None:
         with np.load(io.BytesIO(source[idx])) as data:
             actions_array = np.asarray(data["actions"], dtype=np.float64)
             if actions_array.shape[-1] != action_dim:
-                continue
+                return None
             key = (str(data["repo"]), int(data["episode"]))
+            stride = max(int(round(float(data["fps"]) / target_hz)), 1)
+            return key, actions_array[::stride]
+
+    chunks: list[np.ndarray] = []
+    seen: set[tuple[str, int]] = set()
+    with ThreadPoolExecutor(max_workers=32) as executor:
+        # in index order, so the multi-view dedup keeps the same stream every run
+        for result in executor.map(read_one, range(len(source))):
+            if result is None:
+                continue
+            key, sampled = result
             if key in seen:  # multi-view streams share one trajectory
                 continue
             seen.add(key)
-            fps = float(data["fps"])
-            stride = max(int(round(fps / target_hz)), 1)
-            chunks.append(actions_array[::stride])
+            chunks.append(sampled)
     actions = np.concatenate(chunks, axis=0)
     stats = {
         "n_episodes": len(chunks),
