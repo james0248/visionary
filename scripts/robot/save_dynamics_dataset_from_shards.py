@@ -34,6 +34,7 @@ from typing import Any, Callable
 import grain.python as grain
 import jax
 import numpy as np
+from etils import epath
 from hydra.utils import instantiate
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 from omegaconf import OmegaConf
@@ -365,8 +366,8 @@ def compute_action_stats(
     logger.info("Wrote action stats over %d episodes to %s", len(chunks), out_path)
 
 
-def open_split_source(input_dir: Path, split: str) -> grain.ArrayRecordDataSource:
-    paths = sorted(str(path) for path in (input_dir / split).glob("*.arecord"))
+def open_split_source(input_dir: epath.Path, split: str) -> grain.ArrayRecordDataSource:
+    paths = sorted(path.as_posix() for path in (input_dir / split).glob("*.arecord"))
     if not paths:
         raise FileNotFoundError(f"No .arecord files found in {input_dir / split}")
     return grain.ArrayRecordDataSource(paths)
@@ -472,7 +473,7 @@ def main() -> None:
         latent_dtype=np.dtype(args.latent_dtype),
     )
 
-    input_dir = Path(args.input_dir)
+    input_dir = epath.Path(args.input_dir)
     output_dir = Path(args.output_dir)
     splits = ("train", "eval") if args.split == "both" else (args.split,)
     needed = set(splits) | {"train"}
