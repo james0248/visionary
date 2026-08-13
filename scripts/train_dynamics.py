@@ -36,10 +36,8 @@ from visionary.dataset import (
     DynamicsBatch,
     DynamicsDataSource,
     NormalizeDynamicsLatents,
-    RandomDynamicsCrop,
-    SubsetDataSource,
+    PackDynamicsEpisodes,
     load_latent_stats,
-    load_record_lengths,
 )
 from visionary.models.dreamer4.dynamics import DynamicsModel, denormalize_latents
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
@@ -88,29 +86,35 @@ def eval_step(
     state: DynamicsTrainState,
     batch: DynamicsBatch,
     base_sample_key: jax.Array,
-    global_step: jax.Array,
     batch_index: jax.Array,
-    bootstrap_rows: int,
 ):
-    sample_key = fold_in_many(
-        base_sample_key,
-        global_step,
-        batch_index,
-    )
-    _, metrics = state.apply_fn(
-        state.ema_params,
+    sample_key = fold_in_many(base_sample_key, batch_index)
+    _, online_metrics = state.apply_fn(
+        state.params,
         batch,
-        bootstrap_rows=bootstrap_rows,
+        bootstrap_rows=0,
         bootstrap_target_variables=state.ema_params,
         method=DynamicsModel.loss,
         rngs={"sample": sample_key},
     )
-    return metrics
+    _, ema_metrics = state.apply_fn(
+        state.ema_params,
+        batch,
+        bootstrap_rows=0,
+        bootstrap_target_variables=state.ema_params,
+        method=DynamicsModel.loss,
+        rngs={"sample": sample_key},
+    )
+    return {
+        "online_flow_loss": online_metrics["flow_loss"],
+        "ema_flow_loss": ema_metrics["flow_loss"],
+    }
 
 
 def log_video_eval(
     wb: WandbLogger,
-    params,
+    online_params,
+    ema_params,
     batch: DynamicsBatch,
     step: int,
     rollout_seed: int,
@@ -120,10 +124,11 @@ def log_video_eval(
     run_video_eval,
 ) -> None:
     context_frames = int(video_cfg.context_frames)
-    generated_frames = int(video_cfg.generated_frames)
-    ground_truth_images, rollout_images = jax.device_get(
+    horizon = int(video_cfg.horizon)
+    ground_truth_images, online_rollout_images, ema_rollout_images = jax.device_get(
         run_video_eval(
-            params,
+            online_params,
+            ema_params,
             tokenizer_variables,
             batch["video"],
             batch["actions"],
@@ -131,62 +136,96 @@ def log_video_eval(
         )
     )
     ground_truth_images = np.asarray(ground_truth_images)
-    rollout_images = np.asarray(rollout_images)
     ground_truth_images = np.clip(ground_truth_images, 0.0, 1.0)
-    rollout_images = np.clip(rollout_images, 0.0, 1.0)
+    generated_ground_truth = ground_truth_images[:, context_frames:]
+    rollout_images = {
+        "online": np.clip(np.asarray(online_rollout_images), 0.0, 1.0),
+        "ema": np.clip(np.asarray(ema_rollout_images), 0.0, 1.0),
+    }
+    rollout_metrics = {}
+    for model_name, images in rollout_images.items():
+        generated_rollout = images[:, context_frames:]
+        psnr = np.asarray(
+            [
+                [
+                    peak_signal_noise_ratio(target_frame, predicted_frame, data_range=1.0)
+                    for target_frame, predicted_frame in zip(target_video, predicted_video, strict=True)
+                ]
+                for target_video, predicted_video in zip(generated_ground_truth, generated_rollout, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        ssim = np.asarray(
+            [
+                [
+                    structural_similarity(
+                        target_frame,
+                        predicted_frame,
+                        data_range=1.0,
+                        channel_axis=-1,
+                    )
+                    for target_frame, predicted_frame in zip(target_video, predicted_video, strict=True)
+                ]
+                for target_video, predicted_video in zip(generated_ground_truth, generated_rollout, strict=True)
+            ],
+            dtype=np.float32,
+        )
+        rollout_metrics[model_name] = {"psnr": psnr, "ssim": ssim}
 
-    generated_ground_truth = ground_truth_images[0, context_frames:]
-    generated_rollout = rollout_images[0, context_frames:]
-    psnr = np.asarray(
-        [
-            peak_signal_noise_ratio(target_frame, predicted_frame, data_range=1.0)
-            for target_frame, predicted_frame in zip(generated_ground_truth, generated_rollout, strict=True)
-        ],
-        dtype=np.float32,
-    )
-    ssim = np.asarray(
-        [
-            structural_similarity(
-                target_frame,
-                predicted_frame,
-                data_range=1.0,
-                channel_axis=-1,
-            )
-            for target_frame, predicted_frame in zip(generated_ground_truth, generated_rollout, strict=True)
-        ],
-        dtype=np.float32,
-    )
     video_path = output_dir / f"eval_side_by_side_{step}.mp4"
-    ground_truth_video = np.clip(np.rint(ground_truth_images[0] * 255.0), 0, 255).astype(np.uint8)
-    rollout_video = np.clip(np.rint(rollout_images[0] * 255.0), 0, 255).astype(np.uint8)
-    separator = np.full((ground_truth_video.shape[1], 4, 3), 255, dtype=np.uint8)
-    frames = [
-        np.concatenate([gt_frame, separator, rollout_frame], axis=1)
-        for gt_frame, rollout_frame in zip(ground_truth_video, rollout_video, strict=True)
-    ]
+    ground_truth_video = np.clip(np.rint(ground_truth_images * 255.0), 0, 255).astype(np.uint8)
+    online_rollout_video = np.clip(np.rint(rollout_images["online"] * 255.0), 0, 255).astype(np.uint8)
+    ema_rollout_video = np.clip(np.rint(rollout_images["ema"] * 255.0), 0, 255).astype(np.uint8)
+    separator = np.full((ground_truth_video.shape[2], 4, 3), 255, dtype=np.uint8)
+    frames = []
+    for frame_index in range(ground_truth_video.shape[1]):
+        rows = [
+            np.concatenate(
+                [
+                    ground_truth_video[sample_index, frame_index],
+                    separator,
+                    online_rollout_video[sample_index, frame_index],
+                    separator,
+                    ema_rollout_video[sample_index, frame_index],
+                ],
+                axis=1,
+            )
+            for sample_index in range(ground_truth_video.shape[0])
+        ]
+        frames.append(np.concatenate(rows, axis=0))
     imageio.mimsave(video_path, frames, fps=int(video_cfg.fps))
 
-    mean_psnr = float(np.mean(psnr))
-    mean_ssim = float(np.mean(ssim))
-
     logger.info(
-        "Video eval at step %d - mean PSNR %.3f, mean SSIM %.4f",
+        "Video eval at step %d - online PSNR %.3f SSIM %.4f - EMA PSNR %.3f SSIM %.4f",
         step,
-        mean_psnr,
-        mean_ssim,
+        float(np.mean(rollout_metrics["online"]["psnr"])),
+        float(np.mean(rollout_metrics["online"]["ssim"])),
+        float(np.mean(rollout_metrics["ema"]["psnr"])),
+        float(np.mean(rollout_metrics["ema"]["ssim"])),
     )
     if wb.enabled:
+        metric_log = {}
+        for model_name, metrics in rollout_metrics.items():
+            metric_log[f"eval/{model_name}_video_mean_psnr"] = float(np.mean(metrics["psnr"]))
+            metric_log[f"eval/{model_name}_video_mean_ssim"] = float(np.mean(metrics["ssim"]))
+            for metric_horizon in (1, 4, 8, 16, 32):
+                if metric_horizon <= horizon:
+                    metric_log[f"eval/{model_name}_video_psnr_h{metric_horizon}"] = float(
+                        np.mean(metrics["psnr"][:, metric_horizon - 1])
+                    )
+                    metric_log[f"eval/{model_name}_video_ssim_h{metric_horizon}"] = float(
+                        np.mean(metrics["ssim"][:, metric_horizon - 1])
+                    )
         wb.log(
             {
                 "eval/video": wandb.Video(
                     video_path.as_posix(),
                     caption=(
-                        f"Left: decoded eval ground truth. Right: {context_frames} context "
-                        f"frames followed by {generated_frames} generated frames."
+                        "Left: ground truth. Center: online. Right: EMA. "
+                        f"Context: {context_frames}. Horizon: {horizon}."
                     ),
                 ),
-                "eval/video_mean_psnr": mean_psnr,
-                "eval/video_mean_ssim": mean_ssim,
+                **metric_log,
             },
             step=step,
         )
@@ -301,16 +340,8 @@ def main(cfg: DictConfig):
         effective_read_threads,
     )
 
-    train_sequence_lengths = (
-        sorted({cfg.dataset.alternating_lengths.short, cfg.dataset.alternating_lengths.long})
-        if cfg.dataset.alternating_lengths.enabled
-        else [cfg.dataset.batch_length]
-    )
-    logger.info(
-        "Training sequence lengths: %s; eval sequence length: %d",
-        train_sequence_lengths,
-        cfg.dataset.eval.batch_length,
-    )
+    pack_length = int(cfg.dataset.pack_length)
+    logger.info("Packed sequence length: %d", pack_length)
     global_batch_size = int(cfg.dataset.batch_size)
     if global_batch_size % process_count != 0:
         raise ValueError(
@@ -349,80 +380,51 @@ def main(cfg: DictConfig):
             return 0
         return target_bootstrap_rows
 
-    def make_loader(
+    read_options = grain.ReadOptions(
+        num_threads=cfg.dataset.num_threads,
+        prefetch_buffer_size=cfg.dataset.prefetch_buffer_size,
+    )
+
+    def make_packed_iterator(
         source: DynamicsDataSource,
-        sequence_length: int,
         shuffle: bool,
-        drop_remainder: bool,
-        seed: int,
-        lengths: list[int] | None = None,
-    ) -> grain.DataLoader:
-        if lengths is not None:
-            indices = [i for i, n in enumerate(lengths) if n >= sequence_length]
-            if len(indices) < len(lengths):
-                logger.info(
-                    "Length %d: %d/%d records fit",
-                    sequence_length,
-                    len(indices),
-                    len(lengths),
-                )
-            source = SubsetDataSource(source, indices)
+        num_epochs: int | None,
+    ):
         sampler = grain.IndexSampler(
             num_records=len(source),
             shard_options=grain.ShardByJaxProcess() if process_count > 1 else grain.NoSharding(),
             shuffle=shuffle,
-            seed=seed,
+            num_epochs=num_epochs,
+            seed=cfg.seed,
         )
-        read_options = grain.ReadOptions(
-            num_threads=cfg.dataset.num_threads,
-            prefetch_buffer_size=cfg.dataset.prefetch_buffer_size,
-        )
-        return grain.DataLoader(
+        loader = grain.DataLoader(
             data_source=source,
             sampler=sampler,
-            operations=[
-                RandomDynamicsCrop(sequence_length),
-                latent_normalizer,
-                grain.Batch(
-                    batch_size=batch_size_per_process,
-                    drop_remainder=drop_remainder,
-                ),
-            ],
+            operations=[],
             worker_count=cfg.dataset.worker_count,
             read_options=read_options,
         )
+        records = iter(loader)
+        packed = iter(
+            PackDynamicsEpisodes(
+                records,
+                sequence_length=pack_length,
+                batch_size=batch_size_per_process,
+            )
+        )
+        return records, packed
 
     _t = time.monotonic()
-    train_lengths_manifest = load_record_lengths(cfg.dataset.train_dir)
-    eval_lengths_manifest = load_record_lengths(cfg.dataset.eval_dir)
-    train_loaders = {
-        sequence_length: make_loader(
-            train_source,
-            sequence_length=sequence_length,
-            shuffle=True,
-            drop_remainder=True,
-            seed=cfg.seed + sequence_length,
-            lengths=train_lengths_manifest,
-        )
-        for sequence_length in train_sequence_lengths
-    }
+    train_records_iterator, train_packed_iterator = make_packed_iterator(
+        train_source,
+        shuffle=True,
+        num_epochs=None,
+    )
     logger.info("Train DataLoader creation took %.1fs", time.monotonic() - _t)
 
-    init_sequence_length = max(train_sequence_lengths)
     _t = time.monotonic()
-    sample_batch = next(iter(train_loaders[init_sequence_length]))
+    initial_train_batch = latent_normalizer.map(next(train_packed_iterator))
     logger.info("First batch fetch took %.1fs", time.monotonic() - _t)
-
-    _t = time.monotonic()
-    eval_loader = make_loader(
-        eval_source,
-        sequence_length=cfg.dataset.eval.batch_length,
-        shuffle=False,
-        drop_remainder=True,
-        seed=cfg.seed,
-        lengths=eval_lengths_manifest,
-    )
-    logger.info("Eval DataLoader creation took %.1fs", time.monotonic() - _t)
 
     _t = time.monotonic()
     key = jax.random.key(cfg.seed)
@@ -445,16 +447,18 @@ def main(cfg: DictConfig):
         )
         return DynamicsTrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
 
-    state = jax.jit(init_state, out_shardings=metrics_sharding)(local_batch_to_global(sample_batch, batch_sharding))
+    state = jax.jit(init_state, out_shardings=metrics_sharding)(
+        local_batch_to_global(initial_train_batch, batch_sharding)
+    )
     state_shardings = jax.tree_util.tree_map(lambda _: metrics_sharding, state)
     logger.info("State init took %.1fs", time.monotonic() - _t)
 
-    batch_input_shardings = {"video": batch_sharding, "actions": batch_sharding}
+    packed_batch_shardings = {"video": batch_sharding, "actions": batch_sharding, "segment_ids": batch_sharding}
     jit_train_step = jax.jit(
         train_step,
         in_shardings=(
             state_shardings,
-            batch_input_shardings,
+            packed_batch_shardings,
             metrics_sharding,
             metrics_sharding,
         ),
@@ -466,13 +470,11 @@ def main(cfg: DictConfig):
         eval_step,
         in_shardings=(
             state_shardings,
-            batch_input_shardings,
-            metrics_sharding,
+            packed_batch_shardings,
             metrics_sharding,
             metrics_sharding,
         ),
         out_shardings=metrics_sharding,
-        static_argnames=("bootstrap_rows",),
     )
 
     video_cfg = cfg.video_eval
@@ -480,6 +482,7 @@ def main(cfg: DictConfig):
     video_output_dir = None
     run_video_eval = None
     tokenizer_variables = None
+    rollout_eval_batch = None
     if is_primary_process and process_count > 1:
         logger.warning(
             "Live dynamics video eval is disabled for multi-process FSDP training. "
@@ -506,56 +509,95 @@ def main(cfg: DictConfig):
 
         requested_tau = float(video_cfg.context_tau)
         video_context_frames = int(video_cfg.context_frames)
-        generated_frames = int(video_cfg.generated_frames)
-        total_video_frames = video_context_frames + generated_frames
+        rollout_horizon = int(video_cfg.horizon)
+        total_video_frames = video_context_frames + rollout_horizon
+        rollout_samples = []
+        for record_index in range(len(eval_source)):
+            record = eval_source[record_index]
+            if len(record["video"]) < total_video_frames:
+                continue
+            start = (len(record["video"]) - total_video_frames) // 2
+            stop = start + total_video_frames
+            previous_actions = np.concatenate(
+                [record["prev_action"][None], record["actions"][:-1]],
+                axis=0,
+            )
+            rollout_samples.append(
+                latent_normalizer.map(
+                    DynamicsBatch(
+                        video=record["video"][start:stop],
+                        actions=previous_actions[start:stop],
+                    )
+                )
+            )
+            if len(rollout_samples) == int(video_cfg.num_samples):
+                break
+        if len(rollout_samples) < int(video_cfg.num_samples):
+            raise ValueError(
+                f"Need {video_cfg.num_samples} eval episodes with at least "
+                f"{total_video_frames} frames, found {len(rollout_samples)}"
+            )
+        rollout_eval_batch = DynamicsBatch(
+            video=np.stack([sample["video"] for sample in rollout_samples]),
+            actions=np.stack([sample["actions"] for sample in rollout_samples]),
+        )
 
         @jax.jit
         def run_video_eval(
-            dynamics_params,
+            online_params,
+            ema_params,
             tokenizer_variables,
             video_batch,
             action_batch,
             rollout_seed,
         ):
-            video = jnp.asarray(video_batch[:1, :total_video_frames], dtype=jnp.float32)
+            video = jnp.asarray(video_batch, dtype=jnp.float32)
             eval_action_dtype = (
                 jnp.float32 if str(cfg.dynamics.get("action_mode", "discrete")) == "continuous" else jnp.int32
             )
-            actions = jnp.asarray(action_batch[:1, :total_video_frames], dtype=eval_action_dtype)
-            rollout_video = jnp.zeros_like(video)
-            rollout_video = rollout_video.at[:, :video_context_frames].set(video[:, :video_context_frames])
+            actions = jnp.asarray(action_batch, dtype=eval_action_dtype)
 
             rollout_key = jax.random.key(rollout_seed)
             context_noise_key, sample_noise_key = jax.random.split(rollout_key)
             context_noise = jax.random.normal(context_noise_key, video.shape, dtype=jnp.float32)
             sample_noise = jax.random.normal(
                 sample_noise_key,
-                (video.shape[0], generated_frames, *video.shape[2:]),
+                (video.shape[0], rollout_horizon, *video.shape[2:]),
                 dtype=jnp.float32,
             )
-            rollout_video = model.apply(
-                dynamics_params,
-                rollout_video,
-                actions,
-                context_noise,
-                sample_noise,
-                video_context_frames,
-                context_tau=requested_tau,
-                sample_steps=int(video_cfg.sample_steps),
-                method=DynamicsModel.generate_rollout,
-            )
+            rollout_videos = []
+            for dynamics_params in (online_params, ema_params):
+                rollout_video = jnp.zeros_like(video)
+                rollout_video = rollout_video.at[:, :video_context_frames].set(video[:, :video_context_frames])
+                rollout_videos.append(
+                    model.apply(
+                        dynamics_params,
+                        rollout_video,
+                        actions,
+                        context_noise,
+                        sample_noise,
+                        video_context_frames,
+                        context_tau=requested_tau,
+                        sample_steps=int(video_cfg.sample_steps),
+                        method=DynamicsModel.generate_rollout,
+                    )
+                )
+
             raw_video = denormalize_latents(video, model.latent_mean, model.latent_std)
-            raw_rollout = denormalize_latents(rollout_video, model.latent_mean, model.latent_std)
             ground_truth_patches = tokenizer.apply(tokenizer_variables, raw_video, method=type(tokenizer).decode)
-            rollout_patches = tokenizer.apply(tokenizer_variables, raw_rollout, method=type(tokenizer).decode)
             ground_truth_images = preprocessor.patches_to_images(ground_truth_patches).astype(jnp.float32)
-            rollout_images = preprocessor.patches_to_images(rollout_patches).astype(jnp.float32)
-            return ground_truth_images, rollout_images
+            decoded_rollouts = []
+            for rollout_video in rollout_videos:
+                raw_rollout = denormalize_latents(rollout_video, model.latent_mean, model.latent_std)
+                rollout_patches = tokenizer.apply(tokenizer_variables, raw_rollout, method=type(tokenizer).decode)
+                decoded_rollouts.append(preprocessor.patches_to_images(rollout_patches).astype(jnp.float32))
+            return ground_truth_images, decoded_rollouts[0], decoded_rollouts[1]
 
         logger.info(
-            "Video eval ready; context=%d generated=%d sample_steps=%d tau=%.4f",
-            int(video_cfg.context_frames),
-            int(video_cfg.generated_frames),
+            "Video eval ready; samples=%d context=%d horizon=%d sample_steps=%d tau=%.4f",
+            int(video_cfg.num_samples),
+            video_context_frames,
+            rollout_horizon,
             int(video_cfg.sample_steps),
             requested_tau,
         )
@@ -591,23 +633,9 @@ def main(cfg: DictConfig):
         if should_export_model(step, force=force):
             save_model_export(checkpoint_manager.directory, step, cfg.dynamics, state.ema_params)
 
-    train_iterators = {sequence_length: iter(loader) for sequence_length, loader in train_loaders.items()}
-
     def iterator_items():
-        return {
-            f"train_iterator_{sequence_length}": train_iterator
-            for sequence_length, train_iterator in train_iterators.items()
-        }
-
-    def sequence_length_for_step(current_step: int) -> int:
-        if cfg.dataset.alternating_lengths.enabled and (
-            current_step >= total_steps - cfg.dataset.alternating_lengths.final_long_only_steps
-            or (current_step + 1) % cfg.dataset.alternating_lengths.long_every == 0
-        ):
-            return cfg.dataset.alternating_lengths.long
-        if cfg.dataset.alternating_lengths.enabled:
-            return cfg.dataset.alternating_lengths.short
-        return cfg.dataset.batch_length
+        # The current episode remainder lives in the packer, not Grain.
+        return {"train_iterator": train_records_iterator}
 
     resume_spec = cfg.checkpoint.resume_step
     resume_step = None
@@ -628,6 +656,14 @@ def main(cfg: DictConfig):
             step=resume_step,
             extra_items=iterator_items(),
         )
+        train_packed_iterator = iter(
+            PackDynamicsEpisodes(
+                train_records_iterator,
+                sequence_length=pack_length,
+                batch_size=batch_size_per_process,
+            )
+        )
+        initial_train_batch = None
         logger.info("Resumed dynamics training from step %d", int(state.step))
 
     step = int(jax.device_get(state.step))
@@ -652,14 +688,13 @@ def main(cfg: DictConfig):
     while True:
         current_step = step
 
-        sequence_length = sequence_length_for_step(current_step)
-
         with timer("data"):
-            try:
-                batch = next(train_iterators[sequence_length])
-            except StopIteration:
-                train_iterators[sequence_length] = iter(train_loaders[sequence_length])
-                batch = next(train_iterators[sequence_length])
+            if initial_train_batch is not None:
+                batch = initial_train_batch
+                initial_train_batch = None
+            else:
+                batch = next(train_packed_iterator)
+                batch = latent_normalizer.map(batch)
         with timer("transfer"):
             batch = local_batch_to_global(batch, batch_sharding)
         bootstrap_rows = bootstrap_rows_for_step(current_step)
@@ -673,7 +708,15 @@ def main(cfg: DictConfig):
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
             t_eval_start = time.monotonic()
             totals: dict[str, float] = {}
-            eval_batches = list(itertools.islice(iter(eval_loader), cfg.dataset.eval.max_batches))
+            _, eval_packed_iterator = make_packed_iterator(
+                eval_source,
+                shuffle=False,
+                num_epochs=1,
+            )
+            eval_batches = [
+                latent_normalizer.map(batch)
+                for batch in itertools.islice(eval_packed_iterator, cfg.dataset.eval.max_batches)
+            ]
             global_eval_batch_counts = np.asarray(
                 multihost_utils.process_allgather(np.asarray(len(eval_batches), dtype=np.int32))
             )
@@ -686,9 +729,7 @@ def main(cfg: DictConfig):
                         state,
                         local_batch_to_global(eval_batch, batch_sharding),
                         eval_key,
-                        jnp.asarray(step, dtype=jnp.int32),
                         jnp.asarray(batch_idx, dtype=jnp.int32),
-                        bootstrap_rows,
                     )
                 )
                 for k, v in batch_metrics.items():
@@ -697,19 +738,15 @@ def main(cfg: DictConfig):
 
             if num_batches > 0:
                 eval_metrics = {k: v / num_batches for k, v in totals.items()}
-                wb.log(
-                    {f"eval/{k}": v for k, v in eval_metrics.items()},
-                    step=step,
-                )
-            if video_eval_enabled and num_batches > 0:
+                wb.log({f"eval/{name}": value for name, value in eval_metrics.items()}, step=step)
+            if video_eval_enabled:
                 log_video_eval(
                     wb,
+                    put_single_device_tree(state.params),
                     put_single_device_tree(state.ema_params),
-                    eval_batches[(step // cfg.eval_steps) % num_batches],
+                    rollout_eval_batch,
                     step=step,
-                    rollout_seed=int(
-                        jax.random.randint(fold_in_many(eval_key, step, num_batches), (), 0, np.iinfo(np.int32).max)
-                    ),
+                    rollout_seed=int(video_cfg.seed),
                     video_cfg=video_cfg,
                     output_dir=video_output_dir,
                     tokenizer_variables=tokenizer_variables,
@@ -730,7 +767,6 @@ def main(cfg: DictConfig):
             wb.log(
                 {
                     **{k: float(v) for k, v in train_metrics.items()},
-                    "train/sequence_length": sequence_length,
                     **{f"train/{k}": v for k, v in timing_stats.items()},
                 },
                 step=step,

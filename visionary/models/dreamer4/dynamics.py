@@ -114,6 +114,7 @@ class DynamicsModel(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     context_length: int
+
     action_mode: Literal["discrete", "continuous"] = "discrete"
     temporal_layer_period: int = 4
     base: float = 10000.0
@@ -123,15 +124,15 @@ class DynamicsModel(nn.Module):
     latent_std: tuple[float, ...] | None = None
 
     def setup(self):
-        self.shortcut_embedding = ShortcutEmbedding(
-            model_dim=self.model_dim,
-            max_step_size=self.max_step_size,
-            dtype=self.dtype,
-        )
         self.action_embedding = ActionEmbedding(
             model_dim=self.model_dim,
             num_actions=self.num_actions,
             action_mode=self.action_mode,
+            dtype=self.dtype,
+        )
+        self.shortcut_embedding = ShortcutEmbedding(
+            model_dim=self.model_dim,
+            max_step_size=self.max_step_size,
             dtype=self.dtype,
         )
         self.register_tokens = self.param(
@@ -158,8 +159,9 @@ class DynamicsModel(nn.Module):
         actions: jnp.ndarray | None,
         step_levels: jnp.ndarray,
         signal_levels: jnp.ndarray,
+        segment_ids: jnp.ndarray | None = None,
     ) -> jnp.ndarray:
-        batch_size, seq_len, num_obs_tokens, token_dim = z.shape
+        batch_size, seq_len, input_obs_tokens, token_dim = z.shape
 
         action_tokens = self.action_embedding(actions, (batch_size, seq_len))[:, :, None, :]
         shortcut_tokens = self.shortcut_embedding(step_levels, signal_levels)[:, :, None, :]
@@ -173,17 +175,21 @@ class DynamicsModel(nn.Module):
             name="Dense_0",
         )(z.astype(self.dtype))
 
-        num_tokens = 1 + 1 + self.num_registers + num_obs_tokens
-        tokens = jnp.concatenate([action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2)
+        observation_offset = 2 + self.num_registers
+        num_tokens = observation_offset + input_obs_tokens
+        tokens = jnp.concatenate(
+            [action_tokens, shortcut_tokens, register_tokens, observation_tokens],
+            axis=2,
+        )
 
         spatial_rope = create_temporal_rope(self.base, self.head_dim, num_tokens)
         temporal_rope = create_temporal_rope(self.base, self.head_dim, seq_len)
-        # action stream stays visually blind: it attends only to itself, while
-        # shortcut/register/obs tokens attend to everything
+
+        # Actions cannot see latent tokens.
         token_levels = jnp.concatenate(
             [
                 jnp.zeros((1,), dtype=jnp.int32),
-                jnp.ones((1 + self.num_registers + num_obs_tokens,), dtype=jnp.int32),
+                jnp.ones((num_tokens - 1,), dtype=jnp.int32),
             ]
         )
         spatial_mask = token_levels[:, None] >= token_levels[None, :]
@@ -196,6 +202,10 @@ class DynamicsModel(nn.Module):
             temporal_mask[None, :, :],
             (batch_size, seq_len, seq_len),
         )
+        if segment_ids is not None:
+            segment_ids = jnp.asarray(segment_ids, dtype=jnp.int32)
+            same_segment = segment_ids[:, :, None] == segment_ids[:, None, :]
+            temporal_mask = temporal_mask & same_segment
 
         hidden = self.transformer(
             x=tokens,
@@ -206,7 +216,6 @@ class DynamicsModel(nn.Module):
             temporal_rope_emb=temporal_rope,
             temporal_mask=temporal_mask,
         )
-        observation_offset = 1 + 1 + self.num_registers
         observation_hidden = hidden[:, :, observation_offset:, :]
         return nn.Dense(
             token_dim,
@@ -227,6 +236,8 @@ class DynamicsModel(nn.Module):
         sample_steps: int,
         clean_until: jnp.ndarray | int = 0,
     ) -> jnp.ndarray:
+        """Generate one latent frame at each row's target index."""
+
         batch_size, seq_len, _, latent_dim = video_prefix.shape
         target_index = jnp.asarray(target_index, dtype=jnp.int32)
         clean_until = jnp.asarray(clean_until, dtype=jnp.int32)
@@ -263,7 +274,6 @@ class DynamicsModel(nn.Module):
         past_mask_z = past_mask[None, :, None, None]
         past_mask_t = jnp.broadcast_to(past_mask[None, :], (batch_size, seq_len))
 
-        # ground-truth context stays clean at tau=1.0
         clean_mask = positions < clean_until
         clean_mask_z = clean_mask[None, :, None, None]
         clean_mask_t = jnp.broadcast_to(clean_mask[None, :], (batch_size, seq_len))
@@ -305,6 +315,8 @@ class DynamicsModel(nn.Module):
         context_tau: float,
         sample_steps: int,
     ) -> jnp.ndarray:
+        """Generate consecutive frames into a preallocated video tensor."""
+
         start_index = jnp.asarray(start_index, dtype=jnp.int32)
         rollout_steps = sample_noise.shape[1]
 
@@ -330,6 +342,10 @@ class DynamicsModel(nn.Module):
         bootstrap_target_variables,
         bootstrap_rows: int = 0,
     ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+        """
+        Compute shortcut forcing loss. Empirical rows use flow loss. Final rows use targets from two EMA half-steps.
+        """
+
         z_target = rearrange(
             jnp.asarray(batch["video"], dtype=jnp.float32),
             "b t (n k) d -> b t n (k d)",
@@ -337,31 +353,44 @@ class DynamicsModel(nn.Module):
         )
         action_dtype = jnp.float32 if self.action_mode == "continuous" else jnp.int32
         actions = jnp.asarray(batch["actions"], dtype=action_dtype)
+        segment_ids = batch.get("segment_ids")
+        if segment_ids is not None:
+            segment_ids = jnp.asarray(segment_ids, dtype=jnp.int32)
 
         batch_size, seq_len, _, _ = z_target.shape
         if not 0 <= bootstrap_rows <= batch_size:
             raise ValueError(f"Expected 0 <= bootstrap_rows <= {batch_size}, got {bootstrap_rows}")
+
+        transition_mask = jnp.ones((batch_size, seq_len), dtype=jnp.bool_)
+        transition_mask = transition_mask.at[:, 0].set(False)
+        if segment_ids is not None:
+            same_segment = segment_ids[:, 1:] == segment_ids[:, :-1]
+            transition_mask = transition_mask.at[:, 1:].set(same_segment)
+
         bootstrap_start = batch_size - bootstrap_rows
-        bootstrap_row_mask = jnp.arange(batch_size) >= bootstrap_start
-        bootstrap_row_mask = jnp.broadcast_to(
-            bootstrap_row_mask[:, None],
-            (batch_size, seq_len),
-        )
+        bootstrap_slice = slice(bootstrap_start, batch_size)
+        bootstrap_row_mask = jnp.arange(batch_size)[:, None] >= bootstrap_start
+        bootstrap_row_mask = jnp.broadcast_to(bootstrap_row_mask, (batch_size, seq_len))
+
         sample_rng = self.make_rng("sample")
         step_rng, signal_rng, noise_rng = jax.random.split(sample_rng, 3)
 
+        finest_step_level = self.max_step_size - 1
         sampled_bootstrap_levels = jax.random.randint(
             step_rng,
             shape=(batch_size, seq_len),
             minval=0,
-            maxval=self.max_step_size - 1,
+            maxval=finest_step_level,
             dtype=jnp.int32,
         )
-        step_levels = jnp.full((batch_size, seq_len), self.max_step_size - 1, dtype=jnp.int32)
+        step_levels = jnp.full(
+            (batch_size, seq_len),
+            finest_step_level,
+            dtype=jnp.int32,
+        )
         step_levels = jnp.where(bootstrap_row_mask, sampled_bootstrap_levels, step_levels)
         step_counts = 1 << step_levels
 
-        # Include tau=1.0 for minimum rows with step sizes
         include_endpoint = jnp.where(bootstrap_row_mask, 0, 1)
         signal_levels = jax.random.randint(
             signal_rng,
@@ -371,8 +400,7 @@ class DynamicsModel(nn.Module):
             dtype=jnp.int32,
         )
 
-        # Share signal indices across step levels
-        signal_indices = signal_levels << (self.max_step_size - 1 - step_levels)
+        signal_indices = signal_levels << (finest_step_level - step_levels)
 
         tau = signal_levels.astype(jnp.float32) / step_counts.astype(jnp.float32)
         step_sizes = 1.0 / step_counts.astype(jnp.float32)
@@ -381,29 +409,34 @@ class DynamicsModel(nn.Module):
 
         z_noise = jax.random.normal(noise_rng, z_target.shape, dtype=jnp.float32)
         z_noised = tau * z_target + (1.0 - tau) * z_noise
-        z_pred_1 = self(z_noised, actions, step_levels, signal_indices)
+        z_pred_1 = self(z_noised, actions, step_levels, signal_indices, segment_ids)
 
         flow_loss = (z_pred_1 - z_target) ** 2
         loss_weight = 1.0 / jnp.maximum(1.0 - tau, 1e-3) ** 2
         weighted_flow_loss = loss_weight * flow_loss
 
-        bootstrap_loss_metric = jnp.asarray(0.0, dtype=jnp.float32)
         weighted_loss = weighted_flow_loss
         if bootstrap_rows > 0:
-            bootstrap_slice = slice(bootstrap_start, batch_size)
             z_noised_bootstrap = z_noised[bootstrap_slice]
             actions_bootstrap = actions[bootstrap_slice]
             tau_bootstrap = tau[bootstrap_slice]
             step_sizes_bootstrap = step_sizes[bootstrap_slice]
             step_levels_bootstrap = step_levels[bootstrap_slice]
             signal_indices_bootstrap = signal_indices[bootstrap_slice]
+            segment_ids_bootstrap = segment_ids[bootstrap_slice] if segment_ids is not None else None
 
             bootstrap_forward = nn.apply(
-                lambda model, z, action, level, signal: model(z, action, level, signal),
+                lambda model, z, action, level, signal, segments: model(
+                    z,
+                    action,
+                    level,
+                    signal,
+                    segments,
+                ),
                 self.clone(parent=None),
             )
 
-            # First half-step prediction
+            # First EMA half-step
             half_step_levels = step_levels_bootstrap + 1
             z_pred_2 = bootstrap_forward(
                 bootstrap_target_variables,
@@ -411,10 +444,12 @@ class DynamicsModel(nn.Module):
                 actions_bootstrap,
                 half_step_levels,
                 signal_indices_bootstrap,
+                segment_ids_bootstrap,
             )
-            b1 = (jax.lax.stop_gradient(z_pred_2) - z_noised_bootstrap) / jnp.maximum(1.0 - tau_bootstrap, 1e-5)
+            first_step_divisor = jnp.maximum(1.0 - tau_bootstrap, 1e-5)
+            b1 = (jax.lax.stop_gradient(z_pred_2) - z_noised_bootstrap) / first_step_divisor
 
-            # Second half-step prediction
+            # Second EMA half-step
             half_step_sizes = step_sizes_bootstrap / 2.0
             half_noised_unclipped = z_noised_bootstrap + b1 * half_step_sizes
             half_noised = jnp.clip(half_noised_unclipped, -4.0, 4.0)
@@ -425,31 +460,36 @@ class DynamicsModel(nn.Module):
                 actions_bootstrap,
                 half_step_levels,
                 signal_indices_bootstrap + half_signal_delta,
+                segment_ids_bootstrap,
             )
-            b2 = (jax.lax.stop_gradient(z_pred_3) - half_noised) / jnp.maximum(
-                1.0 - (tau_bootstrap + half_step_sizes), 1e-5
-            )
+            second_step_divisor = jnp.maximum(1.0 - (tau_bootstrap + half_step_sizes), 1e-5)
+            b2 = (jax.lax.stop_gradient(z_pred_3) - half_noised) / second_step_divisor
 
             bootstrap_target = jax.lax.stop_gradient(jnp.clip((b1 + b2) / 2.0, -4.0, 4.0))
-            bootstrap_loss = (
-                (z_pred_1[bootstrap_slice] - z_noised_bootstrap) - (1.0 - tau_bootstrap) * bootstrap_target
-            ) ** 2
+            bootstrap_error = (z_pred_1[bootstrap_slice] - z_noised_bootstrap) - (
+                1.0 - tau_bootstrap
+            ) * bootstrap_target
+            bootstrap_loss = bootstrap_error**2
             weighted_bootstrap_loss = loss_weight[bootstrap_slice] * bootstrap_loss
-            bootstrap_loss_metric = jnp.mean(weighted_bootstrap_loss)
             weighted_loss = weighted_loss.at[bootstrap_slice].set(weighted_bootstrap_loss)
 
-        total_loss = jnp.mean(weighted_loss)
+        loss_mask = jnp.broadcast_to(transition_mask[..., None, None], weighted_loss.shape)
+        loss_mask = loss_mask.astype(jnp.float32)
+        loss_denominator = jnp.maximum(jnp.sum(loss_mask, axis=(1, 2, 3)), 1.0)
+        row_loss = jnp.sum(weighted_loss * loss_mask, axis=(1, 2, 3)) / loss_denominator
+        flow_row_loss = jnp.sum(weighted_flow_loss * loss_mask, axis=(1, 2, 3)) / loss_denominator
 
-        def masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
-            mask = jnp.broadcast_to(mask, values.shape).astype(values.dtype)
-            return jnp.sum(values * mask) / jnp.maximum(jnp.sum(mask), 1.0)
-
-        use_bootstrap_loss = bootstrap_row_mask[..., None, None]
-        flow_mask = (~use_bootstrap_loss).astype(jnp.float32)
+        total_loss = jnp.mean(row_loss)
+        flow_loss_metric = (
+            jnp.mean(flow_row_loss[:bootstrap_start]) if bootstrap_start > 0 else jnp.asarray(0.0, dtype=jnp.float32)
+        )
+        bootstrap_loss_metric = (
+            jnp.mean(row_loss[bootstrap_slice]) if bootstrap_rows > 0 else jnp.asarray(0.0, dtype=jnp.float32)
+        )
 
         metrics = {
             "loss": total_loss,
-            "flow_loss": masked_mean(weighted_flow_loss, flow_mask),
+            "flow_loss": flow_loss_metric,
             "bootstrap_loss": bootstrap_loss_metric,
         }
         return total_loss, metrics

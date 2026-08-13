@@ -1,19 +1,23 @@
 """Encode the packed video shards into latent dynamics records.
 
-Reads the tokenizer's ArrayRecord shards (one record per (episode, fixed
-camera) stream: trimmed mp4 bytes plus aligned actions), encodes every frame
-with a trained tokenizer export, and writes the chunked ArrayRecord format
-train_dynamics.py reads. The input train/eval split is preserved, so
+Reads the tokenizer's ArrayRecord shards (one record per episode and camera),
+encodes every frame with a trained tokenizer export, and writes one dynamics
+record per episode. The input train/eval split is preserved, so
 tokenizer-eval episodes stay out of dynamics-train.
 
 Episodes are encoded in windows of the tokenizer's training length (its
 temporal RoPE never saw longer offsets) and the window batch is sharded over
 every local device. Actions are normalized to [-1, 1] with q01-q99 stats
-computed from the shards themselves unless --action_stats is given.
+computed from the train shards.
+
+Each embodiment is encoded by its own run, selected by action dimensionality;
+per-record striding unifies every source to --target_hz.
 
     uv run python scripts/robot/save_dynamics_dataset_from_shards.py \
-        --checkpoint_dir gs://visionary-uc1/so101/checkpoints/tokenizer \
-        --input_dir data/so101/shards --output_dir data/so101/dyn --frame_length 64
+        --checkpoint_dir gs://visionary-uc1/so101/checkpoints/tokenizer_v2 \
+        --input_dir data/tokenizer/shards --output_dir data/so101/dynamics \
+        --min_episode_length 8 --encode_window_length 16 --encode_window_overlap 8 \
+        --action_dim 6
 """
 
 import argparse
@@ -37,7 +41,7 @@ from visionary.common.checkpoint import (
     restore_model_export_single_device,
     restore_preprocessor_export,
 )
-from visionary.dataset import AugmentVideoClip, decode_video_window
+from visionary.dataset import decode_video_window
 from visionary.models.dreamer4.tokenizer import Tokenizer
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
 from visionary.shards import (
@@ -45,7 +49,6 @@ from visionary.shards import (
     SplitStats,
     build_action_normalizer,
     chunk_starts,
-    record_bounds,
 )
 
 logger = logging.getLogger(__name__)
@@ -172,30 +175,32 @@ class ShardedTokenizerEncoder:
 def load_stream(
     record_bytes: bytes,
     episode_id: int,
-    copy: int,
     preprocessor: TokenizerPreprocessor,
     normalizer: Callable[[np.ndarray], np.ndarray],
-    augment: AugmentVideoClip,
-    seed: int,
-) -> Stream:
+    target_hz: float,
+    action_dim: int,
+) -> Stream | None:
     with np.load(io.BytesIO(record_bytes)) as data:
+        actions = np.asarray(data["actions"], dtype=np.float32)
+        if actions.shape[-1] != action_dim:  # other embodiment; encoded by its own run
+            return None
         video = data["video"].tobytes()
         length = int(data["length"])
-        actions = np.asarray(data["actions"], dtype=np.float32)
+        fps = float(data["fps"])
         state = np.asarray(data["state"], dtype=np.float32)
         provenance = {
             "repo": str(data["repo"]),
             "episode": np.int32(data["episode"]),
             "camera": str(data["camera"]),
-            "augment_copy": np.int32(copy),
         }
 
+    stride = max(int(round(fps / target_hz)), 1)
     frames = decode_video_window(video, 0, length, tuple(preprocessor.resize_shape))
-    length = min(len(frames), len(actions))
-    frames, actions, state = frames[:length], actions[:length], state[:length]
-    if copy > 0:
-        # one draw per episode; per-window draws would jump brightness mid-episode
-        frames = augment.random_map({"video": frames}, np.random.default_rng([seed, episode_id, copy]))["video"]
+    length = min(len(frames), len(actions), len(state))
+    frames = frames[:length:stride]
+    actions = actions[:length:stride]
+    state = state[:length:stride]
+    sampled_length = len(frames)
 
     return Stream(
         episode_id=episode_id,
@@ -203,7 +208,7 @@ def load_stream(
         arrays={
             "actions": normalizer(actions),
             "state": state,
-            "rewards": np.zeros((length,), dtype=np.float32),  # teleop demos have none
+            "rewards": np.zeros((sampled_length,), dtype=np.float32),
         },
         provenance=provenance,
     )
@@ -211,7 +216,7 @@ def load_stream(
 
 def iter_loaded_streams(
     source: grain.ArrayRecordDataSource,
-    items: list[tuple[int, int]],
+    items: list[int],
     load_fn: Callable[..., Stream],
     read_workers: int,
     prefetch: int,
@@ -222,8 +227,8 @@ def iter_loaded_streams(
         next_yield = 0
 
         def submit(item_idx: int) -> Any:
-            episode_id, copy = items[item_idx]
-            return executor.submit(load_fn, source[episode_id], episode_id, copy)
+            episode_id = items[item_idx]
+            return executor.submit(load_fn, source[episode_id], episode_id)
 
         while next_submit < min(len(items), prefetch):
             pending[next_submit] = submit(next_submit)
@@ -242,13 +247,11 @@ def iter_loaded_streams(
             next_yield += 1
 
 
-def encode_stream_record(stream: Stream, latents: np.ndarray, start: int, stop: int) -> bytes:
-    actions = stream.arrays["actions"]
-    payload: dict[str, Any] = {key: value[start:stop] for key, value in stream.arrays.items()}
-    payload["frames"] = latents[start:stop]
-    payload["prev_action"] = actions[start - 1] if start > 0 else np.zeros(actions.shape[1:], dtype=actions.dtype)
+def encode_stream_record(stream: Stream, latents: np.ndarray) -> bytes:
+    payload: dict[str, Any] = dict(stream.arrays)
+    payload["frames"] = latents
+    payload["prev_action"] = np.zeros(stream.arrays["actions"].shape[1:], dtype=np.float32)
     payload["episode_id"] = np.asarray(stream.episode_id, dtype=np.int64)
-    payload["start_index"] = np.asarray(start, dtype=np.int32)
     payload.update(stream.provenance)
 
     buffer = io.BytesIO()
@@ -265,13 +268,12 @@ def write_split(
     output_dir: Path,
     latent_stats: RunningLatentStats | None = None,
 ) -> SplitStats:
-    copies = 1 + (args.augment_copies if split_name == "train" else 0)
     # global stream indices, so episode ids stay stable across ranged runs
     start = min(args.stream_start, len(source))
     stop = len(source) if args.stream_stop is None else min(args.stream_stop, len(source))
     if args.limit is not None:
         stop = min(stop, start + args.limit)
-    items = [(idx, copy) for idx in range(start, stop) for copy in range(copies)]
+    items = list(range(start, stop))
 
     shard_writer = ShardWriter(output_dir, args.records_per_shard)
     stats = SplitStats(episodes_found=len(items))
@@ -282,9 +284,10 @@ def write_split(
         load_stream,
         preprocessor=encoder.preprocessor,
         normalizer=normalizer,
-        augment=AugmentVideoClip(),  # defaults match the tokenizer training config
-        seed=args.seed,
+        target_hz=args.target_hz,
+        action_dim=args.action_dim,
     )
+    record_lengths: list[int] = []
 
     def flush() -> None:
         nonlocal pending
@@ -294,18 +297,12 @@ def write_split(
         for stream, latents in zip(pending, latents_batch, strict=True):
             if latent_stats is not None:
                 latent_stats.update(latents)
-            bounds = record_bounds(
-                len(latents),
-                chunk_length=args.chunk_length,
-                overlap=args.chunk_overlap,
-                min_length=args.frame_length,
-            )
-            for start, stop in bounds:
-                record_bytes = encode_stream_record(stream, latents, start, stop)
-                shard_writer.write(record_bytes)
-                stats.records_written += 1
-                stats.payload_bytes += len(record_bytes)
-            stats.frames_written += sum(stop - start for start, stop in bounds)
+            record_bytes = encode_stream_record(stream, latents)
+            shard_writer.write(record_bytes)
+            record_lengths.append(len(latents))
+            stats.records_written += 1
+            stats.payload_bytes += len(record_bytes)
+            stats.frames_written += len(latents)
             stats.episodes_written += 1
         pending = []
 
@@ -314,7 +311,7 @@ def write_split(
             iter_loaded_streams(source, items, load_fn, args.read_workers, args.prefetch_episodes),
             start=1,
         ):
-            if stream is None or len(stream.patches) < args.frame_length:
+            if stream is None or len(stream.patches) < args.min_episode_length:
                 stats.episodes_skipped += 1
             else:
                 pending.append(stream)
@@ -334,24 +331,35 @@ def write_split(
         flush()
     finally:
         stats.shards_written = shard_writer.close()
+    (output_dir / "lengths.json").write_text(json.dumps(record_lengths))
     return stats
 
 
-def compute_action_stats(source: grain.ArrayRecordDataSource, out_path: Path) -> None:
+def compute_action_stats(
+    source: grain.ArrayRecordDataSource,
+    out_path: Path,
+    action_dim: int,
+    target_hz: float,
+) -> None:
     chunks: list[np.ndarray] = []
     seen: set[tuple[str, int]] = set()
     for idx in range(len(source)):
         with np.load(io.BytesIO(source[idx])) as data:
+            actions_array = np.asarray(data["actions"], dtype=np.float64)
+            if actions_array.shape[-1] != action_dim:
+                continue
             key = (str(data["repo"]), int(data["episode"]))
             if key in seen:  # multi-view streams share one trajectory
                 continue
             seen.add(key)
-            chunks.append(np.asarray(data["actions"], dtype=np.float64))
+            fps = float(data["fps"])
+            stride = max(int(round(fps / target_hz)), 1)
+            chunks.append(actions_array[::stride])
     actions = np.concatenate(chunks, axis=0)
     stats = {
         "n_episodes": len(chunks),
         "n_frames": int(actions.shape[0]),
-        "units": "degrees",
+        "action_dim": action_dim,
         "normalization": "q01_q99_to_[-1,1]_clipped (gripper included)",
         "mean": actions.mean(0).round(4).tolist(),
         "std": actions.std(0).round(4).tolist(),
@@ -370,35 +378,39 @@ def open_split_source(input_dir: Path, split: str) -> grain.ArrayRecordDataSourc
 
 
 def create_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Encode packed video shards into chunked ArrayRecord dynamics data.")
+    parser = argparse.ArgumentParser(description="Encode packed video shards into episode dynamics records.")
     parser.add_argument("--checkpoint_dir", required=True, help="Tokenizer checkpoint directory.")
     parser.add_argument("--input_dir", required=True, help="Shard root with train/ and eval/.")
     parser.add_argument("--output_dir", required=True, help="Output directory for latent shards.")
     parser.add_argument(
-        "--frame_length",
+        "--min_episode_length",
+        type=int,
+        default=8,
+        help="Episodes shorter than this after resampling are skipped.",
+    )
+    parser.add_argument("--step", type=int, required=True, help="Tokenizer export step.")
+    parser.add_argument(
+        "--action_dim",
         type=int,
         required=True,
-        help="Minimum frames per output record; shorter streams are skipped. Must be >= the dynamics batch_length.",
+        help="Embodiment filter: only streams with this action dimensionality are encoded.",
     )
-    parser.add_argument("--step", type=int, help="Checkpoint step to restore. Defaults to latest.")
-    parser.add_argument("--seed", type=int, default=42, help="Augmentation seed.")
     parser.add_argument(
-        "--chunk_length",
-        type=int,
-        default=512,
-        help="Frames stored per output record before the tail chunk.",
+        "--target_hz",
+        type=float,
+        default=5.0,
+        help="Per-record stride = round(fps / target_hz), unifying the frame rate across sources.",
     )
-    parser.add_argument("--chunk_overlap", type=int, default=0, help="Overlap between output records, in frames.")
     parser.add_argument(
         "--encode_window_length",
         type=int,
-        default=32,
+        default=16,
         help="Frames per tokenizer forward pass; must match the tokenizer's training length.",
     )
     parser.add_argument(
         "--encode_window_overlap",
         type=int,
-        default=0,
+        default=8,
         help="Warm-up frames re-encoded per window so kept latents see this much context.",
     )
     parser.add_argument(
@@ -415,25 +427,12 @@ def create_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--read_workers", type=int, default=8, help="Threads decoding and patchifying video.")
     parser.add_argument("--prefetch_episodes", type=int, default=8, help="Streams queued ahead of the encoder.")
-    parser.add_argument("--records_per_shard", type=int, default=1024, help="Maximum records per .arecord shard.")
+    parser.add_argument("--records_per_shard", type=int, default=256, help="Maximum records per .arecord shard.")
     parser.add_argument(
         "--latent_dtype",
         choices=("float16", "float32"),
         default="float16",
-        help="Latent dtype stored on disk. The latents are held near N(0, 1), so "
-        "float16 halves the dataset at no meaningful precision cost.",
-    )
-    parser.add_argument(
-        "--action_stats",
-        default=None,
-        help="Path to norm_stats.json (q01/q99). Defaults to computing stats from the "
-        "train shards and writing norm_stats.json into --output_dir.",
-    )
-    parser.add_argument(
-        "--augment_copies",
-        type=int,
-        default=0,
-        help="Extra augmented encodings written per train stream (eval stays clean).",
+        help="Latent dtype stored on disk.",
     )
     parser.add_argument("--limit", type=int, help="Streams per split, for smoke tests.")
     parser.add_argument(
@@ -446,15 +445,13 @@ def create_parser() -> argparse.ArgumentParser:
         "--stream_start",
         type=int,
         default=0,
-        help="First stream index to encode; episode ids stay global, so ranged "
-        "runs compose into one resumable dataset.",
+        help="First stream index to encode into an empty output directory.",
     )
     parser.add_argument("--stream_stop", type=int, help="Stop stream index (exclusive). Defaults to the split end.")
     return parser
 
 
 def main() -> None:
-    # force: grain's import installs a root handler, which would swallow basicConfig
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s", force=True)
     args = create_parser().parse_args()
 
@@ -483,19 +480,15 @@ def main() -> None:
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     splits = ("train", "eval") if args.split == "both" else (args.split,)
-    # only the splits actually used, so a run can work from a partial copy
-    needed = set(splits) | ({"train"} if not args.action_stats else set())
+    needed = set(splits) | {"train"}
     sources = {split: open_split_source(input_dir, split) for split in sorted(needed)}
     for split, source in sources.items():
         logger.info("Found %d %s streams", len(source), split)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    if args.action_stats:
-        stats_path = Path(args.action_stats)
-    else:
-        stats_path = output_dir / "norm_stats.json"
-        logger.info("Computing action stats over the train shards")
-        compute_action_stats(sources["train"], stats_path)
+    stats_path = output_dir / "norm_stats.json"
+    logger.info("Computing action stats over the train shards")
+    compute_action_stats(sources["train"], stats_path, args.action_dim, args.target_hz)
     normalizer = build_action_normalizer("continuous", str(stats_path))
 
     train_latent_stats = RunningLatentStats() if "train" in splits else None
@@ -535,12 +528,11 @@ def main() -> None:
         "token_dataset": {
             "latent_shape_per_frame": list(encoder.latents_per_frame),
             "latent_dtype": args.latent_dtype,
-            "frame_length": args.frame_length,
-            "chunk_length": args.chunk_length,
-            "chunk_overlap": args.chunk_overlap,
+            "action_dim": args.action_dim,
+            "target_hz": args.target_hz,
+            "min_episode_length": args.min_episode_length,
             "encode_window_length": args.encode_window_length,
             "encode_window_overlap": args.encode_window_overlap,
-            "augment_copies": args.augment_copies,
             "split": args.split,
             "stream_start": args.stream_start,
             "stream_stop": args.stream_stop,
