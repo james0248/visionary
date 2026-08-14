@@ -82,7 +82,7 @@ checkpoint:
     directory: gs://visionary-uc1/so101/checkpoints/${exp_name}
     options:
       _target_: orbax.checkpoint.CheckpointManagerOptions
-      save_interval_steps: 1000
+      save_interval_steps: 200
       max_to_keep: 5
       keep_period: 100000
       enable_async_checkpointing: true
