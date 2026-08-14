@@ -109,8 +109,8 @@ def eval_step(
         rngs={"sample": sample_key},
     )
     return {
-        "online_flow_loss": online_metrics["flow_loss"],
-        "ema_flow_loss": ema_metrics["flow_loss"],
+        "online_flow_mse": online_metrics["flow_mse"],
+        "ema_flow_mse": ema_metrics["flow_mse"],
     }
 
 

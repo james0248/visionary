@@ -458,10 +458,14 @@ class DynamicsModel(nn.Module):
         loss_denominator = jnp.maximum(jnp.sum(loss_mask, axis=(1, 2, 3)), 1.0)
         row_loss = jnp.sum(weighted_loss * loss_mask, axis=(1, 2, 3)) / loss_denominator
         flow_row_loss = jnp.sum(weighted_flow_loss * loss_mask, axis=(1, 2, 3)) / loss_denominator
+        flow_row_mse = jnp.sum(flow_loss * loss_mask, axis=(1, 2, 3)) / loss_denominator
 
         total_loss = jnp.mean(row_loss)
         flow_loss_metric = (
             jnp.mean(flow_row_loss[:bootstrap_start]) if bootstrap_start > 0 else jnp.asarray(0.0, dtype=jnp.float32)
+        )
+        flow_mse_metric = (
+            jnp.mean(flow_row_mse[:bootstrap_start]) if bootstrap_start > 0 else jnp.asarray(0.0, dtype=jnp.float32)
         )
         bootstrap_loss_metric = (
             jnp.mean(row_loss[bootstrap_slice]) if bootstrap_rows > 0 else jnp.asarray(0.0, dtype=jnp.float32)
@@ -470,6 +474,7 @@ class DynamicsModel(nn.Module):
         metrics = {
             "loss": total_loss,
             "flow_loss": flow_loss_metric,
+            "flow_mse": flow_mse_metric,
             "bootstrap_loss": bootstrap_loss_metric,
         }
         return total_loss, metrics
