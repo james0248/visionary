@@ -219,6 +219,8 @@ class DynamicsModel(nn.Module):
 
         k_max = 1 << (self.max_step_size - 1)
         context_step_level = self.max_step_size - 1
+        if not 0.0 <= context_tau <= 1.0:
+            raise ValueError(f"context_tau must be in [0, 1], got {context_tau}")
         context_signal_index = round(context_tau * k_max)
         context_tau = jnp.float32(context_signal_index / k_max)
 

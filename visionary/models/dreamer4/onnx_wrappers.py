@@ -1341,7 +1341,7 @@ class _CachedDynamicsModel(nn.Module):
         observation_tokens = nn.Dense(
             int(self.cfg.model_dim),
             dtype=self.dtype,
-            name="Dense_0",
+            name="observation_projection",
         )(z.astype(self.dtype))
         tokens = jnp.concatenate([action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2)
         total_tokens = 1 + 1 + int(self.cfg.num_registers) + num_obs_tokens
@@ -1355,7 +1355,7 @@ class _CachedDynamicsModel(nn.Module):
             dtype=self.dtype,
             kernel_init=nn.initializers.zeros,
             bias_init=nn.initializers.zeros,
-            name="Dense_1",
+            name="prediction_projection",
         )(observation_hidden)
 
     @nn.compact
