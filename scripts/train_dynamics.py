@@ -269,7 +269,7 @@ def build_optimizer(cfg) -> optax.GradientTransformation:
 
         def mapper(path, x):
             names = {str(getattr(key, "key", key)).lower() for key in path}
-            if names & embedding_like:
+            if names & embedding_like or any(name.endswith("_bias") for name in names):
                 return None
             return MuonDimensionNumbers() if x.ndim >= 2 else None
 
@@ -499,7 +499,7 @@ def main(cfg: DictConfig):
     rollout_eval_batch = None
     if is_primary_process and process_count > 1:
         logger.warning(
-            "Live dynamics video eval is disabled for multi-process FSDP training. "
+            "Live dynamics video eval is disabled for multi-process training. "
             "Run video evaluation from a single-process export/checkpoint instead."
         )
     if video_eval_enabled:
