@@ -37,6 +37,7 @@ from visionary.dataset import decode_video_window
 from visionary.eval.loading import build_raw_index
 from visionary.models.dreamer4.dynamics import DynamicsModel, denormalize_latents, normalize_latents
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
+from visionary.shards import chunk_starts
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +217,7 @@ def main() -> None:
         sample_noise = jax.random.normal(
             sample_key, (video.shape[0], generated_frames, *video.shape[2:]), dtype=jnp.float32
         )
-        generated = model.apply(
+        generated, diagnostics = model.apply(
             params,
             primed,
             actions,
@@ -228,7 +229,7 @@ def main() -> None:
             sample_steps=args.sample_steps,
             method=DynamicsModel.generate_rollout,
         )
-        return denormalize_latents(generated, model.latent_mean, model.latent_std)
+        return denormalize_latents(generated, model.latent_mean, model.latent_std), diagnostics
 
     @jax.jit
     def decode_chunk(tokenizer_variables, latent_chunk):
@@ -236,17 +237,19 @@ def main() -> None:
             tokenizer.apply(tokenizer_variables, latent_chunk, method=type(tokenizer).decode)
         ).astype(jnp.float32)
 
-    def decode_all(latent: jnp.ndarray, chunk: int = 64) -> np.ndarray:
-        """Decode in fixed-size chunks; a full-length clip at once will not fit."""
+    def decode_all(latent: jnp.ndarray, window_length: int = 16, window_overlap: int = 8) -> np.ndarray:
         pieces = []
-        for start in range(0, latent.shape[1], chunk):
-            piece = latent[:, start : start + chunk]
-            if piece.shape[1] < chunk:  # keep one compiled shape
-                pad = chunk - piece.shape[1]
+        previous_stop = 0
+        for start in chunk_starts(latent.shape[1], window_length, window_overlap):
+            stop = min(start + window_length, latent.shape[1])
+            piece = latent[:, start:stop]
+            pad = window_length - piece.shape[1]
+            if pad:
                 piece = jnp.pad(piece, ((0, 0), (0, pad), (0, 0), (0, 0)))
-                pieces.append(np.asarray(jax.device_get(decode_chunk(tokenizer_variables, piece)))[:, :-pad])
-            else:
-                pieces.append(np.asarray(jax.device_get(decode_chunk(tokenizer_variables, piece))))
+            decoded = np.asarray(jax.device_get(decode_chunk(tokenizer_variables, piece)))[:, : stop - start]
+            warmup = max(previous_stop - start, 0)
+            pieces.append(decoded[:, warmup:])
+            previous_stop = stop
         return np.concatenate(pieces, axis=1)
 
     def to_u8(x: np.ndarray) -> np.ndarray:
@@ -257,7 +260,7 @@ def main() -> None:
         sample = sample_for(index)
         total_frames = sample["total"]
         started = time.monotonic()
-        generated_latent = rollout(
+        generated_latent, diagnostics = rollout(
             params,
             sample["video"],
             sample["actions"],
@@ -325,6 +328,8 @@ def main() -> None:
                 "reference": reference_kind,
                 "stream": f"{sample['key'][0]}/ep{sample['key'][1]}/{sample['key'][2]}",
                 "path": path.name,
+                "x0_norm_by_step": np.asarray(diagnostics["x0_norm"]).mean(axis=0).tolist(),
+                "update_mag_by_step": np.asarray(diagnostics["update_mag"]).mean(axis=0).tolist(),
             }
         )
         logger.info(
@@ -354,6 +359,14 @@ def main() -> None:
                 "raw_reference_videos": sum(1 for s in summary if s["reference"] == "raw"),
                 "mean_psnr": mean_psnr,
                 "mean_ssim": mean_ssim,
+                "mean_x0_norm_by_step": np.mean(
+                    [video["x0_norm_by_step"] for video in summary],
+                    axis=0,
+                ).tolist(),
+                "mean_update_mag_by_step": np.mean(
+                    [video["update_mag_by_step"] for video in summary],
+                    axis=0,
+                ).tolist(),
                 "videos": summary,
             },
             indent=2,

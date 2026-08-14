@@ -65,6 +65,7 @@ def train_step(
     base_sample_key: jax.Array,
     global_step: jax.Array,
     bootstrap_rows: int,
+    image_fraction: float,
     ema_decay: float,
 ):
     sample_key = fold_in_many(base_sample_key, global_step)
@@ -74,6 +75,7 @@ def train_step(
             params,
             batch,
             bootstrap_rows=bootstrap_rows,
+            image_fraction=image_fraction,
             bootstrap_target_variables=state.ema_params,
             method=DynamicsModel.loss,
             rngs={"sample": sample_key},
@@ -96,6 +98,7 @@ def eval_step(
         state.params,
         batch,
         bootstrap_rows=0,
+        image_fraction=0.0,
         bootstrap_target_variables=state.ema_params,
         method=DynamicsModel.loss,
         rngs={"sample": sample_key},
@@ -104,6 +107,7 @@ def eval_step(
         state.ema_params,
         batch,
         bootstrap_rows=0,
+        image_fraction=0.0,
         bootstrap_target_variables=state.ema_params,
         method=DynamicsModel.loss,
         rngs={"sample": sample_key},
@@ -128,7 +132,13 @@ def log_video_eval(
 ) -> None:
     context_frames = int(video_cfg.context_frames)
     horizon = int(video_cfg.horizon)
-    ground_truth_images, online_rollout_images, ema_rollout_images = jax.device_get(
+    (
+        ground_truth_images,
+        online_rollout_images,
+        ema_rollout_images,
+        online_diagnostics,
+        ema_diagnostics,
+    ) = jax.device_get(
         run_video_eval(
             online_params,
             ema_params,
@@ -145,6 +155,10 @@ def log_video_eval(
     rollout_images = {
         "online": np.clip(np.asarray(online_rollout_images), 0.0, 1.0),
         "ema": np.clip(np.asarray(ema_rollout_images), 0.0, 1.0),
+    }
+    rollout_diagnostics = {
+        "online": online_diagnostics,
+        "ema": ema_diagnostics,
     }
     rollout_metrics = {}
     for model_name, images in rollout_images.items():
@@ -220,6 +234,11 @@ def log_video_eval(
                     metric_log[f"eval/{model_name}_video_ssim_h{metric_horizon}"] = float(
                         np.mean(metrics["ssim"][:, metric_horizon - 1])
                     )
+            diagnostics = rollout_diagnostics[model_name]
+            for ode_step, value in enumerate(np.mean(diagnostics["x0_norm"], axis=0)):
+                metric_log[f"eval/{model_name}_x0_norm_step_{ode_step}"] = float(value)
+            for ode_step, value in enumerate(np.mean(diagnostics["update_mag"], axis=0)):
+                metric_log[f"eval/{model_name}_update_mag_step_{ode_step}"] = float(value)
         wb.log(
             {
                 "eval/video": wandb.Video(
@@ -381,6 +400,7 @@ def main(cfg: DictConfig):
     batch_size_per_device = batch_size_per_process // local_device_count
     bootstrap_start_step = int(cfg.loss.bootstrap_start_step)
     bootstrap_interval = int(cfg.loss.bootstrap_interval)
+    image_fraction = float(cfg.loss.image_fraction)
     logger.info(
         "Batch layout: global=%d per_process=%d per_device=%d",
         global_batch_size,
@@ -388,9 +408,10 @@ def main(cfg: DictConfig):
         batch_size_per_device,
     )
     logger.info(
-        "Loss schedule: full-batch bootstrap every %d steps after step %d",
+        "Loss schedule: full-batch bootstrap every %d steps after step %d; image-only rows %.1f%%",
         bootstrap_interval,
         bootstrap_start_step,
+        image_fraction * 100.0,
     )
 
     read_options = grain.ReadOptions(
@@ -483,7 +504,7 @@ def main(cfg: DictConfig):
             metrics_sharding,
         ),
         out_shardings=(state_shardings, metrics_sharding),
-        static_argnames=("bootstrap_rows", "ema_decay"),
+        static_argnames=("bootstrap_rows", "image_fraction", "ema_decay"),
         donate_argnums=(0,),
     )
     jit_eval_step = jax.jit(
@@ -600,23 +621,24 @@ def main(cfg: DictConfig):
                 dtype=jnp.float32,
             )
             rollout_videos = []
+            rollout_diagnostics = []
             for dynamics_params in (online_params, ema_params):
                 rollout_video = jnp.zeros_like(video)
                 rollout_video = rollout_video.at[:, :video_context_frames].set(video[:, :video_context_frames])
-                rollout_videos.append(
-                    model.apply(
-                        dynamics_params,
-                        rollout_video,
-                        actions,
-                        embodiment_ids,
-                        context_noise,
-                        sample_noise,
-                        video_context_frames,
-                        context_tau=requested_tau,
-                        sample_steps=int(video_cfg.sample_steps),
-                        method=DynamicsModel.generate_rollout,
-                    )
+                generated, diagnostics = model.apply(
+                    dynamics_params,
+                    rollout_video,
+                    actions,
+                    embodiment_ids,
+                    context_noise,
+                    sample_noise,
+                    video_context_frames,
+                    context_tau=requested_tau,
+                    sample_steps=int(video_cfg.sample_steps),
+                    method=DynamicsModel.generate_rollout,
                 )
+                rollout_videos.append(generated)
+                rollout_diagnostics.append(diagnostics)
 
             raw_video = denormalize_latents(video, model.latent_mean, model.latent_std)
             ground_truth_patches = tokenizer.apply(tokenizer_variables, raw_video, method=type(tokenizer).decode)
@@ -626,7 +648,13 @@ def main(cfg: DictConfig):
                 raw_rollout = denormalize_latents(rollout_video, model.latent_mean, model.latent_std)
                 rollout_patches = tokenizer.apply(tokenizer_variables, raw_rollout, method=type(tokenizer).decode)
                 decoded_rollouts.append(preprocessor.patches_to_images(rollout_patches).astype(jnp.float32))
-            return ground_truth_images, decoded_rollouts[0], decoded_rollouts[1]
+            return (
+                ground_truth_images,
+                decoded_rollouts[0],
+                decoded_rollouts[1],
+                rollout_diagnostics[0],
+                rollout_diagnostics[1],
+            )
 
         logger.info(
             "Video eval ready; samples=%d context=%d horizon=%d sample_steps=%d tau=%.4f",
@@ -731,13 +759,18 @@ def main(cfg: DictConfig):
             batch = local_batch_to_global(batch, batch_sharding)
         bootstrap_rows = (
             global_batch_size
-            if current_step >= bootstrap_start_step
-            and (current_step - bootstrap_start_step) % bootstrap_interval == 0
+            if current_step >= bootstrap_start_step and (current_step - bootstrap_start_step) % bootstrap_interval == 0
             else 0
         )
         with timer("compute"):
             state, metrics = jit_train_step(
-                state, batch, train_key, jnp.asarray(current_step, dtype=jnp.int32), bootstrap_rows, cfg.ema_decay
+                state,
+                batch,
+                train_key,
+                jnp.asarray(current_step, dtype=jnp.int32),
+                bootstrap_rows,
+                image_fraction,
+                cfg.ema_decay,
             )
         if bootstrap_rows:
             latest_bootstrap_metrics = metrics
@@ -813,6 +846,7 @@ def main(cfg: DictConfig):
                 if latest_bootstrap_metrics is not None:
                     bootstrap_metrics = jax.device_get(latest_bootstrap_metrics)
                     train_metrics["bootstrap_loss"] = bootstrap_metrics["bootstrap_loss"]
+                    train_metrics["bootstrap_target_norm"] = bootstrap_metrics["bootstrap_target_norm"]
             latest_flow_metrics = None
             latest_bootstrap_metrics = None
             timing_stats = timer.log(logger, step, step - timing_start_step, eval=t_eval)

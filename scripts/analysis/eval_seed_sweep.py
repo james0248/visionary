@@ -128,7 +128,7 @@ def main() -> None:
         mask = (jnp.arange(video.shape[1]) < t)[None, :, None, None]
         primed = jnp.where(mask, video, 0.0)
         ck, sk = jax.random.split(jax.random.key(seed))
-        out = model.apply(
+        out, _ = model.apply(
             params,
             primed,
             actions,

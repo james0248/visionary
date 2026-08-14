@@ -164,7 +164,7 @@ def main() -> None:
         embodiment_ids = jnp.full(actions.shape[:2], args.embodiment_id, dtype=jnp.int32)
         primed = jnp.zeros_like(video).at[:, : args.context_frames].set(video[:, : args.context_frames])
         ck, sk = jax.random.split(jax.random.key(seed))
-        generated = model.apply(
+        generated, _ = model.apply(
             params,
             primed,
             actions,
@@ -191,7 +191,7 @@ def main() -> None:
         mask = (jnp.arange(video.shape[1]) < t)[None, :, None, None]
         primed = jnp.where(mask, video, 0.0)
         ck, sk = jax.random.split(jax.random.key(seed))
-        out = model.apply(
+        out, _ = model.apply(
             params,
             primed,
             actions,

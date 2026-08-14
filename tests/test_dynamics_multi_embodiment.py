@@ -115,11 +115,70 @@ class DynamicsModelTest(unittest.TestCase):
             batch,
             bootstrap_target_variables=self.variables,
             bootstrap_rows=1,
+            image_fraction=0.5,
             method=DynamicsModel.loss,
             rngs={"sample": jax.random.key(2)},
         )
         self.assertTrue(bool(jnp.isfinite(loss)))
-        self.assertEqual(set(metrics), {"loss", "flow_loss", "flow_mse", "bootstrap_loss"})
+        self.assertEqual(
+            set(metrics),
+            {
+                "loss",
+                "flow_loss",
+                "flow_mse",
+                "flow_mse_low",
+                "flow_mse_mid",
+                "flow_mse_high",
+                "bootstrap_loss",
+                "bootstrap_target_norm",
+            },
+        )
+
+    def test_image_rows_train_without_temporal_transitions(self):
+        batch = {
+            "video": jnp.ones_like(self.z),
+            "actions": self.actions,
+            "embodiment_ids": self.embodiment_ids,
+            "segment_ids": jnp.asarray([[0, 1]], dtype=jnp.int32),
+        }
+        no_image_loss, _ = self.model.apply(
+            self.variables,
+            batch,
+            bootstrap_target_variables=self.variables,
+            bootstrap_rows=0,
+            image_fraction=0.0,
+            method=DynamicsModel.loss,
+            rngs={"sample": jax.random.key(2)},
+        )
+        image_loss, _ = self.model.apply(
+            self.variables,
+            batch,
+            bootstrap_target_variables=self.variables,
+            bootstrap_rows=0,
+            image_fraction=1.0,
+            method=DynamicsModel.loss,
+            rngs={"sample": jax.random.key(2)},
+        )
+        self.assertEqual(float(no_image_loss), 0.0)
+        self.assertGreater(float(image_loss), 0.0)
+
+    def test_generation_returns_per_step_diagnostics(self):
+        frame, diagnostics = self.model.apply(
+            self.variables,
+            self.z,
+            self.actions,
+            self.embodiment_ids,
+            jnp.zeros_like(self.z),
+            jnp.zeros((1, 2, 2), dtype=jnp.float32),
+            jnp.asarray(1, dtype=jnp.int32),
+            context_tau=0.9,
+            sample_steps=2,
+            clean_until=1,
+            method=DynamicsModel.generate_next,
+        )
+        self.assertEqual(frame.shape, (1, 2, 2))
+        self.assertEqual(diagnostics["x0_norm"].shape, (2,))
+        self.assertEqual(diagnostics["update_mag"].shape, (2,))
 
     def test_rejects_context_tau_outside_unit_interval(self):
         with self.assertRaisesRegex(ValueError, "context_tau must be in"):

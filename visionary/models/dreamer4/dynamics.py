@@ -231,7 +231,7 @@ class DynamicsModel(nn.Module):
         context_tau: float,
         sample_steps: int,
         clean_until: jnp.ndarray | int,
-    ) -> jnp.ndarray:
+    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         """Generate one latent frame at each row's target index."""
 
         batch_size, seq_len, _, latent_dim = video_prefix.shape
@@ -239,16 +239,19 @@ class DynamicsModel(nn.Module):
         clean_until = jnp.asarray(clean_until, dtype=jnp.int32)
 
         k_max = 1 << (self.max_step_size - 1)
-        context_step_level = self.max_step_size - 1
+        finest_step_level = self.max_step_size - 1
         if not 0.0 <= context_tau <= 1.0:
             raise ValueError(f"context_tau must be in [0, 1], got {context_tau}")
-        context_signal_index = round(context_tau * k_max)
-        context_tau = jnp.float32(context_signal_index / k_max)
 
         sample_step_level = int(round(math.log2(sample_steps)))
         sample_step_count = 1 << sample_step_level
         sample_step_size = jnp.float32(1.0 / sample_step_count)
         sample_signal_stride = k_max // sample_step_count
+        context_step_level = sample_step_level if sample_step_level == finest_step_level else finest_step_level - 1
+        context_step_count = 1 << context_step_level
+        context_signal_level = int(context_tau * context_step_count)
+        context_signal_index = context_signal_level * (k_max // context_step_count)
+        context_tau = jnp.float32(context_signal_level / context_step_count)
 
         z_prefix = rearrange(video_prefix, "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)
         z_context_noise = rearrange(context_noise, "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)
@@ -272,15 +275,22 @@ class DynamicsModel(nn.Module):
             jnp.where(clean_mask_z, z_prefix, noised_prefix),
             jnp.zeros((batch_size, seq_len, num_obs_tokens, token_dim), dtype=jnp.float32),
         )
-        base_step_levels = jnp.where(past_mask_t, context_step_level, 0).astype(jnp.int32)
+        base_step_levels = jnp.where(
+            past_mask_t,
+            jnp.where(clean_mask_t, finest_step_level, context_step_level),
+            0,
+        ).astype(jnp.int32)
         base_signal_indices = jnp.where(
             past_mask_t,
             jnp.where(clean_mask_t, k_max, context_signal_index),
             0,
         ).astype(jnp.int32)
 
-        current_z = z_sample_noise.astype(jnp.float32)
-        for sample_signal_level in range(sample_step_count):
+        def sample_step(
+            sample_signal_level: int,
+            carry: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+        ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+            current_z, x0_norm, update_mag = carry
             step_levels = base_step_levels.at[:, target_index].set(sample_step_level)
             signal_indices = base_signal_indices.at[:, target_index].set(sample_signal_level * sample_signal_stride)
             z_input = base_z.at[:, target_index].set(current_z)
@@ -290,9 +300,23 @@ class DynamicsModel(nn.Module):
 
             tau = jnp.float32(sample_signal_level / sample_step_count)
             velocity = (predicted - current_z) / jnp.maximum(1.0 - tau, 1e-6)
-            current_z = current_z + velocity * sample_step_size
+            update = velocity * sample_step_size
+            x0_norm = x0_norm.at[sample_signal_level].set(jnp.mean(jnp.abs(predicted)))
+            update_mag = update_mag.at[sample_signal_level].set(jnp.mean(jnp.abs(update)))
+            return current_z + update, x0_norm, update_mag
 
-        return rearrange(current_z[:, None], "b t n (k d) -> b t (n k) d", d=latent_dim)[:, 0]
+        current_z, x0_norm, update_mag = jax.lax.fori_loop(
+            0,
+            sample_step_count,
+            sample_step,
+            (
+                z_sample_noise.astype(jnp.float32),
+                jnp.zeros(sample_step_count, dtype=jnp.float32),
+                jnp.zeros(sample_step_count, dtype=jnp.float32),
+            ),
+        )
+        frame = rearrange(current_z[:, None], "b t n (k d) -> b t (n k) d", d=latent_dim)[:, 0]
+        return frame, {"x0_norm": x0_norm, "update_mag": update_mag}
 
     def generate_rollout(
         self,
@@ -304,15 +328,20 @@ class DynamicsModel(nn.Module):
         start_index: jnp.ndarray,
         context_tau: float,
         sample_steps: int,
-    ) -> jnp.ndarray:
+    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         """Generate consecutive frames into a preallocated video tensor."""
 
         start_index = jnp.asarray(start_index, dtype=jnp.int32)
         rollout_steps = sample_noise.shape[1]
+        sample_step_count = 1 << int(round(math.log2(sample_steps)))
 
-        def body_fn(offset: int, current_video: jnp.ndarray) -> jnp.ndarray:
+        def body_fn(
+            offset: int,
+            carry: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+        ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+            current_video, x0_norm, update_mag = carry
             target_index = start_index + offset
-            next_frame = self.generate_next(
+            next_frame, diagnostics = self.generate_next(
                 current_video,
                 actions,
                 embodiment_ids,
@@ -323,15 +352,29 @@ class DynamicsModel(nn.Module):
                 sample_steps=sample_steps,
                 clean_until=start_index,
             )
-            return current_video.at[:, target_index].set(next_frame)
+            current_video = current_video.at[:, target_index].set(next_frame)
+            x0_norm = x0_norm.at[offset].set(diagnostics["x0_norm"])
+            update_mag = update_mag.at[offset].set(diagnostics["update_mag"])
+            return current_video, x0_norm, update_mag
 
-        return jax.lax.fori_loop(0, rollout_steps, body_fn, video_prefix)
+        generated, x0_norm, update_mag = jax.lax.fori_loop(
+            0,
+            rollout_steps,
+            body_fn,
+            (
+                video_prefix,
+                jnp.zeros((rollout_steps, sample_step_count), dtype=jnp.float32),
+                jnp.zeros((rollout_steps, sample_step_count), dtype=jnp.float32),
+            ),
+        )
+        return generated, {"x0_norm": x0_norm, "update_mag": update_mag}
 
     def loss(
         self,
         batch: DynamicsBatch,
         bootstrap_target_variables,
         bootstrap_rows: int,
+        image_fraction: float,
     ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         """Compute shortcut forcing loss. Empirical rows use flow loss. Final rows use targets from two EMA half-steps."""
 
@@ -346,6 +389,8 @@ class DynamicsModel(nn.Module):
         batch_size, seq_len, _, _ = z_target.shape
         if not 0 <= bootstrap_rows <= batch_size:
             raise ValueError(f"Expected 0 <= bootstrap_rows <= {batch_size}, got {bootstrap_rows}")
+        if not 0.0 <= image_fraction <= 1.0:
+            raise ValueError(f"Expected image_fraction in [0, 1], got {image_fraction}")
 
         transition_mask = jnp.ones((batch_size, seq_len), dtype=jnp.bool_)
         transition_mask = transition_mask.at[:, 0].set(False)
@@ -358,7 +403,16 @@ class DynamicsModel(nn.Module):
         bootstrap_row_mask = jnp.broadcast_to(bootstrap_row_mask, (batch_size, seq_len))
 
         sample_rng = self.make_rng("sample")
-        step_rng, signal_rng, noise_rng = jax.random.split(sample_rng, 3)
+        image_rng, step_rng, signal_rng, noise_rng = jax.random.split(sample_rng, 4)
+
+        image_rows = int(batch_size * image_fraction)
+        image_row_mask = jax.random.permutation(image_rng, batch_size) < image_rows
+        independent_segment_ids = jnp.broadcast_to(
+            jnp.arange(seq_len, dtype=jnp.int32)[None, :],
+            segment_ids.shape,
+        )
+        training_segment_ids = jnp.where(image_row_mask[:, None], independent_segment_ids, segment_ids)
+        transition_mask = transition_mask | image_row_mask[:, None]
 
         finest_step_level = self.max_step_size - 1
         sampled_bootstrap_levels = jax.random.randint(
@@ -390,7 +444,7 @@ class DynamicsModel(nn.Module):
 
         z_noise = jax.random.normal(noise_rng, z_target.shape, dtype=jnp.float32)
         z_noised = tau * z_target + (1.0 - tau) * z_noise
-        z_pred_1 = self(z_noised, actions, embodiment_ids, step_levels, signal_indices, segment_ids)
+        z_pred_1 = self(z_noised, actions, embodiment_ids, step_levels, signal_indices, training_segment_ids)
 
         flow_loss = (z_pred_1 - z_target) ** 2
         loss_weight = 1.0 / jnp.maximum(1.0 - tau, 1e-3) ** 2
@@ -405,7 +459,7 @@ class DynamicsModel(nn.Module):
             step_sizes_bootstrap = step_sizes[bootstrap_slice]
             step_levels_bootstrap = step_levels[bootstrap_slice]
             signal_indices_bootstrap = signal_indices[bootstrap_slice]
-            segment_ids_bootstrap = segment_ids[bootstrap_slice]
+            segment_ids_bootstrap = training_segment_ids[bootstrap_slice]
 
             bootstrap_forward = nn.apply(
                 lambda model, z, action, embodiment, level, signal, segments: model(
@@ -445,7 +499,9 @@ class DynamicsModel(nn.Module):
             second_step_divisor = jnp.maximum(1.0 - (tau_bootstrap + half_step_sizes), 1e-5)
             b2 = (jax.lax.stop_gradient(z_pred_3) - half_noised) / second_step_divisor
 
-            bootstrap_target = jax.lax.stop_gradient(jnp.clip((b1 + b2) / 2.0, -4.0, 4.0))
+            bootstrap_target_unclipped = jax.lax.stop_gradient((b1 + b2) / 2.0)
+            bootstrap_target_norm = jnp.mean(jnp.abs(bootstrap_target_unclipped))
+            bootstrap_target = jnp.clip(bootstrap_target_unclipped, -4.0, 4.0)
             bootstrap_error = (z_pred_1[bootstrap_slice] - z_noised_bootstrap) - (
                 1.0 - tau_bootstrap
             ) * bootstrap_target
@@ -471,10 +527,29 @@ class DynamicsModel(nn.Module):
             jnp.mean(row_loss[bootstrap_slice]) if bootstrap_rows > 0 else jnp.asarray(0.0, dtype=jnp.float32)
         )
 
+        flow_token_mse = jnp.mean(flow_loss, axis=(-2, -1))
+        empirical_mask = jnp.arange(batch_size)[:, None] < bootstrap_start
+        flow_metric_mask = transition_mask & empirical_mask
+
+        def sigma_mse(sigma_mask: jnp.ndarray) -> jnp.ndarray:
+            metric_mask = flow_metric_mask & sigma_mask
+            return jnp.sum(flow_token_mse * metric_mask) / jnp.maximum(jnp.sum(metric_mask), 1.0)
+
+        tau_tokens = tau[..., 0, 0]
+        flow_mse_low = sigma_mse(tau_tokens < 0.25)
+        flow_mse_mid = sigma_mse((tau_tokens >= 0.25) & (tau_tokens < 0.75))
+        flow_mse_high = sigma_mse(tau_tokens >= 0.75)
+
         metrics = {
             "loss": total_loss,
             "flow_loss": flow_loss_metric,
             "flow_mse": flow_mse_metric,
+            "flow_mse_low": flow_mse_low,
+            "flow_mse_mid": flow_mse_mid,
+            "flow_mse_high": flow_mse_high,
             "bootstrap_loss": bootstrap_loss_metric,
+            "bootstrap_target_norm": (
+                bootstrap_target_norm if bootstrap_rows > 0 else jnp.asarray(0.0, dtype=jnp.float32)
+            ),
         }
         return total_loss, metrics
