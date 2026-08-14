@@ -374,8 +374,7 @@ def main(cfg: DictConfig):
         )
     batch_size_per_device = batch_size_per_process // local_device_count
     bootstrap_start_step = int(cfg.loss.bootstrap_start_step)
-    target_bootstrap_ratio = float(cfg.loss.bootstrap_ratio)
-    target_bootstrap_rows = int(round(target_bootstrap_ratio * global_batch_size))
+    bootstrap_interval = int(cfg.loss.bootstrap_interval)
     logger.info(
         "Batch layout: global=%d per_process=%d per_device=%d",
         global_batch_size,
@@ -383,9 +382,8 @@ def main(cfg: DictConfig):
         batch_size_per_device,
     )
     logger.info(
-        "Loss schedule: bootstrap_ratio=%.2f bootstrap_rows=%d bootstrap_start_step=%d",
-        target_bootstrap_ratio,
-        target_bootstrap_rows,
+        "Loss schedule: full-batch bootstrap every %d steps after step %d",
+        bootstrap_interval,
         bootstrap_start_step,
     )
 
@@ -708,6 +706,8 @@ def main(cfg: DictConfig):
 
     timing_start_step = step
     timer = PhaseTimer()
+    latest_flow_metrics = None
+    latest_bootstrap_metrics = None
     logger.info(
         "Asynchronous timing mode enabled for dynamics training; timing logs are averaged over each logging window."
     )
@@ -723,11 +723,20 @@ def main(cfg: DictConfig):
                 batch = latent_normalizer.map(batch)
         with timer("transfer"):
             batch = local_batch_to_global(batch, batch_sharding)
-        bootstrap_rows = target_bootstrap_rows if current_step >= bootstrap_start_step else 0
+        bootstrap_rows = (
+            global_batch_size
+            if current_step >= bootstrap_start_step
+            and (current_step - bootstrap_start_step) % bootstrap_interval == 0
+            else 0
+        )
         with timer("compute"):
             state, metrics = jit_train_step(
                 state, batch, train_key, jnp.asarray(current_step, dtype=jnp.int32), bootstrap_rows, cfg.ema_decay
             )
+        if bootstrap_rows:
+            latest_bootstrap_metrics = metrics
+        else:
+            latest_flow_metrics = metrics
         step = current_step + 1
 
         t_eval = 0.0
@@ -792,9 +801,14 @@ def main(cfg: DictConfig):
             save_checkpoint(step)
 
         if step % cfg.log_interval == 0:
-            # Syncing on metrics charges the device wait to compute
             with timer("compute"):
-                train_metrics = jax.device_get(metrics)
+                metrics_to_log = metrics if latest_flow_metrics is None else latest_flow_metrics
+                train_metrics = jax.device_get(metrics_to_log)
+                if latest_bootstrap_metrics is not None:
+                    bootstrap_metrics = jax.device_get(latest_bootstrap_metrics)
+                    train_metrics["bootstrap_loss"] = bootstrap_metrics["bootstrap_loss"]
+            latest_flow_metrics = None
+            latest_bootstrap_metrics = None
             timing_stats = timer.log(logger, step, step - timing_start_step, eval=t_eval)
             timing_start_step = step
             wb.log(

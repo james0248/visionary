@@ -119,7 +119,7 @@ class DynamicsModelTest(unittest.TestCase):
             rngs={"sample": jax.random.key(2)},
         )
         self.assertTrue(bool(jnp.isfinite(loss)))
-        self.assertEqual(set(metrics), {"loss", "flow_loss", "bootstrap_loss"})
+        self.assertEqual(set(metrics), {"loss", "flow_loss", "flow_mse", "bootstrap_loss"})
 
     def test_rejects_context_tau_outside_unit_interval(self):
         with self.assertRaisesRegex(ValueError, "context_tau must be in"):

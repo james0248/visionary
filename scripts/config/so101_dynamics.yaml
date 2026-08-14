@@ -12,12 +12,12 @@ optimizer:
   adam_b1: 0.9
   adam_b2: 0.99
 loss:
-  bootstrap_ratio: 0.25
-  bootstrap_start_step: 100000
+  bootstrap_interval: 4
+  bootstrap_start_step: 50000
 log_interval: 100
 eval_steps: 1000
-total_steps: 1500000
-exp_name: dynamics_v2
+total_steps: 100000
+exp_name: dynamics_v3_312m
 tokenizer_exp_name: tokenizer_v2
 
 dataset:
@@ -43,12 +43,11 @@ dataset:
 
 dynamics:
   _target_: visionary.models.dreamer4.dynamics.DynamicsModel
-  # 138M, near tokenizer parity
   num_layers: 12
-  num_heads: 12
-  num_kv_heads: 3
-  model_dim: 1024
-  mlp_hidden_dim: 3072
+  num_heads: 18
+  num_kv_heads: 6
+  model_dim: 1536
+  mlp_hidden_dim: 4608
   head_dim: 64
   num_registers: 2
   num_obs_tokens: 256
@@ -59,7 +58,7 @@ dynamics:
   max_step_size: 8
   # 9.6s at 5 fps
   context_length: 48
-  temporal_layer_period: 4
+  temporal_layer_period: 3
   base: 10000.0
   remat_policy: null
 
@@ -92,4 +91,4 @@ checkpoint:
 wandb:
   enabled: true
   project: visionary
-  group: so101_dynamics_v2
+  group: so101_dynamics_v3_312m
