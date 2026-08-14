@@ -265,11 +265,17 @@ def build_optimizer(cfg) -> optax.GradientTransformation:
     def muon_dimension_numbers(params):
         from optax.contrib import MuonDimensionNumbers
 
-        embedding_like = {"embedding", "base_token", "register_tokens"}
+        adam_parameters = {
+            "embedding",
+            "base_token",
+            "register_tokens",
+            "action_projection_kernel",
+            "action_projection_bias",
+        }
 
         def mapper(path, x):
             names = {str(getattr(key, "key", key)).lower() for key in path}
-            if names & embedding_like or any(name.endswith("_bias") for name in names):
+            if names & adam_parameters or any(name.endswith("_bias") for name in names):
                 return None
             return MuonDimensionNumbers() if x.ndim >= 2 else None
 
