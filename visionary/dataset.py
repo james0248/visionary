@@ -1,7 +1,7 @@
 import io
 import json
 from dataclasses import dataclass
-from typing import Iterator, NotRequired, TypedDict
+from typing import Iterator, TypedDict
 
 import cv2
 import grain.python as grain
@@ -22,10 +22,12 @@ class EncodedVideoDataset(TypedDict):
 class DynamicsBatch(TypedDict):
     video: np.ndarray
     actions: np.ndarray
-    segment_ids: NotRequired[np.ndarray]
+    segment_ids: np.ndarray
 
 
-class DynamicsDataset(DynamicsBatch):
+class DynamicsDataset(TypedDict):
+    video: np.ndarray
+    actions: np.ndarray
     prev_action: np.ndarray
 
 
@@ -121,7 +123,11 @@ class RandomDynamicsCrop(grain.RandomMapTransform):
         aligned_actions = actions[indices - 1]
         if start_idx == 0:
             aligned_actions[0] = prev_action
-        return DynamicsBatch(video=latents[indices], actions=aligned_actions)
+        return DynamicsBatch(
+            video=latents[indices],
+            actions=aligned_actions,
+            segment_ids=np.zeros(self.sequence_length, dtype=np.int32),
+        )
 
 
 class NormalizeDynamicsLatents(grain.MapTransform):
@@ -136,9 +142,8 @@ class NormalizeDynamicsLatents(grain.MapTransform):
         normalized = DynamicsBatch(
             video=(latents - self.mean) / self.std,
             actions=element["actions"],
+            segment_ids=element["segment_ids"],
         )
-        if "segment_ids" in element:
-            normalized["segment_ids"] = element["segment_ids"]
         return normalized
 
 

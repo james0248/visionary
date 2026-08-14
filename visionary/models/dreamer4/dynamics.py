@@ -13,18 +13,14 @@ from visionary.models.dreamer4.transformer import (
 )
 
 
-def normalize_latents(latents: jnp.ndarray, mean, std) -> jnp.ndarray:
+def normalize_latents(latents: jnp.ndarray, mean: jax.typing.ArrayLike, std: jax.typing.ArrayLike) -> jnp.ndarray:
     latents = jnp.asarray(latents, dtype=jnp.float32)
-    if mean is None or std is None:
-        return latents
     std = jnp.maximum(jnp.asarray(std, dtype=jnp.float32), 1e-8)
     return (latents - jnp.asarray(mean, dtype=jnp.float32)) / std
 
 
-def denormalize_latents(latents: jnp.ndarray, mean, std) -> jnp.ndarray:
+def denormalize_latents(latents: jnp.ndarray, mean: jax.typing.ArrayLike, std: jax.typing.ArrayLike) -> jnp.ndarray:
     latents = jnp.asarray(latents, dtype=jnp.float32)
-    if mean is None or std is None:
-        return latents
     std = jnp.maximum(jnp.asarray(std, dtype=jnp.float32), 1e-8)
     return latents * std + jnp.asarray(mean, dtype=jnp.float32)
 
@@ -38,18 +34,14 @@ class ActionEmbedding(nn.Module):
     @nn.compact
     def __call__(
         self,
-        actions: jnp.ndarray | None,
+        actions: jnp.ndarray,
         batch_time_shape: tuple[int, int],
     ) -> jnp.ndarray:
-        batch_size, seq_len = batch_time_shape
         base_token = self.param(
             "base_token",
             nn.initializers.normal(stddev=0.02),
             (self.model_dim,),
         ).astype(self.dtype)
-
-        if actions is None:
-            return jnp.broadcast_to(base_token, (batch_size, seq_len, self.model_dim))
 
         if self.action_mode == "continuous":
             actions = jnp.asarray(actions, dtype=self.dtype)
@@ -114,14 +106,14 @@ class DynamicsModel(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     context_length: int
+    latent_mean: tuple[float, ...]
+    latent_std: tuple[float, ...]
 
     action_mode: Literal["discrete", "continuous"] = "discrete"
     temporal_layer_period: int = 4
     base: float = 10000.0
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
-    latent_mean: tuple[float, ...] | None = None
-    latent_std: tuple[float, ...] | None = None
 
     def setup(self):
         self.action_embedding = ActionEmbedding(
@@ -156,10 +148,10 @@ class DynamicsModel(nn.Module):
     def __call__(
         self,
         z: jnp.ndarray,
-        actions: jnp.ndarray | None,
+        actions: jnp.ndarray,
         step_levels: jnp.ndarray,
         signal_levels: jnp.ndarray,
-        segment_ids: jnp.ndarray | None = None,
+        segment_ids: jnp.ndarray,
     ) -> jnp.ndarray:
         batch_size, seq_len, input_obs_tokens, token_dim = z.shape
 
@@ -202,10 +194,9 @@ class DynamicsModel(nn.Module):
             temporal_mask[None, :, :],
             (batch_size, seq_len, seq_len),
         )
-        if segment_ids is not None:
-            segment_ids = jnp.asarray(segment_ids, dtype=jnp.int32)
-            same_segment = segment_ids[:, :, None] == segment_ids[:, None, :]
-            temporal_mask = temporal_mask & same_segment
+        segment_ids = jnp.asarray(segment_ids, dtype=jnp.int32)
+        same_segment = segment_ids[:, :, None] == segment_ids[:, None, :]
+        temporal_mask = temporal_mask & same_segment
 
         hidden = self.transformer(
             x=tokens,
@@ -228,13 +219,13 @@ class DynamicsModel(nn.Module):
     def generate_next(
         self,
         video_prefix: jnp.ndarray,
-        actions: jnp.ndarray | None,
+        actions: jnp.ndarray,
         context_noise: jnp.ndarray,
         sample_noise: jnp.ndarray,
         target_index: jnp.ndarray,
         context_tau: float,
         sample_steps: int,
-        clean_until: jnp.ndarray | int = 0,
+        clean_until: jnp.ndarray | int,
     ) -> jnp.ndarray:
         """Generate one latent frame at each row's target index."""
 
@@ -268,6 +259,7 @@ class DynamicsModel(nn.Module):
             n=self.num_obs_tokens,
         )[:, 0]
         _, _, num_obs_tokens, token_dim = z_prefix.shape
+        segment_ids = jnp.zeros((batch_size, seq_len), dtype=jnp.int32)
 
         positions = jnp.arange(seq_len, dtype=jnp.int32)
         past_mask = positions < target_index
@@ -297,7 +289,9 @@ class DynamicsModel(nn.Module):
             step_levels = base_step_levels.at[:, target_index].set(sample_step_level)
             signal_indices = base_signal_indices.at[:, target_index].set(sample_signal_level * sample_signal_stride)
             z_input = base_z.at[:, target_index].set(current_z)
-            predicted = self(z_input, actions, step_levels, signal_indices)[:, target_index].astype(jnp.float32)
+            predicted = self(z_input, actions, step_levels, signal_indices, segment_ids)[:, target_index].astype(
+                jnp.float32
+            )
 
             tau = jnp.float32(sample_signal_level / sample_step_count)
             velocity = (predicted - current_z) / jnp.maximum(1.0 - tau, 1e-6)
@@ -308,7 +302,7 @@ class DynamicsModel(nn.Module):
     def generate_rollout(
         self,
         video_prefix: jnp.ndarray,
-        actions: jnp.ndarray | None,
+        actions: jnp.ndarray,
         context_noise: jnp.ndarray,
         sample_noise: jnp.ndarray,
         start_index: jnp.ndarray,
@@ -340,7 +334,7 @@ class DynamicsModel(nn.Module):
         self,
         batch: DynamicsBatch,
         bootstrap_target_variables,
-        bootstrap_rows: int = 0,
+        bootstrap_rows: int,
     ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         """
         Compute shortcut forcing loss. Empirical rows use flow loss. Final rows use targets from two EMA half-steps.
@@ -353,9 +347,7 @@ class DynamicsModel(nn.Module):
         )
         action_dtype = jnp.float32 if self.action_mode == "continuous" else jnp.int32
         actions = jnp.asarray(batch["actions"], dtype=action_dtype)
-        segment_ids = batch.get("segment_ids")
-        if segment_ids is not None:
-            segment_ids = jnp.asarray(segment_ids, dtype=jnp.int32)
+        segment_ids = jnp.asarray(batch["segment_ids"], dtype=jnp.int32)
 
         batch_size, seq_len, _, _ = z_target.shape
         if not 0 <= bootstrap_rows <= batch_size:
@@ -363,9 +355,8 @@ class DynamicsModel(nn.Module):
 
         transition_mask = jnp.ones((batch_size, seq_len), dtype=jnp.bool_)
         transition_mask = transition_mask.at[:, 0].set(False)
-        if segment_ids is not None:
-            same_segment = segment_ids[:, 1:] == segment_ids[:, :-1]
-            transition_mask = transition_mask.at[:, 1:].set(same_segment)
+        same_segment = segment_ids[:, 1:] == segment_ids[:, :-1]
+        transition_mask = transition_mask.at[:, 1:].set(same_segment)
 
         bootstrap_start = batch_size - bootstrap_rows
         bootstrap_slice = slice(bootstrap_start, batch_size)
@@ -423,7 +414,7 @@ class DynamicsModel(nn.Module):
             step_sizes_bootstrap = step_sizes[bootstrap_slice]
             step_levels_bootstrap = step_levels[bootstrap_slice]
             signal_indices_bootstrap = signal_indices[bootstrap_slice]
-            segment_ids_bootstrap = segment_ids[bootstrap_slice] if segment_ids is not None else None
+            segment_ids_bootstrap = segment_ids[bootstrap_slice]
 
             bootstrap_forward = nn.apply(
                 lambda model, z, action, level, signal, segments: model(

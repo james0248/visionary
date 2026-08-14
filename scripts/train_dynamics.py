@@ -444,6 +444,7 @@ def main(cfg: DictConfig):
             batch["actions"],
             step_levels,
             signal_indices,
+            batch["segment_ids"],
         )
         return DynamicsTrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
 
@@ -527,6 +528,7 @@ def main(cfg: DictConfig):
                     DynamicsBatch(
                         video=record["video"][start:stop],
                         actions=previous_actions[start:stop],
+                        segment_ids=np.zeros(total_video_frames, dtype=np.int32),
                     )
                 )
             )
@@ -540,6 +542,7 @@ def main(cfg: DictConfig):
         rollout_eval_batch = DynamicsBatch(
             video=np.stack([sample["video"] for sample in rollout_samples]),
             actions=np.stack([sample["actions"] for sample in rollout_samples]),
+            segment_ids=np.stack([sample["segment_ids"] for sample in rollout_samples]),
         )
 
         @jax.jit

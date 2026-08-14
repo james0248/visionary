@@ -108,7 +108,7 @@ class ShardedTokenizerEncoder:
     def __init__(
         self,
         checkpoint_dir: str,
-        step: int | None,
+        step: int,
         window_length: int,
         window_overlap: int,
         batch_size: int,
@@ -466,9 +466,9 @@ def main() -> None:
         raise ValueError("Expected 0 <= encode_window_overlap < encode_window_length")
 
     logger.info(
-        "Initializing tokenizer from checkpoint %s (step=%s) on %d device(s)",
+        "Initializing tokenizer from checkpoint %s (step=%d) on %d device(s)",
         args.checkpoint_dir,
-        args.step if args.step is not None else "latest",
+        args.step,
         jax.local_device_count(),
     )
     encoder = ShardedTokenizerEncoder(

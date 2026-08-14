@@ -79,10 +79,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--action_source",
-        choices=("true", "none", "shuffled", "gripper_open"),
+        choices=("true", "zero", "shuffled", "gripper_open"),
         default="true",
-        help="Probe how much the rollout depends on the actions. 'none' takes the "
-        "model's unconditional path, 'shuffled' feeds another episode's actions. "
+        help="Probe how much the rollout depends on the actions. 'zero' uses zero actions, "
+        "and 'shuffled' feeds another episode's actions. "
         "Scores that barely move mean the conditioning is being ignored.",
     )
     parser.add_argument("--sample_steps", type=int, default=4)
@@ -168,6 +168,8 @@ def main() -> None:
             # hold the gripper at its starting command; every other joint
             # follows the truth, so the grasp should never happen
             aligned[:, -1] = aligned[0, -1]
+        elif args.action_source == "zero":
+            aligned = np.zeros_like(aligned)
         return {
             "video": np.asarray(video[indices], dtype=np.float32)[None],
             "actions": np.asarray(aligned, dtype=np.float32)[None],
@@ -190,7 +192,7 @@ def main() -> None:
     @functools.partial(jax.jit, static_argnames=("generated_frames",))
     def rollout(params, video, actions, seed, generated_frames):
         video = normalize_latents(video, model.latent_mean, model.latent_std)
-        actions = None if args.action_source == "none" else jnp.asarray(actions, dtype=jnp.float32)
+        actions = jnp.asarray(actions, dtype=jnp.float32)
         primed = jnp.zeros_like(video).at[:, : args.context_frames].set(video[:, : args.context_frames])
         context_key, sample_key = jax.random.split(jax.random.key(seed))
         context_noise = jax.random.normal(context_key, video.shape, dtype=jnp.float32)

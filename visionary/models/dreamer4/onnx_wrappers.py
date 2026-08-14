@@ -1327,7 +1327,7 @@ class _CachedDynamicsModel(nn.Module):
     def _tokens(
         self,
         z: jnp.ndarray,
-        actions: jnp.ndarray | None,
+        actions: jnp.ndarray,
         step_levels: jnp.ndarray,
         signal_levels: jnp.ndarray,
     ) -> tuple[jnp.ndarray, int, int]:
@@ -2152,6 +2152,7 @@ def onnx_apply_dynamics_uncached(
     dtype: Any | None = jnp.float32,
 ) -> jnp.ndarray:
     model = create_dynamics(cfg, dtype=dtype)
+    segment_ids = jnp.zeros(z.shape[:2], dtype=jnp.int32)
     with export_overrides():
         return model.apply(
             variables,
@@ -2159,6 +2160,7 @@ def onnx_apply_dynamics_uncached(
             actions,
             step_levels,
             signal_levels,
+            segment_ids,
             method=DynamicsModel.__call__,
         )
 

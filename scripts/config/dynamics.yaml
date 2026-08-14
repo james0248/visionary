@@ -37,6 +37,7 @@ video_eval:
 dataset:
   train_dir: data/tokenized/train/
   eval_dir: data/tokenized/eval/
+  latent_stats: data/tokenized/latent_stats.json
   batch_size: 64
   pack_length: 64
   worker_count: 4
