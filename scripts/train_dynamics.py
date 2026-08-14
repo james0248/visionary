@@ -13,7 +13,8 @@ import optax
 import wandb
 from hydra.utils import instantiate, to_absolute_path
 from jax.experimental import multihost_utils
-from jax.sharding import NamedSharding, PartitionSpec as P
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 from omegaconf import DictConfig, OmegaConf
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
@@ -498,12 +499,10 @@ def main(cfg: DictConfig):
         if "://" not in str(tokenizer_checkpoint_dir):
             tokenizer_checkpoint_dir = to_absolute_path(str(tokenizer_checkpoint_dir))
         tokenizer_cfg, tokenizer_variables = restore_model_export_single_device(
-            tokenizer_checkpoint_dir,
-            step=video_cfg.tokenizer.checkpoint_step,
+            tokenizer_checkpoint_dir, step=video_cfg.tokenizer.checkpoint_step
         )
         preprocessor_cfg = restore_preprocessor_export(
-            tokenizer_checkpoint_dir,
-            step=video_cfg.tokenizer.checkpoint_step,
+            tokenizer_checkpoint_dir, step=video_cfg.tokenizer.checkpoint_step
         )
         tokenizer = instantiate(tokenizer_cfg)
         preprocessor = TokenizerPreprocessor.from_config(preprocessor_cfg)

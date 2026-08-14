@@ -28,15 +28,11 @@ def denormalize_latents(latents: jnp.ndarray, mean: jax.typing.ArrayLike, std: j
 class ActionEmbedding(nn.Module):
     model_dim: int
     num_actions: int
-    action_mode: Literal["discrete", "continuous"] = "discrete"
+    action_mode: Literal["discrete", "continuous"]
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
-    def __call__(
-        self,
-        actions: jnp.ndarray,
-        batch_time_shape: tuple[int, int],
-    ) -> jnp.ndarray:
+    def __call__(self, actions: jnp.ndarray, batch_time_shape: tuple[int, int]) -> jnp.ndarray:
         base_token = self.param(
             "base_token",
             nn.initializers.normal(stddev=0.02),
@@ -71,19 +67,17 @@ class ShortcutEmbedding(nn.Module):
 
     @nn.compact
     def __call__(self, step_levels: jnp.ndarray, signal_levels: jnp.ndarray) -> jnp.ndarray:
-        step_dim = self.model_dim // 2
-        signal_dim = self.model_dim - step_dim
-
+        half_dim = self.model_dim // 2
         step_tokens = nn.Embed(
             num_embeddings=self.max_step_size,
-            features=step_dim,
+            features=half_dim,
             embedding_init=nn.initializers.normal(stddev=0.02),
             dtype=self.dtype,
             name="step_embedding",
         )(jnp.asarray(step_levels, dtype=jnp.int32))
         signal_tokens = nn.Embed(
             num_embeddings=(1 << (self.max_step_size - 1)) + 1,
-            features=signal_dim,
+            features=half_dim,
             embedding_init=nn.initializers.normal(stddev=0.02),
             dtype=self.dtype,
             name="signal_embedding",
@@ -109,7 +103,7 @@ class DynamicsModel(nn.Module):
     latent_mean: tuple[float, ...]
     latent_std: tuple[float, ...]
 
-    action_mode: Literal["discrete", "continuous"] = "discrete"
+    action_mode: Literal["discrete", "continuous"]
     temporal_layer_period: int = 4
     base: float = 10000.0
     remat_policy: str | None = None
@@ -164,36 +158,26 @@ class DynamicsModel(nn.Module):
         observation_tokens = nn.Dense(
             self.model_dim,
             dtype=self.dtype,
-            name="Dense_0",
+            name="observation_projection",
         )(z.astype(self.dtype))
 
-        observation_offset = 2 + self.num_registers
+        observation_offset = 1 + 1 + self.num_registers  # action, shortcut, register
         num_tokens = observation_offset + input_obs_tokens
-        tokens = jnp.concatenate(
-            [action_tokens, shortcut_tokens, register_tokens, observation_tokens],
-            axis=2,
-        )
+        tokens = jnp.concatenate([action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2)
 
         spatial_rope = create_temporal_rope(self.base, self.head_dim, num_tokens)
         temporal_rope = create_temporal_rope(self.base, self.head_dim, seq_len)
 
         # Actions cannot see latent tokens.
-        token_levels = jnp.concatenate(
-            [
-                jnp.zeros((1,), dtype=jnp.int32),
-                jnp.ones((num_tokens - 1,), dtype=jnp.int32),
-            ]
-        )
+        token_levels = jnp.concatenate([jnp.zeros(1), jnp.ones(num_tokens - 1)], dtype=jnp.int32)
         spatial_mask = token_levels[:, None] >= token_levels[None, :]
 
-        query_positions = jnp.arange(seq_len)[:, None]
-        key_positions = jnp.arange(seq_len)[None, :]
-        temporal_mask = key_positions <= query_positions
-        temporal_mask = temporal_mask & (key_positions >= query_positions - (self.context_length - 1))
-        temporal_mask = jnp.broadcast_to(
-            temporal_mask[None, :, :],
-            (batch_size, seq_len, seq_len),
-        )
+        # Context length windowed mask
+        temporal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+        temporal_mask = jnp.triu(temporal_mask, k=1 - self.context_length)
+        temporal_mask = jnp.broadcast_to(temporal_mask[None, :, :], (batch_size, seq_len, seq_len))
+
+        # Block attention
         segment_ids = jnp.asarray(segment_ids, dtype=jnp.int32)
         same_segment = segment_ids[:, :, None] == segment_ids[:, None, :]
         temporal_mask = temporal_mask & same_segment
@@ -213,7 +197,7 @@ class DynamicsModel(nn.Module):
             dtype=self.dtype,
             kernel_init=nn.initializers.zeros,
             bias_init=nn.initializers.zeros,
-            name="Dense_1",
+            name="prediction_projection",
         )(observation_hidden)
 
     def generate_next(
@@ -235,7 +219,7 @@ class DynamicsModel(nn.Module):
 
         k_max = 1 << (self.max_step_size - 1)
         context_step_level = self.max_step_size - 1
-        context_signal_index = min(max(int(round(context_tau * k_max)), 0), k_max)
+        context_signal_index = round(context_tau * k_max)
         context_tau = jnp.float32(context_signal_index / k_max)
 
         sample_step_level = int(round(math.log2(sample_steps)))
@@ -243,21 +227,9 @@ class DynamicsModel(nn.Module):
         sample_step_size = jnp.float32(1.0 / sample_step_count)
         sample_signal_stride = k_max // sample_step_count
 
-        z_prefix = rearrange(
-            video_prefix,
-            "b t (n k) d -> b t n (k d)",
-            n=self.num_obs_tokens,
-        )
-        z_context_noise = rearrange(
-            context_noise,
-            "b t (n k) d -> b t n (k d)",
-            n=self.num_obs_tokens,
-        )
-        z_sample_noise = rearrange(
-            sample_noise[:, None],
-            "b t (n k) d -> b t n (k d)",
-            n=self.num_obs_tokens,
-        )[:, 0]
+        z_prefix = rearrange(video_prefix, "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)
+        z_context_noise = rearrange(context_noise, "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)
+        z_sample_noise = rearrange(sample_noise[:, None], "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)[:, 0]
         _, _, num_obs_tokens, token_dim = z_prefix.shape
         segment_ids = jnp.zeros((batch_size, seq_len), dtype=jnp.int32)
 
@@ -336,14 +308,10 @@ class DynamicsModel(nn.Module):
         bootstrap_target_variables,
         bootstrap_rows: int,
     ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
-        """
-        Compute shortcut forcing loss. Empirical rows use flow loss. Final rows use targets from two EMA half-steps.
-        """
+        """Compute shortcut forcing loss. Empirical rows use flow loss. Final rows use targets from two EMA half-steps."""
 
         z_target = rearrange(
-            jnp.asarray(batch["video"], dtype=jnp.float32),
-            "b t (n k) d -> b t n (k d)",
-            n=self.num_obs_tokens,
+            jnp.asarray(batch["video"], dtype=jnp.float32), "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens
         )
         action_dtype = jnp.float32 if self.action_mode == "continuous" else jnp.int32
         actions = jnp.asarray(batch["actions"], dtype=action_dtype)
@@ -374,11 +342,7 @@ class DynamicsModel(nn.Module):
             maxval=finest_step_level,
             dtype=jnp.int32,
         )
-        step_levels = jnp.full(
-            (batch_size, seq_len),
-            finest_step_level,
-            dtype=jnp.int32,
-        )
+        step_levels = jnp.full((batch_size, seq_len), finest_step_level, dtype=jnp.int32)
         step_levels = jnp.where(bootstrap_row_mask, sampled_bootstrap_levels, step_levels)
         step_counts = 1 << step_levels
 
@@ -417,13 +381,7 @@ class DynamicsModel(nn.Module):
             segment_ids_bootstrap = segment_ids[bootstrap_slice]
 
             bootstrap_forward = nn.apply(
-                lambda model, z, action, level, signal, segments: model(
-                    z,
-                    action,
-                    level,
-                    signal,
-                    segments,
-                ),
+                lambda model, z, action, level, signal, segments: model(z, action, level, signal, segments),
                 self.clone(parent=None),
             )
 
