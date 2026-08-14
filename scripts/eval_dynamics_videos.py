@@ -133,7 +133,7 @@ def main() -> None:
             actions = np.asarray(data["actions"], dtype=np.float32)
             prev_action = np.asarray(data["prev_action"], dtype=np.float32)
             key = (str(data["repo"]), int(data["episode"]), str(data["camera"]))
-            record_start = int(data["start_index"])
+            record_start = int(data["start_index"]) if "start_index" in data.files else 0
 
         stride = args.stride
         usable_strided = (len(video) - 1) // stride + 1
@@ -180,7 +180,21 @@ def main() -> None:
             "total": total,
         }
 
-    selected = [int(i) for i in args.indices.split(",")] if args.indices else list(range(args.num_videos))
+    if args.indices:
+        selected = [int(i) for i in args.indices.split(",")]
+    else:
+        selected = []
+        minimum_frames = fixed_total or args.context_frames + args.length_bucket
+        for index in range(len(latents)):
+            with np.load(io.BytesIO(latents[index])) as data:
+                record_frames = len(data["frames"])
+            usable_frames = (record_frames - 1) // args.stride + 1
+            if usable_frames >= minimum_frames:
+                selected.append(index)
+                if len(selected) == args.num_videos:
+                    break
+        if len(selected) < args.num_videos:
+            raise ValueError(f"Found only {len(selected)} records with at least {minimum_frames} usable frames")
     step = resolve_model_export_step(args.checkpoint_dir, args.step)
     export_cfg, params = restore_model_export_single_device(args.checkpoint_dir, step=step)
     model = instantiate(export_cfg)
