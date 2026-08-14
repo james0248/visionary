@@ -20,6 +20,7 @@ PENDING_STATES = {"ACCEPTED", "WAITING_FOR_RESOURCES", "PROVISIONING", "CREATING
 TERMINAL_RETRY_STATES = {"FAILED", "SUSPENDED"}
 LIVE_STATES = PENDING_STATES | {"ACTIVE", "SUSPENDING", "DELETING"}
 DELETE_IN_PROGRESS_STATES = {"SUSPENDING", "DELETING"}
+TERMINAL_NODE_STATES = {"PREEMPTED", "STOPPED", "TERMINATED"}
 
 TRC_ACCELERATOR_LIMITS = {
     ("v6e", "asia-southeast1-b", True): 64,
@@ -345,6 +346,27 @@ def maybe_describe_queued_resource(cfg: dict[str, Any], queued_resource_name: st
         "queued-resources",
         "describe",
         queued_resource_name,
+        f"--project={cfg['project']}",
+        f"--zone={zone}",
+        json_output=True,
+    )
+    try:
+        return json.loads(run_command(cmd, cfg=cfg))
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr or ""
+        if "NOT_FOUND" in stderr or "not found" in stderr.lower():
+            return None
+        raise
+
+
+def maybe_describe_tpu_node(cfg: dict[str, Any], node_name: str, zone: str) -> dict[str, Any] | None:
+    cmd = gcloud_command(
+        cfg,
+        "compute",
+        "tpus",
+        "tpu-vm",
+        "describe",
+        node_name,
         f"--project={cfg['project']}",
         f"--zone={zone}",
         json_output=True,
@@ -1053,6 +1075,25 @@ def main() -> None:
             continue
 
         print(f"[watcher] {queued_resource_name(cfg['job']['name'], index)} state={queued_state}")
+
+        if queued_state == "ACTIVE" and int(candidate.get("node_count", 1)) == 1:
+            active_node_name = candidate.get("node_id", node_name(cfg["job"]["name"], index))
+            node_desc = maybe_describe_tpu_node(cfg, active_node_name, candidate["zone"])
+            node_state = str(node_desc.get("state", "UNKNOWN")) if node_desc is not None else "NOT_FOUND"
+            print(f"[watcher] {active_node_name} state={node_state}")
+            if node_state in TERMINAL_NODE_STATES:
+                print(f"[watcher] Deleting queued resource with terminal node state {node_state}.")
+                delete_queued_resource(
+                    cfg,
+                    queued_resource_name=queued_resource_name(cfg["job"]["name"], index),
+                    zone=candidate["zone"],
+                )
+                state["current_attempt_id"] = None
+                state["current_candidate_index"] = None
+                save_watcher_state(cfg, state)
+                next_candidate_index = index
+                time.sleep(poll_interval)
+                continue
 
         if queued_state in TERMINAL_RETRY_STATES:
             state_details = queued_resource_state_details(desc)
