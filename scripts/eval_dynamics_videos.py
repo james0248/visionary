@@ -94,6 +94,7 @@ def main() -> None:
         help="Offset added to the per-clip rollout noise seed; the crop stays fixed.",
     )
     parser.add_argument("--context_tau", type=float, default=0.9)
+    parser.add_argument("--embodiment_id", type=int, default=0)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -193,6 +194,8 @@ def main() -> None:
     def rollout(params, video, actions, seed, generated_frames):
         video = normalize_latents(video, model.latent_mean, model.latent_std)
         actions = jnp.asarray(actions, dtype=jnp.float32)
+        actions = jnp.pad(actions, ((0, 0), (0, 0), (0, model.max_action_dim - actions.shape[-1])))
+        embodiment_ids = jnp.full(actions.shape[:2], args.embodiment_id, dtype=jnp.int32)
         primed = jnp.zeros_like(video).at[:, : args.context_frames].set(video[:, : args.context_frames])
         context_key, sample_key = jax.random.split(jax.random.key(seed))
         context_noise = jax.random.normal(context_key, video.shape, dtype=jnp.float32)
@@ -203,6 +206,7 @@ def main() -> None:
             params,
             primed,
             actions,
+            embodiment_ids,
             context_noise,
             sample_noise,
             args.context_frames,

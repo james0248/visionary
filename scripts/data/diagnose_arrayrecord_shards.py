@@ -195,7 +195,12 @@ def stress_dynamics_loader(args) -> dict[str, Any]:
     total_batches = 0
     total_examples = 0
     for data_dir in args.data_dirs:
-        source = DynamicsDataSource(data_dir.as_posix())
+        shard_paths = sorted(path.as_posix() for path in data_dir.iterdir() if path.suffix == ".arecord")
+        raw_source = grain.ArrayRecordDataSource(shard_paths)
+        with np.load(io.BytesIO(raw_source[0])) as first_record:
+            first_actions = np.asarray(first_record["actions"])
+        action_dim = first_actions.shape[-1] if first_actions.ndim == 2 else 1
+        source = DynamicsDataSource(data_dir.as_posix(), embodiment_id=0, action_dim=action_dim)
         sampler = grain.IndexSampler(
             num_records=len(source),
             shard_options=grain.NoSharding(),

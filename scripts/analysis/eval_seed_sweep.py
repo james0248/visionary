@@ -63,6 +63,7 @@ def main() -> None:
     parser.add_argument("--total_frames", type=int, default=64)
     parser.add_argument("--stride", type=int, default=4)
     parser.add_argument("--context_tau", type=float, default=0.9)
+    parser.add_argument("--embodiment_id", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
     steps_list = [int(s) for s in args.steps_list.split(",")]
@@ -121,13 +122,17 @@ def main() -> None:
     @functools.partial(jax.jit, static_argnames=("sample_steps",))
     def tf_one(params, video, actions, t, seed, sample_steps):
         video = normalize_latents(video, model.latent_mean, model.latent_std)
+        actions = jnp.asarray(actions, jnp.float32)
+        actions = jnp.pad(actions, ((0, 0), (0, 0), (0, model.max_action_dim - actions.shape[-1])))
+        embodiment_ids = jnp.full(actions.shape[:2], args.embodiment_id, dtype=jnp.int32)
         mask = (jnp.arange(video.shape[1]) < t)[None, :, None, None]
         primed = jnp.where(mask, video, 0.0)
         ck, sk = jax.random.split(jax.random.key(seed))
         out = model.apply(
             params,
             primed,
-            jnp.asarray(actions, jnp.float32),
+            actions,
+            embodiment_ids,
             jax.random.normal(ck, video.shape, jnp.float32),
             jax.random.normal(sk, (video.shape[0], 1, *video.shape[2:]), jnp.float32),
             t,

@@ -38,7 +38,9 @@ from visionary.dataset import (
     DynamicsDataSource,
     NormalizeDynamicsLatents,
     PackDynamicsEpisodes,
+    interleave_dynamics_episodes,
     load_latent_stats,
+    mix_dynamics_episodes,
 )
 from visionary.models.dreamer4.dynamics import DynamicsModel, denormalize_latents
 from visionary.models.dreamer4.tokenizer_preprocessor import TokenizerPreprocessor
@@ -133,6 +135,7 @@ def log_video_eval(
             tokenizer_variables,
             batch["video"],
             batch["actions"],
+            batch["embodiment_ids"],
             np.uint32(rollout_seed),
         )
     )
@@ -322,16 +325,29 @@ def main(cfg: DictConfig):
         float(latent_stats.std.max()),
     )
 
-    wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled) and is_primary_process)
     total_steps = int(cfg.total_steps)
 
-    train_source = DynamicsDataSource(cfg.dataset.train_dir)
-    eval_source = DynamicsDataSource(cfg.dataset.eval_dir)
-    logger.info(
-        "Loaded %d training sequences and %d eval sequences",
-        len(train_source),
-        len(eval_source),
-    )
+    source_configs = list(cfg.dataset.sources)
+    max_action_dim = int(cfg.dynamics.max_action_dim)
+    sampling_weights = [float(source.sampling_weight) for source in source_configs]
+    wb = WandbLogger(cfg, enabled=bool(cfg.wandb.enabled) and is_primary_process)
+
+    train_sources = []
+    eval_sources = []
+    for embodiment_id, source in enumerate(source_configs):
+        train_source = DynamicsDataSource(source.train_dir, embodiment_id, source.action_dim)
+        eval_source = DynamicsDataSource(source.eval_dir, embodiment_id, source.action_dim)
+        train_sources.append(train_source)
+        eval_sources.append(eval_source)
+        logger.info(
+            "Embodiment %d %s: action_dim=%d weight=%.4f train_sequences=%d eval_sequences=%d",
+            embodiment_id,
+            source.embodiment,
+            source.action_dim,
+            source.sampling_weight,
+            len(train_source),
+            len(eval_source),
+        )
     effective_read_threads = max(cfg.dataset.worker_count, 1) * cfg.dataset.num_threads
     logger.info(
         "Data loader settings: worker_count=%d num_threads=%d prefetch_buffer_size=%d effective_read_threads=%d",
@@ -359,10 +375,7 @@ def main(cfg: DictConfig):
     batch_size_per_device = batch_size_per_process // local_device_count
     bootstrap_start_step = int(cfg.loss.bootstrap_start_step)
     target_bootstrap_ratio = float(cfg.loss.bootstrap_ratio)
-    target_bootstrap_rows = min(
-        max(int(round(target_bootstrap_ratio * global_batch_size)), 0),
-        global_batch_size,
-    )
+    target_bootstrap_rows = int(round(target_bootstrap_ratio * global_batch_size))
     logger.info(
         "Batch layout: global=%d per_process=%d per_device=%d",
         global_batch_size,
@@ -376,27 +389,23 @@ def main(cfg: DictConfig):
         bootstrap_start_step,
     )
 
-    def bootstrap_rows_for_step(current_step: int) -> int:
-        if current_step < bootstrap_start_step:
-            return 0
-        return target_bootstrap_rows
-
     read_options = grain.ReadOptions(
         num_threads=cfg.dataset.num_threads,
         prefetch_buffer_size=cfg.dataset.prefetch_buffer_size,
     )
 
-    def make_packed_iterator(
+    def make_record_iterator(
         source: DynamicsDataSource,
         shuffle: bool,
         num_epochs: int | None,
+        seed_offset: int,
     ):
         sampler = grain.IndexSampler(
             num_records=len(source),
             shard_options=grain.ShardByJaxProcess() if process_count > 1 else grain.NoSharding(),
             shuffle=shuffle,
             num_epochs=num_epochs,
-            seed=cfg.seed,
+            seed=int(cfg.seed) + seed_offset,
         )
         loader = grain.DataLoader(
             data_source=source,
@@ -405,21 +414,20 @@ def main(cfg: DictConfig):
             worker_count=cfg.dataset.worker_count,
             read_options=read_options,
         )
-        records = iter(loader)
-        packed = iter(
-            PackDynamicsEpisodes(
-                records,
-                sequence_length=pack_length,
-                batch_size=batch_size_per_process,
-            )
-        )
-        return records, packed
+        return iter(loader)
 
     _t = time.monotonic()
-    train_records_iterator, train_packed_iterator = make_packed_iterator(
-        train_source,
-        shuffle=True,
-        num_epochs=None,
+    train_record_iterators = [
+        make_record_iterator(source, shuffle=True, num_epochs=None, seed_offset=index)
+        for index, source in enumerate(train_sources)
+    ]
+    train_packed_iterator = iter(
+        PackDynamicsEpisodes(
+            mix_dynamics_episodes(train_record_iterators, sampling_weights),
+            sequence_length=pack_length,
+            batch_size=batch_size_per_process,
+            max_action_dim=max_action_dim,
+        )
     )
     logger.info("Train DataLoader creation took %.1fs", time.monotonic() - _t)
 
@@ -443,6 +451,7 @@ def main(cfg: DictConfig):
             init_key,
             z,
             batch["actions"],
+            batch["embodiment_ids"],
             step_levels,
             signal_indices,
             batch["segment_ids"],
@@ -455,7 +464,12 @@ def main(cfg: DictConfig):
     state_shardings = jax.tree_util.tree_map(lambda _: metrics_sharding, state)
     logger.info("State init took %.1fs", time.monotonic() - _t)
 
-    packed_batch_shardings = {"video": batch_sharding, "actions": batch_sharding, "segment_ids": batch_sharding}
+    packed_batch_shardings = {
+        "video": batch_sharding,
+        "actions": batch_sharding,
+        "embodiment_ids": batch_sharding,
+        "segment_ids": batch_sharding,
+    }
     jit_train_step = jax.jit(
         train_step,
         in_shardings=(
@@ -512,25 +526,36 @@ def main(cfg: DictConfig):
         rollout_horizon = int(video_cfg.horizon)
         total_video_frames = video_context_frames + rollout_horizon
         rollout_samples = []
-        for record_index in range(len(eval_source)):
-            record = eval_source[record_index]
-            if len(record["video"]) < total_video_frames:
-                continue
-            start = (len(record["video"]) - total_video_frames) // 2
-            stop = start + total_video_frames
-            previous_actions = np.concatenate(
-                [record["prev_action"][None], record["actions"][:-1]],
-                axis=0,
-            )
-            rollout_samples.append(
-                latent_normalizer.map(
-                    DynamicsBatch(
-                        video=record["video"][start:stop],
-                        actions=previous_actions[start:stop],
-                        segment_ids=np.zeros(total_video_frames, dtype=np.int32),
+        for record_index in range(max(len(source) for source in eval_sources)):
+            for eval_source in eval_sources:
+                if record_index >= len(eval_source):
+                    continue
+                record = eval_source[record_index]
+                if len(record["video"]) < total_video_frames:
+                    continue
+                start = (len(record["video"]) - total_video_frames) // 2
+                stop = start + total_video_frames
+                previous_actions = np.concatenate(
+                    [record["prev_action"][None], record["actions"][:-1]],
+                    axis=0,
+                )
+                if previous_actions.ndim == 2:
+                    previous_actions = np.pad(
+                        previous_actions,
+                        ((0, 0), (0, max_action_dim - record["action_dim"])),
+                    )
+                rollout_samples.append(
+                    latent_normalizer.map(
+                        DynamicsBatch(
+                            video=record["video"][start:stop],
+                            actions=previous_actions[start:stop],
+                            embodiment_ids=np.full(total_video_frames, record["embodiment_id"], dtype=np.int32),
+                            segment_ids=np.zeros(total_video_frames, dtype=np.int32),
+                        )
                     )
                 )
-            )
+                if len(rollout_samples) == int(video_cfg.num_samples):
+                    break
             if len(rollout_samples) == int(video_cfg.num_samples):
                 break
         if len(rollout_samples) < int(video_cfg.num_samples):
@@ -541,6 +566,7 @@ def main(cfg: DictConfig):
         rollout_eval_batch = DynamicsBatch(
             video=np.stack([sample["video"] for sample in rollout_samples]),
             actions=np.stack([sample["actions"] for sample in rollout_samples]),
+            embodiment_ids=np.stack([sample["embodiment_ids"] for sample in rollout_samples]),
             segment_ids=np.stack([sample["segment_ids"] for sample in rollout_samples]),
         )
 
@@ -551,6 +577,7 @@ def main(cfg: DictConfig):
             tokenizer_variables,
             video_batch,
             action_batch,
+            embodiment_id_batch,
             rollout_seed,
         ):
             video = jnp.asarray(video_batch, dtype=jnp.float32)
@@ -558,6 +585,7 @@ def main(cfg: DictConfig):
                 jnp.float32 if str(cfg.dynamics.get("action_mode", "discrete")) == "continuous" else jnp.int32
             )
             actions = jnp.asarray(action_batch, dtype=eval_action_dtype)
+            embodiment_ids = jnp.asarray(embodiment_id_batch, dtype=jnp.int32)
 
             rollout_key = jax.random.key(rollout_seed)
             context_noise_key, sample_noise_key = jax.random.split(rollout_key)
@@ -576,6 +604,7 @@ def main(cfg: DictConfig):
                         dynamics_params,
                         rollout_video,
                         actions,
+                        embodiment_ids,
                         context_noise,
                         sample_noise,
                         video_context_frames,
@@ -608,18 +637,10 @@ def main(cfg: DictConfig):
     _t = time.monotonic()
     checkpoint_manager: CheckpointManager = instantiate(cfg.checkpoint.manager)
     if is_primary_process:
-        checkpoint_manager.save_metadata(
-            {
-                "config": OmegaConf.to_container(cfg, resolve=False),
-                "dynamics_config": OmegaConf.to_container(cfg, resolve=False),
-            }
-        )
+        checkpoint_manager.save_metadata({"config": OmegaConf.to_container(cfg, resolve=False)})
     logger.info("CheckpointManager creation took %.1fs", time.monotonic() - _t)
     last_checkpoint_step: int | None = None
     export_interval_steps = int(cfg.checkpoint.export_interval_steps)
-
-    def should_export_model(step: int, force: bool) -> bool:
-        return force or (export_interval_steps > 0 and step % export_interval_steps == 0)
 
     def save_checkpoint(step: int, force: bool = False) -> None:
         nonlocal last_checkpoint_step
@@ -632,12 +653,14 @@ def main(cfg: DictConfig):
         if not saved:
             return
         last_checkpoint_step = int(step)
-        if should_export_model(step, force=force):
+        if force or (export_interval_steps > 0 and step % export_interval_steps == 0):
             save_model_export(checkpoint_manager.directory, step, cfg.dynamics, state.ema_params)
 
     def iterator_items():
         # The current episode remainder lives in the packer, not Grain.
-        return {"train_iterator": train_records_iterator}
+        return {
+            f"train_iterator_{source_index}": iterator for source_index, iterator in enumerate(train_record_iterators)
+        }
 
     resume_spec = cfg.checkpoint.resume_step
     resume_step = None
@@ -660,9 +683,10 @@ def main(cfg: DictConfig):
         )
         train_packed_iterator = iter(
             PackDynamicsEpisodes(
-                train_records_iterator,
+                mix_dynamics_episodes(train_record_iterators, sampling_weights),
                 sequence_length=pack_length,
                 batch_size=batch_size_per_process,
+                max_action_dim=max_action_dim,
             )
         )
         initial_train_batch = None
@@ -699,7 +723,7 @@ def main(cfg: DictConfig):
                 batch = latent_normalizer.map(batch)
         with timer("transfer"):
             batch = local_batch_to_global(batch, batch_sharding)
-        bootstrap_rows = bootstrap_rows_for_step(current_step)
+        bootstrap_rows = target_bootstrap_rows if current_step >= bootstrap_start_step else 0
         with timer("compute"):
             state, metrics = jit_train_step(
                 state, batch, train_key, jnp.asarray(current_step, dtype=jnp.int32), bootstrap_rows, cfg.ema_decay
@@ -710,10 +734,17 @@ def main(cfg: DictConfig):
         if cfg.eval_steps > 0 and step % cfg.eval_steps == 0:
             t_eval_start = time.monotonic()
             totals: dict[str, float] = {}
-            _, eval_packed_iterator = make_packed_iterator(
-                eval_source,
-                shuffle=False,
-                num_epochs=1,
+            eval_record_iterators = [
+                make_record_iterator(source, shuffle=False, num_epochs=1, seed_offset=index)
+                for index, source in enumerate(eval_sources)
+            ]
+            eval_packed_iterator = iter(
+                PackDynamicsEpisodes(
+                    interleave_dynamics_episodes(eval_record_iterators),
+                    sequence_length=pack_length,
+                    batch_size=batch_size_per_process,
+                    max_action_dim=max_action_dim,
+                )
             )
             eval_batches = [
                 latent_normalizer.map(batch)

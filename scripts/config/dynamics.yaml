@@ -35,9 +35,13 @@ video_eval:
     checkpoint_step: null
 
 dataset:
-  train_dir: data/tokenized/train/
-  eval_dir: data/tokenized/eval/
   latent_stats: data/tokenized/latent_stats.json
+  sources:
+    - embodiment: atari
+      train_dir: data/tokenized/train/
+      eval_dir: data/tokenized/eval/
+      action_dim: 1
+      sampling_weight: 1.0
   batch_size: 64
   pack_length: 64
   worker_count: 4
@@ -55,6 +59,8 @@ dynamics:
   num_registers: 2
   num_obs_tokens: 32
   num_actions: ???
+  num_embodiments: 1
+  max_action_dim: 1
   action_mode: discrete
   max_step_size: 6
   model_dim: 128

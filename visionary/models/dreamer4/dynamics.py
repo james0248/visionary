@@ -28,11 +28,13 @@ def denormalize_latents(latents: jnp.ndarray, mean: jax.typing.ArrayLike, std: j
 class ActionEmbedding(nn.Module):
     model_dim: int
     num_actions: int
+    num_embodiments: int
+    max_action_dim: int
     action_mode: Literal["discrete", "continuous"]
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
-    def __call__(self, actions: jnp.ndarray, batch_time_shape: tuple[int, int]) -> jnp.ndarray:
+    def __call__(self, actions: jnp.ndarray, embodiment_ids: jnp.ndarray) -> jnp.ndarray:
         base_token = self.param(
             "base_token",
             nn.initializers.normal(stddev=0.02),
@@ -41,7 +43,20 @@ class ActionEmbedding(nn.Module):
 
         if self.action_mode == "continuous":
             actions = jnp.asarray(actions, dtype=self.dtype)
-            action_tokens = nn.Dense(self.model_dim, dtype=self.dtype, name="action_proj")(actions)
+            embodiment_ids = jnp.asarray(embodiment_ids, dtype=jnp.int32)
+            action_kernels = self.param(
+                "action_projection_kernel",
+                nn.initializers.lecun_normal(),
+                (self.num_embodiments, self.max_action_dim, self.model_dim),
+            ).astype(self.dtype)
+            action_biases = self.param(
+                "action_projection_bias",
+                nn.initializers.zeros,
+                (self.num_embodiments, self.model_dim),
+            ).astype(self.dtype)
+            selected_kernels = jnp.take(action_kernels, embodiment_ids, axis=0)
+            selected_biases = jnp.take(action_biases, embodiment_ids, axis=0)
+            action_tokens = jnp.einsum("bta,btad->btd", actions, selected_kernels) + selected_biases
         elif self.action_mode == "discrete":
             actions = jnp.asarray(actions, dtype=jnp.int32)
             valid_actions = actions >= 0
@@ -93,6 +108,8 @@ class DynamicsModel(nn.Module):
     num_registers: int
     num_obs_tokens: int
     num_actions: int
+    num_embodiments: int
+    max_action_dim: int
 
     max_step_size: int
 
@@ -113,6 +130,8 @@ class DynamicsModel(nn.Module):
         self.action_embedding = ActionEmbedding(
             model_dim=self.model_dim,
             num_actions=self.num_actions,
+            num_embodiments=self.num_embodiments,
+            max_action_dim=self.max_action_dim,
             action_mode=self.action_mode,
             dtype=self.dtype,
         )
@@ -143,13 +162,14 @@ class DynamicsModel(nn.Module):
         self,
         z: jnp.ndarray,
         actions: jnp.ndarray,
+        embodiment_ids: jnp.ndarray,
         step_levels: jnp.ndarray,
         signal_levels: jnp.ndarray,
         segment_ids: jnp.ndarray,
     ) -> jnp.ndarray:
         batch_size, seq_len, input_obs_tokens, token_dim = z.shape
 
-        action_tokens = self.action_embedding(actions, (batch_size, seq_len))[:, :, None, :]
+        action_tokens = self.action_embedding(actions, embodiment_ids)[:, :, None, :]
         shortcut_tokens = self.shortcut_embedding(step_levels, signal_levels)[:, :, None, :]
         register_tokens = jnp.broadcast_to(
             self.register_tokens.astype(self.dtype),
@@ -204,6 +224,7 @@ class DynamicsModel(nn.Module):
         self,
         video_prefix: jnp.ndarray,
         actions: jnp.ndarray,
+        embodiment_ids: jnp.ndarray,
         context_noise: jnp.ndarray,
         sample_noise: jnp.ndarray,
         target_index: jnp.ndarray,
@@ -263,9 +284,9 @@ class DynamicsModel(nn.Module):
             step_levels = base_step_levels.at[:, target_index].set(sample_step_level)
             signal_indices = base_signal_indices.at[:, target_index].set(sample_signal_level * sample_signal_stride)
             z_input = base_z.at[:, target_index].set(current_z)
-            predicted = self(z_input, actions, step_levels, signal_indices, segment_ids)[:, target_index].astype(
-                jnp.float32
-            )
+            predicted = self(z_input, actions, embodiment_ids, step_levels, signal_indices, segment_ids)[
+                :, target_index
+            ].astype(jnp.float32)
 
             tau = jnp.float32(sample_signal_level / sample_step_count)
             velocity = (predicted - current_z) / jnp.maximum(1.0 - tau, 1e-6)
@@ -277,6 +298,7 @@ class DynamicsModel(nn.Module):
         self,
         video_prefix: jnp.ndarray,
         actions: jnp.ndarray,
+        embodiment_ids: jnp.ndarray,
         context_noise: jnp.ndarray,
         sample_noise: jnp.ndarray,
         start_index: jnp.ndarray,
@@ -293,6 +315,7 @@ class DynamicsModel(nn.Module):
             next_frame = self.generate_next(
                 current_video,
                 actions,
+                embodiment_ids,
                 context_noise,
                 sample_noise[:, offset],
                 target_index,
@@ -317,6 +340,7 @@ class DynamicsModel(nn.Module):
         )
         action_dtype = jnp.float32 if self.action_mode == "continuous" else jnp.int32
         actions = jnp.asarray(batch["actions"], dtype=action_dtype)
+        embodiment_ids = jnp.asarray(batch["embodiment_ids"], dtype=jnp.int32)
         segment_ids = jnp.asarray(batch["segment_ids"], dtype=jnp.int32)
 
         batch_size, seq_len, _, _ = z_target.shape
@@ -366,7 +390,7 @@ class DynamicsModel(nn.Module):
 
         z_noise = jax.random.normal(noise_rng, z_target.shape, dtype=jnp.float32)
         z_noised = tau * z_target + (1.0 - tau) * z_noise
-        z_pred_1 = self(z_noised, actions, step_levels, signal_indices, segment_ids)
+        z_pred_1 = self(z_noised, actions, embodiment_ids, step_levels, signal_indices, segment_ids)
 
         flow_loss = (z_pred_1 - z_target) ** 2
         loss_weight = 1.0 / jnp.maximum(1.0 - tau, 1e-3) ** 2
@@ -376,6 +400,7 @@ class DynamicsModel(nn.Module):
         if bootstrap_rows > 0:
             z_noised_bootstrap = z_noised[bootstrap_slice]
             actions_bootstrap = actions[bootstrap_slice]
+            embodiment_ids_bootstrap = embodiment_ids[bootstrap_slice]
             tau_bootstrap = tau[bootstrap_slice]
             step_sizes_bootstrap = step_sizes[bootstrap_slice]
             step_levels_bootstrap = step_levels[bootstrap_slice]
@@ -383,7 +408,9 @@ class DynamicsModel(nn.Module):
             segment_ids_bootstrap = segment_ids[bootstrap_slice]
 
             bootstrap_forward = nn.apply(
-                lambda model, z, action, level, signal, segments: model(z, action, level, signal, segments),
+                lambda model, z, action, embodiment, level, signal, segments: model(
+                    z, action, embodiment, level, signal, segments
+                ),
                 self.clone(parent=None),
             )
 
@@ -393,6 +420,7 @@ class DynamicsModel(nn.Module):
                 bootstrap_target_variables,
                 z_noised_bootstrap,
                 actions_bootstrap,
+                embodiment_ids_bootstrap,
                 half_step_levels,
                 signal_indices_bootstrap,
                 segment_ids_bootstrap,
@@ -409,6 +437,7 @@ class DynamicsModel(nn.Module):
                 bootstrap_target_variables,
                 half_noised,
                 actions_bootstrap,
+                embodiment_ids_bootstrap,
                 half_step_levels,
                 signal_indices_bootstrap + half_signal_delta,
                 segment_ids_bootstrap,

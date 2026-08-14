@@ -21,9 +21,18 @@ exp_name: dynamics_v2
 tokenizer_exp_name: tokenizer_v2
 
 dataset:
-  train_dir: data/so101/dynamics/train
-  eval_dir: data/so101/dynamics/eval
   latent_stats: data/so101/dynamics/latent_stats.json
+  sources:
+    - embodiment: so101_absolute_joint_6d_v1
+      train_dir: data/so101/dynamics/so101/train
+      eval_dir: data/so101/dynamics/so101/eval
+      action_dim: 6
+      sampling_weight: 1.0
+    - embodiment: widowx_delta_ee_gripper_7d_v1
+      train_dir: data/so101/dynamics/widowx/train
+      eval_dir: data/so101/dynamics/widowx/eval
+      action_dim: 7
+      sampling_weight: 1.0
   batch_size: 16
   pack_length: 128
   worker_count: 8
@@ -44,6 +53,8 @@ dynamics:
   num_registers: 2
   num_obs_tokens: 256
   num_actions: 6
+  num_embodiments: 2
+  max_action_dim: 7
   action_mode: continuous
   max_step_size: 8
   # 9.6s at 5 fps

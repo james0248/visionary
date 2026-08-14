@@ -22,6 +22,7 @@ class EncodedVideoDataset(TypedDict):
 class DynamicsBatch(TypedDict):
     video: np.ndarray
     actions: np.ndarray
+    embodiment_ids: np.ndarray
     segment_ids: np.ndarray
 
 
@@ -29,6 +30,8 @@ class DynamicsDataset(TypedDict):
     video: np.ndarray
     actions: np.ndarray
     prev_action: np.ndarray
+    embodiment_id: int
+    action_dim: int
 
 
 @dataclass(frozen=True)
@@ -75,12 +78,21 @@ def _describe_record_location(source: grain.ArrayRecordDataSource, paths: list[s
 
 
 class DynamicsDataSource(grain.RandomAccessDataSource):
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, embodiment_id: int, action_dim: int):
         self._data_dir = epath.Path(data_dir).as_posix()
+        self.embodiment_id = int(embodiment_id)
+        self.action_dim = int(action_dim)
+        if self.embodiment_id < 0:
+            raise ValueError(f"embodiment_id must be nonnegative, got {self.embodiment_id}")
+        if self.action_dim <= 0:
+            raise ValueError(f"action_dim must be positive, got {self.action_dim}")
         self._source, self._paths = _array_record_source_with_paths(self._data_dir)
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(data_dir={self._data_dir!r})"
+        return (
+            f"{type(self).__name__}(data_dir={self._data_dir!r}, "
+            f"embodiment_id={self.embodiment_id}, action_dim={self.action_dim})"
+        )
 
     def __len__(self):
         return len(self._source)
@@ -95,10 +107,28 @@ class DynamicsDataSource(grain.RandomAccessDataSource):
         except Exception as exc:
             location = _describe_record_location(self._source, self._paths, idx)
             raise ValueError(f"Failed to decode dynamics record idx={idx} ({location}) from {self._data_dir}") from exc
+        if actions.ndim not in (1, 2):
+            raise ValueError(f"Expected actions with shape [T] or [T, A], got {actions.shape} in {self._data_dir}")
+        record_action_dim = actions.shape[-1] if actions.ndim == 2 else 1
+        if record_action_dim != self.action_dim:
+            raise ValueError(
+                f"Action dimension mismatch in {self._data_dir}: record={record_action_dim}, "
+                f"configured={self.action_dim}"
+            )
+        if len(latents) != len(actions):
+            raise ValueError(f"Frame/action length mismatch in {self._data_dir}: {len(latents)} != {len(actions)}")
+        expected_prev_action_shape = actions.shape[1:] if actions.ndim == 2 else ()
+        if prev_action.shape != expected_prev_action_shape:
+            raise ValueError(
+                f"Previous action shape mismatch in {self._data_dir}: {prev_action.shape} != "
+                f"{expected_prev_action_shape}"
+            )
         return DynamicsDataset(
             video=latents,
             actions=actions,
             prev_action=prev_action,
+            embodiment_id=self.embodiment_id,
+            action_dim=self.action_dim,
         )
 
 
@@ -126,6 +156,7 @@ class RandomDynamicsCrop(grain.RandomMapTransform):
         return DynamicsBatch(
             video=latents[indices],
             actions=aligned_actions,
+            embodiment_ids=np.full(self.sequence_length, element["embodiment_id"], dtype=np.int32),
             segment_ids=np.zeros(self.sequence_length, dtype=np.int32),
         )
 
@@ -142,9 +173,33 @@ class NormalizeDynamicsLatents(grain.MapTransform):
         normalized = DynamicsBatch(
             video=(latents - self.mean) / self.std,
             actions=element["actions"],
+            embodiment_ids=element["embodiment_ids"],
             segment_ids=element["segment_ids"],
         )
         return normalized
+
+
+def mix_dynamics_episodes(streams: list[Iterator[DynamicsDataset]], weights: list[float]) -> Iterator[DynamicsDataset]:
+    emitted_frames = np.zeros(len(streams), dtype=np.int64)
+    weights = np.asarray(weights, dtype=np.float64)
+    while True:
+        source_index = int(np.argmin(emitted_frames / weights))
+        record = next(streams[source_index])
+        emitted_frames[source_index] += len(record["video"])
+        yield record
+
+
+def interleave_dynamics_episodes(streams: list[Iterator[DynamicsDataset]]) -> Iterator[DynamicsDataset]:
+    active_streams = list(streams)
+    while active_streams:
+        remaining_streams = []
+        for stream in active_streams:
+            try:
+                yield next(stream)
+                remaining_streams.append(stream)
+            except StopIteration:
+                pass
+        active_streams = remaining_streams
 
 
 class PackDynamicsEpisodes:
@@ -153,15 +208,28 @@ class PackDynamicsEpisodes:
     Segment IDs preserve episode boundaries within each row.
     """
 
-    def __init__(self, records: Iterator[DynamicsDataset], sequence_length: int, batch_size: int):
+    def __init__(
+        self,
+        records: Iterator[DynamicsDataset],
+        sequence_length: int,
+        batch_size: int,
+        max_action_dim: int,
+    ):
         self.records = records
         self.sequence_length = sequence_length
         self.batch_size = batch_size
+        self.max_action_dim = max_action_dim
+        if self.sequence_length <= 0 or self.batch_size <= 0 or self.max_action_dim <= 0:
+            raise ValueError(
+                "sequence_length, batch_size, and max_action_dim must be positive; "
+                f"got {self.sequence_length}, {self.batch_size}, {self.max_action_dim}"
+            )
 
     def __iter__(self) -> Iterator[DynamicsBatch]:
         rows: list[DynamicsBatch] = []
         parts_video: list[np.ndarray] = []
         parts_actions: list[np.ndarray] = []
+        parts_embodiments: list[np.ndarray] = []
         parts_segments: list[np.ndarray] = []
         row_length = 0
         segment_id = 0
@@ -172,6 +240,13 @@ class PackDynamicsEpisodes:
                 [record["prev_action"][None], record["actions"][:-1]],
                 axis=0,
             )
+            if previous_actions.ndim == 2:
+                action_padding = self.max_action_dim - record["action_dim"]
+                if action_padding < 0:
+                    raise ValueError(
+                        f"Action dimension {record['action_dim']} exceeds max_action_dim={self.max_action_dim}"
+                    )
+                previous_actions = np.pad(previous_actions, ((0, 0), (0, action_padding)))
             position = 0
 
             while position < len(latents):
@@ -182,6 +257,7 @@ class PackDynamicsEpisodes:
                 part = slice(position, position + part_length)
                 parts_video.append(latents[part])
                 parts_actions.append(previous_actions[part])
+                parts_embodiments.append(np.full((part_length,), record["embodiment_id"], dtype=np.int32))
                 parts_segments.append(np.full((part_length,), segment_id, dtype=np.int32))
                 position += part_length
                 row_length += part_length
@@ -193,10 +269,11 @@ class PackDynamicsEpisodes:
                     DynamicsBatch(
                         video=np.concatenate(parts_video, axis=0),
                         actions=np.concatenate(parts_actions, axis=0),
+                        embodiment_ids=np.concatenate(parts_embodiments, axis=0),
                         segment_ids=np.concatenate(parts_segments, axis=0),
                     )
                 )
-                parts_video, parts_actions, parts_segments = [], [], []
+                parts_video, parts_actions, parts_embodiments, parts_segments = [], [], [], []
                 row_length = 0
                 segment_id = 0
 
@@ -206,6 +283,7 @@ class PackDynamicsEpisodes:
                 yield DynamicsBatch(
                     video=np.stack([row["video"] for row in rows]),
                     actions=np.stack([row["actions"] for row in rows]),
+                    embodiment_ids=np.stack([row["embodiment_ids"] for row in rows]),
                     segment_ids=np.stack([row["segment_ids"] for row in rows]),
                 )
                 rows = []
