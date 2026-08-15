@@ -13,11 +13,11 @@ by generated frames on the right.
 """
 
 import argparse
-import functools
 import io
 import json
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import grain.python as grain
@@ -26,12 +26,21 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from hydra.utils import instantiate
+from jax.sharding import NamedSharding
+from jax.sharding import PartitionSpec as P
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 from visionary.common.checkpoint import (
     resolve_model_export_step,
     restore_model_export_single_device,
     restore_preprocessor_export,
+)
+from visionary.common.jax import (
+    data_parallel_mesh,
+    global_batch_to_local,
+    init_distributed_if_pod,
+    local_batch_to_global,
+    shard_from_host,
 )
 from visionary.dataset import decode_video_window
 from visionary.eval.loading import build_raw_index
@@ -42,12 +51,59 @@ from visionary.shards import chunk_starts
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class SelectedClip:
+    source: str
+    embodiment_id: int
+    index: int
+    start_frame: int
+    frame_count: int
+
+
+def parse_selected_clips(value: str) -> list[SelectedClip]:
+    clips = []
+    for spec in value.split(","):
+        source, embodiment_id, index, start_frame, frame_count = spec.split(":")
+        clips.append(
+            SelectedClip(
+                source=source,
+                embodiment_id=int(embodiment_id),
+                index=int(index),
+                start_frame=int(start_frame),
+                frame_count=int(frame_count),
+            )
+        )
+    return clips
+
+
+def parse_source_dirs(value: str) -> dict[str, Path]:
+    sources = {}
+    for spec in value.split(","):
+        name, path = spec.split("=", maxsplit=1)
+        sources[name] = Path(path)
+    return sources
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s", force=True)
+    init_distributed_if_pod(logger=logger)
+    process_index = jax.process_index()
+    process_count = jax.process_count()
+    mesh = data_parallel_mesh()
+    batch_sharding = NamedSharding(mesh, P("data"))
+    replicated_sharding = NamedSharding(mesh, P())
     parser = argparse.ArgumentParser(description="Render dynamics rollout videos.")
     parser.add_argument("--checkpoint_dir", required=True, help="Dynamics checkpoint directory.")
     parser.add_argument("--tokenizer_checkpoint_dir", required=True, help="Tokenizer checkpoint directory.")
-    parser.add_argument("--data_dir", required=True, help="Eval latent ArrayRecord directory.")
+    parser.add_argument("--data_dir", help="Eval latent ArrayRecord directory.")
+    parser.add_argument(
+        "--source_dirs",
+        help="Comma-separated source=directory pairs used with --clip_specs.",
+    )
+    parser.add_argument(
+        "--clip_specs",
+        help="Comma-separated source:embodiment:index:start_frame:frame_count selections.",
+    )
     parser.add_argument("--output_dir", required=True, help="Where to write mp4 files.")
     parser.add_argument("--num_videos", type=int, default=20)
     parser.add_argument(
@@ -111,24 +167,44 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if bool(args.source_dirs) != bool(args.clip_specs):
+        parser.error("--source_dirs and --clip_specs must be used together")
+    if not args.clip_specs and not args.data_dir:
+        parser.error("--data_dir is required unless --clip_specs is used")
+    if args.clip_specs and args.action_source != "true":
+        parser.error("--clip_specs supports only --action_source=true")
+
     roll_to_end = args.generated_frames < 0
     fixed_total = None if roll_to_end else args.context_frames + args.generated_frames
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # read records directly rather than through DynamicsDataSource: the crop
-    # offset and provenance are needed to locate the original footage
-    latent_paths = sorted(str(p) for p in Path(args.data_dir).glob("*.arecord"))
-    if not latent_paths:
-        raise FileNotFoundError(f"No .arecord files in {args.data_dir}")
-    latents = grain.ArrayRecordDataSource(latent_paths)
-    logger.info("Eval source has %d records", len(latents))
+    latents = None
+    selected_sources = {}
+    selected_clips = parse_selected_clips(args.clip_specs) if args.clip_specs else []
+    if selected_clips:
+        for name, source_dir in parse_source_dirs(args.source_dirs).items():
+            paths = sorted(str(path) for path in source_dir.glob("*.arecord"))
+            if not paths:
+                raise FileNotFoundError(f"No .arecord files in {source_dir}")
+            selected_sources[name] = grain.ArrayRecordDataSource(paths)
+            logger.info("Eval source %s has %d records", name, len(selected_sources[name]))
+        missing_sources = sorted({clip.source for clip in selected_clips} - selected_sources.keys())
+        if missing_sources:
+            raise ValueError(f"Missing source directories for: {missing_sources}")
+    else:
+        latent_paths = sorted(str(p) for p in Path(args.data_dir).glob("*.arecord"))
+        if not latent_paths:
+            raise FileNotFoundError(f"No .arecord files in {args.data_dir}")
+        latents = grain.ArrayRecordDataSource(latent_paths)
+        logger.info("Eval source has %d records", len(latents))
 
     raw_index = build_raw_index(args.raw_shards_dir) if args.raw_shards_dir else {}
     if args.raw_shards_dir:
         logger.info("Indexed %d original streams from %s", len(raw_index), args.raw_shards_dir)
 
     def sample_for(index: int):
+        assert latents is not None
         with np.load(io.BytesIO(latents[index % len(latents)])) as data:
             video = np.asarray(data["frames"])
             actions = np.asarray(data["actions"], dtype=np.float32)
@@ -181,7 +257,9 @@ def main() -> None:
             "total": total,
         }
 
-    if args.indices:
+    if selected_clips:
+        selected = []
+    elif args.indices:
         selected = [int(i) for i in args.indices.split(",")]
     else:
         selected = []
@@ -205,14 +283,13 @@ def main() -> None:
     tokenizer = instantiate(tokenizer_cfg)
     preprocessor = TokenizerPreprocessor.from_config(restore_preprocessor_export(args.tokenizer_checkpoint_dir))
 
-    @functools.partial(jax.jit, static_argnames=("generated_frames",))
-    def rollout(params, video, actions, seed, generated_frames):
+    def rollout_fn(params, video, actions, embodiment_ids, seed, generated_frames):
         video = normalize_latents(video, model.latent_mean, model.latent_std)
         actions = jnp.asarray(actions, dtype=jnp.float32)
         actions = jnp.pad(actions, ((0, 0), (0, 0), (0, model.max_action_dim - actions.shape[-1])))
-        embodiment_ids = jnp.full(actions.shape[:2], args.embodiment_id, dtype=jnp.int32)
+        embodiment_ids = jnp.asarray(embodiment_ids, dtype=jnp.int32)
         primed = jnp.zeros_like(video).at[:, : args.context_frames].set(video[:, : args.context_frames])
-        context_key, sample_key = jax.random.split(jax.random.key(seed))
+        context_key, sample_key = jax.random.split(seed)
         context_noise = jax.random.normal(context_key, video.shape, dtype=jnp.float32)
         sample_noise = jax.random.normal(
             sample_key, (video.shape[0], generated_frames, *video.shape[2:]), dtype=jnp.float32
@@ -231,13 +308,37 @@ def main() -> None:
         )
         return denormalize_latents(generated, model.latent_mean, model.latent_std), diagnostics
 
-    @jax.jit
-    def decode_chunk(tokenizer_variables, latent_chunk):
+    if selected_clips:
+        rollout = jax.jit(
+            rollout_fn,
+            in_shardings=(
+                replicated_sharding,
+                batch_sharding,
+                batch_sharding,
+                batch_sharding,
+                replicated_sharding,
+            ),
+            out_shardings=(batch_sharding, replicated_sharding),
+            static_argnames=("generated_frames",),
+        )
+    else:
+        rollout = jax.jit(rollout_fn, static_argnames=("generated_frames",))
+
+    def decode_chunk_fn(tokenizer_variables, latent_chunk):
         return preprocessor.patches_to_images(
             tokenizer.apply(tokenizer_variables, latent_chunk, method=type(tokenizer).decode)
         ).astype(jnp.float32)
 
-    def decode_all(latent: jnp.ndarray, window_length: int = 16, window_overlap: int = 8) -> np.ndarray:
+    if selected_clips:
+        decode_chunk = jax.jit(
+            decode_chunk_fn,
+            in_shardings=(replicated_sharding, batch_sharding),
+            out_shardings=batch_sharding,
+        )
+    else:
+        decode_chunk = jax.jit(decode_chunk_fn)
+
+    def decode_all(latent: jnp.ndarray, window_length: int = 16, window_overlap: int = 8) -> jax.Array:
         pieces = []
         previous_stop = 0
         for start in chunk_starts(latent.shape[1], window_length, window_overlap):
@@ -246,14 +347,150 @@ def main() -> None:
             pad = window_length - piece.shape[1]
             if pad:
                 piece = jnp.pad(piece, ((0, 0), (0, pad), (0, 0), (0, 0)))
-            decoded = np.asarray(jax.device_get(decode_chunk(tokenizer_variables, piece)))[:, : stop - start]
+            decoded = decode_chunk(tokenizer_variables, piece)[:, : stop - start]
             warmup = max(previous_stop - start, 0)
             pieces.append(decoded[:, warmup:])
             previous_stop = stop
-        return np.concatenate(pieces, axis=1)
+        return jnp.concatenate(pieces, axis=1)
 
     def to_u8(x: np.ndarray) -> np.ndarray:
         return np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8)
+
+    if selected_clips:
+        params = jax.tree_util.tree_map(lambda value: shard_from_host(value, replicated_sharding), params)
+        tokenizer_variables = jax.tree_util.tree_map(
+            lambda value: shard_from_host(value, replicated_sharding), tokenizer_variables
+        )
+        clips = sorted(selected_clips, key=lambda clip: clip.frame_count)
+        global_batch_size = jax.device_count()
+        local_batch_size = global_batch_size // process_count
+        if len(clips) % global_batch_size:
+            raise ValueError(f"Selected clip count must be divisible by {global_batch_size}, got {len(clips)}")
+
+        local_summary = []
+        for batch_start in range(0, len(clips), global_batch_size):
+            global_clips = clips[batch_start : batch_start + global_batch_size]
+            local_start = process_index * local_batch_size
+            local_clips = global_clips[local_start : local_start + local_batch_size]
+            total_frames = max(clip.frame_count for clip in global_clips)
+            local_videos = []
+            local_actions = []
+            local_embodiment_ids = []
+            local_metadata = []
+
+            for clip in local_clips:
+                source = selected_sources[clip.source]
+                if clip.index >= len(source):
+                    raise IndexError(f"{clip.source} index {clip.index} is outside 0..{len(source) - 1}")
+                with np.load(io.BytesIO(source[clip.index])) as data:
+                    video = np.asarray(data["frames"], dtype=np.float32)
+                    actions = np.asarray(data["actions"], dtype=np.float32)
+                    prev_action = np.asarray(data["prev_action"], dtype=np.float32)
+                    stream = f"{str(data['repo'])}/ep{int(data['episode'])}/{str(data['camera'])}"
+                stop_frame = clip.start_frame + clip.frame_count
+                if clip.start_frame < 0 or clip.frame_count <= args.context_frames or stop_frame > len(video):
+                    raise ValueError(
+                        f"Invalid range for {clip.source} index {clip.index}: "
+                        f"start={clip.start_frame} count={clip.frame_count} record={len(video)}"
+                    )
+                indices = np.arange(clip.start_frame, stop_frame)
+                aligned_actions = actions[indices - 1].copy()
+                if clip.start_frame == 0:
+                    aligned_actions[0] = prev_action
+                action_padding = model.max_action_dim - aligned_actions.shape[-1]
+                if action_padding < 0:
+                    raise ValueError(
+                        f"Action dimension {aligned_actions.shape[-1]} exceeds model maximum {model.max_action_dim}"
+                    )
+                aligned_actions = np.pad(aligned_actions, ((0, 0), (0, action_padding)))
+                frame_padding = total_frames - clip.frame_count
+                local_videos.append(np.pad(video[indices], ((0, frame_padding), (0, 0), (0, 0))))
+                local_actions.append(np.pad(aligned_actions, ((0, frame_padding), (0, 0))))
+                local_embodiment_ids.append(np.full((total_frames,), clip.embodiment_id, dtype=np.int32))
+                local_metadata.append((clip, stream))
+
+            video_batch = local_batch_to_global(np.stack(local_videos), batch_sharding)
+            action_batch = local_batch_to_global(np.stack(local_actions), batch_sharding)
+            embodiment_batch = local_batch_to_global(np.stack(local_embodiment_ids), batch_sharding)
+            started = time.monotonic()
+            generated_latent, diagnostics = rollout(
+                params,
+                video_batch,
+                action_batch,
+                embodiment_batch,
+                jax.random.key(args.rollout_seed + batch_start),
+                total_frames - args.context_frames,
+            )
+            decoded = to_u8(global_batch_to_local(decode_all(video_batch)))
+            generated = to_u8(global_batch_to_local(decode_all(generated_latent)))
+
+            for row, (clip, stream) in enumerate(local_metadata):
+                stop_frame = clip.start_frame + clip.frame_count
+                base = f"d{clip.index:06d}__f{clip.start_frame:04d}-{stop_frame:04d}"
+                domain_dir = output_dir / clip.source
+                decoded_dir = domain_dir / "decoded"
+                rollout_dir = domain_dir / "rollout"
+                decoded_dir.mkdir(parents=True, exist_ok=True)
+                rollout_dir.mkdir(parents=True, exist_ok=True)
+                decoded_frames = decoded[row, : clip.frame_count]
+                generated_frames = generated[row, : clip.frame_count]
+                imageio.mimsave(decoded_dir / f"{base}__decoded.mp4", decoded_frames, fps=args.fps)
+                imageio.mimsave(
+                    rollout_dir / f"{base}__rollout_s{args.sample_steps}.mp4", generated_frames, fps=args.fps
+                )
+
+                generated_slice = slice(args.context_frames, clip.frame_count)
+                decoded_f = decoded_frames.astype(np.float32) / 255.0
+                generated_f = generated_frames.astype(np.float32) / 255.0
+                psnr = float(
+                    peak_signal_noise_ratio(decoded_f[generated_slice], generated_f[generated_slice], data_range=1.0)
+                )
+                ssim = float(
+                    np.mean(
+                        [
+                            structural_similarity(reference, prediction, data_range=1.0, channel_axis=-1)
+                            for reference, prediction in zip(
+                                decoded_f[generated_slice], generated_f[generated_slice], strict=True
+                            )
+                        ]
+                    )
+                )
+                local_summary.append(
+                    {
+                        "source": clip.source,
+                        "embodiment_id": clip.embodiment_id,
+                        "index": clip.index,
+                        "start_frame": clip.start_frame,
+                        "frame_count": clip.frame_count,
+                        "stream": stream,
+                        "psnr_vs_decoded": psnr,
+                        "ssim_vs_decoded": ssim,
+                    }
+                )
+                logger.info(
+                    "%s %d frames: PSNR %.2f SSIM %.4f",
+                    base,
+                    clip.frame_count,
+                    psnr,
+                    ssim,
+                )
+            logger.info("Finished selected batch in %.1fs", time.monotonic() - started)
+
+        (output_dir / f"summary_process_{process_index}.json").write_text(
+            json.dumps(
+                {
+                    "checkpoint_dir": args.checkpoint_dir,
+                    "step": step,
+                    "context_frames": args.context_frames,
+                    "sample_steps": args.sample_steps,
+                    "context_tau": args.context_tau,
+                    "videos": local_summary,
+                },
+                indent=2,
+            )
+        )
+        logger.info("Wrote %d selected clips on process %d", len(local_summary), process_index)
+        return
 
     summary = []
     for position, index in enumerate(selected):
@@ -264,11 +501,12 @@ def main() -> None:
             params,
             sample["video"],
             sample["actions"],
-            index + args.rollout_seed,
+            np.full((1, total_frames), args.embodiment_id, dtype=np.int32),
+            jax.random.key(index + args.rollout_seed),
             total_frames - args.context_frames,
         )
-        recon = to_u8(decode_all(jnp.asarray(sample["video"], dtype=jnp.float32))[0])
-        generated = to_u8(decode_all(generated_latent)[0])
+        recon = to_u8(np.asarray(jax.device_get(decode_all(jnp.asarray(sample["video"], dtype=jnp.float32))))[0])
+        generated = to_u8(np.asarray(jax.device_get(decode_all(generated_latent)))[0])
 
         # the reference is the untouched footage when we can reach it, so the
         # score covers tokenizer error too rather than hiding it
