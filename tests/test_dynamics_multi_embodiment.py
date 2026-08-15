@@ -115,7 +115,6 @@ class DynamicsModelTest(unittest.TestCase):
             batch,
             bootstrap_target_variables=self.variables,
             bootstrap_rows=1,
-            image_fraction=0.5,
             method=DynamicsModel.loss,
             rngs={"sample": jax.random.key(2)},
         )
@@ -133,34 +132,6 @@ class DynamicsModelTest(unittest.TestCase):
                 "bootstrap_target_norm",
             },
         )
-
-    def test_image_rows_train_without_temporal_transitions(self):
-        batch = {
-            "video": jnp.ones_like(self.z),
-            "actions": self.actions,
-            "embodiment_ids": self.embodiment_ids,
-            "segment_ids": jnp.asarray([[0, 1]], dtype=jnp.int32),
-        }
-        no_image_loss, _ = self.model.apply(
-            self.variables,
-            batch,
-            bootstrap_target_variables=self.variables,
-            bootstrap_rows=0,
-            image_fraction=0.0,
-            method=DynamicsModel.loss,
-            rngs={"sample": jax.random.key(2)},
-        )
-        image_loss, _ = self.model.apply(
-            self.variables,
-            batch,
-            bootstrap_target_variables=self.variables,
-            bootstrap_rows=0,
-            image_fraction=1.0,
-            method=DynamicsModel.loss,
-            rngs={"sample": jax.random.key(2)},
-        )
-        self.assertEqual(float(no_image_loss), 0.0)
-        self.assertGreater(float(image_loss), 0.0)
 
     def test_generation_returns_per_step_diagnostics(self):
         frame, diagnostics = self.model.apply(

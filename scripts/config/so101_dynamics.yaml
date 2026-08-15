@@ -12,9 +12,8 @@ optimizer:
   adam_b1: 0.9
   adam_b2: 0.99
 loss:
-  bootstrap_interval: 4
+  bootstrap_ratio: 0.25
   bootstrap_start_step: 50000
-  image_fraction: 0.3
 log_interval: 100
 eval_steps: 1000
 total_steps: 100000

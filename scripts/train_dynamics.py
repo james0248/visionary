@@ -65,7 +65,6 @@ def train_step(
     base_sample_key: jax.Array,
     global_step: jax.Array,
     bootstrap_rows: int,
-    image_fraction: float,
     ema_decay: float,
 ):
     sample_key = fold_in_many(base_sample_key, global_step)
@@ -75,7 +74,6 @@ def train_step(
             params,
             batch,
             bootstrap_rows=bootstrap_rows,
-            image_fraction=image_fraction,
             bootstrap_target_variables=state.ema_params,
             method=DynamicsModel.loss,
             rngs={"sample": sample_key},
@@ -98,7 +96,6 @@ def eval_step(
         state.params,
         batch,
         bootstrap_rows=0,
-        image_fraction=0.0,
         bootstrap_target_variables=state.ema_params,
         method=DynamicsModel.loss,
         rngs={"sample": sample_key},
@@ -107,7 +104,6 @@ def eval_step(
         state.ema_params,
         batch,
         bootstrap_rows=0,
-        image_fraction=0.0,
         bootstrap_target_variables=state.ema_params,
         method=DynamicsModel.loss,
         rngs={"sample": sample_key},
@@ -399,8 +395,8 @@ def main(cfg: DictConfig):
         )
     batch_size_per_device = batch_size_per_process // local_device_count
     bootstrap_start_step = int(cfg.loss.bootstrap_start_step)
-    bootstrap_interval = int(cfg.loss.bootstrap_interval)
-    image_fraction = float(cfg.loss.image_fraction)
+    bootstrap_ratio = float(cfg.loss.bootstrap_ratio)
+    bootstrap_rows = int(round(bootstrap_ratio * global_batch_size))
     logger.info(
         "Batch layout: global=%d per_process=%d per_device=%d",
         global_batch_size,
@@ -408,10 +404,9 @@ def main(cfg: DictConfig):
         batch_size_per_device,
     )
     logger.info(
-        "Loss schedule: full-batch bootstrap every %d steps after step %d; image-only rows %.1f%%",
-        bootstrap_interval,
+        "Loss schedule: %.1f%% bootstrap rows after step %d",
+        bootstrap_ratio * 100.0,
         bootstrap_start_step,
-        image_fraction * 100.0,
     )
 
     read_options = grain.ReadOptions(
@@ -504,7 +499,7 @@ def main(cfg: DictConfig):
             metrics_sharding,
         ),
         out_shardings=(state_shardings, metrics_sharding),
-        static_argnames=("bootstrap_rows", "image_fraction", "ema_decay"),
+        static_argnames=("bootstrap_rows", "ema_decay"),
         donate_argnums=(0,),
     )
     jit_eval_step = jax.jit(
@@ -740,8 +735,6 @@ def main(cfg: DictConfig):
 
     timing_start_step = step
     timer = PhaseTimer()
-    latest_flow_metrics = None
-    latest_bootstrap_metrics = None
     logger.info(
         "Asynchronous timing mode enabled for dynamics training; timing logs are averaged over each logging window."
     )
@@ -757,25 +750,16 @@ def main(cfg: DictConfig):
                 batch = latent_normalizer.map(batch)
         with timer("transfer"):
             batch = local_batch_to_global(batch, batch_sharding)
-        bootstrap_rows = (
-            global_batch_size
-            if current_step >= bootstrap_start_step and (current_step - bootstrap_start_step) % bootstrap_interval == 0
-            else 0
-        )
+        active_bootstrap_rows = bootstrap_rows if current_step >= bootstrap_start_step else 0
         with timer("compute"):
             state, metrics = jit_train_step(
                 state,
                 batch,
                 train_key,
                 jnp.asarray(current_step, dtype=jnp.int32),
-                bootstrap_rows,
-                image_fraction,
+                active_bootstrap_rows,
                 cfg.ema_decay,
             )
-        if bootstrap_rows:
-            latest_bootstrap_metrics = metrics
-        else:
-            latest_flow_metrics = metrics
         step = current_step + 1
 
         t_eval = 0.0
@@ -841,14 +825,7 @@ def main(cfg: DictConfig):
 
         if step % cfg.log_interval == 0:
             with timer("compute"):
-                metrics_to_log = metrics if latest_flow_metrics is None else latest_flow_metrics
-                train_metrics = jax.device_get(metrics_to_log)
-                if latest_bootstrap_metrics is not None:
-                    bootstrap_metrics = jax.device_get(latest_bootstrap_metrics)
-                    train_metrics["bootstrap_loss"] = bootstrap_metrics["bootstrap_loss"]
-                    train_metrics["bootstrap_target_norm"] = bootstrap_metrics["bootstrap_target_norm"]
-            latest_flow_metrics = None
-            latest_bootstrap_metrics = None
+                train_metrics = jax.device_get(metrics)
             timing_stats = timer.log(logger, step, step - timing_start_step, eval=t_eval)
             timing_start_step = step
             wb.log(

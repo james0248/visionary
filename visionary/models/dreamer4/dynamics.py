@@ -374,7 +374,6 @@ class DynamicsModel(nn.Module):
         batch: DynamicsBatch,
         bootstrap_target_variables,
         bootstrap_rows: int,
-        image_fraction: float,
     ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
         """Compute shortcut forcing loss. Empirical rows use flow loss. Final rows use targets from two EMA half-steps."""
 
@@ -389,8 +388,6 @@ class DynamicsModel(nn.Module):
         batch_size, seq_len, _, _ = z_target.shape
         if not 0 <= bootstrap_rows <= batch_size:
             raise ValueError(f"Expected 0 <= bootstrap_rows <= {batch_size}, got {bootstrap_rows}")
-        if not 0.0 <= image_fraction <= 1.0:
-            raise ValueError(f"Expected image_fraction in [0, 1], got {image_fraction}")
 
         transition_mask = jnp.ones((batch_size, seq_len), dtype=jnp.bool_)
         transition_mask = transition_mask.at[:, 0].set(False)
@@ -402,17 +399,7 @@ class DynamicsModel(nn.Module):
         bootstrap_row_mask = jnp.arange(batch_size)[:, None] >= bootstrap_start
         bootstrap_row_mask = jnp.broadcast_to(bootstrap_row_mask, (batch_size, seq_len))
 
-        sample_rng = self.make_rng("sample")
-        image_rng, step_rng, signal_rng, noise_rng = jax.random.split(sample_rng, 4)
-
-        image_rows = int(batch_size * image_fraction)
-        image_row_mask = jax.random.permutation(image_rng, batch_size) < image_rows
-        independent_segment_ids = jnp.broadcast_to(
-            jnp.arange(seq_len, dtype=jnp.int32)[None, :],
-            segment_ids.shape,
-        )
-        training_segment_ids = jnp.where(image_row_mask[:, None], independent_segment_ids, segment_ids)
-        transition_mask = transition_mask | image_row_mask[:, None]
+        step_rng, signal_rng, noise_rng = jax.random.split(self.make_rng("sample"), 3)
 
         finest_step_level = self.max_step_size - 1
         sampled_bootstrap_levels = jax.random.randint(
@@ -444,10 +431,10 @@ class DynamicsModel(nn.Module):
 
         z_noise = jax.random.normal(noise_rng, z_target.shape, dtype=jnp.float32)
         z_noised = tau * z_target + (1.0 - tau) * z_noise
-        z_pred_1 = self(z_noised, actions, embodiment_ids, step_levels, signal_indices, training_segment_ids)
+        z_pred_1 = self(z_noised, actions, embodiment_ids, step_levels, signal_indices, segment_ids)
 
         flow_loss = (z_pred_1 - z_target) ** 2
-        loss_weight = 1.0 / jnp.maximum(1.0 - tau, 1e-3) ** 2
+        loss_weight = 0.9 * tau + 0.1
         weighted_flow_loss = loss_weight * flow_loss
 
         weighted_loss = weighted_flow_loss
@@ -459,7 +446,7 @@ class DynamicsModel(nn.Module):
             step_sizes_bootstrap = step_sizes[bootstrap_slice]
             step_levels_bootstrap = step_levels[bootstrap_slice]
             signal_indices_bootstrap = signal_indices[bootstrap_slice]
-            segment_ids_bootstrap = training_segment_ids[bootstrap_slice]
+            segment_ids_bootstrap = segment_ids[bootstrap_slice]
 
             bootstrap_forward = nn.apply(
                 lambda model, z, action, embodiment, level, signal, segments: model(

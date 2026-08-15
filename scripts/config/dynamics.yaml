@@ -18,9 +18,8 @@ exp_name: ???
 tokenizer_exp_name: ???
 
 loss:
-  bootstrap_interval: 4
+  bootstrap_ratio: 0.25
   bootstrap_start_step: 10000
-  image_fraction: 0.3
 
 video_eval:
   context_frames: 4
