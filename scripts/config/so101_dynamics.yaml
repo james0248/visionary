@@ -17,7 +17,7 @@ loss:
 log_interval: 100
 eval_steps: 1000
 total_steps: 100000
-exp_name: dynamics_v3_312m
+exp_name: dynamics_v4_312m_ramp
 tokenizer_exp_name: tokenizer_v2
 
 dataset:
@@ -91,4 +91,4 @@ checkpoint:
 wandb:
   enabled: true
   project: visionary
-  group: so101_dynamics_v3_312m
+  group: ${exp_name}

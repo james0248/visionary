@@ -1,10 +1,10 @@
 project: visionary-491008
-exp_name: dynamics_v3_312m
+exp_name: dynamics_v4_312m_ramp
 tokenizer_exp_name: tokenizer_v2
 checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${exp_name}
 
 job:
-  name: so101-dynamics-312m
+  name: so101-dynamics-312m-ramp
   poll_interval_seconds: 60
   queue_wait_timeout_seconds: 0
   spot: true
