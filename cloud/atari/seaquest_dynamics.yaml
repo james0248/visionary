@@ -24,8 +24,8 @@ training:
     - exp_name=${exp_name}
     - tokenizer_exp_name=${tokenizer_exp_name}
     - video_eval.tokenizer.checkpoint_dir=gs://visionary-uc1/atari/checkpoints/${tokenizer_exp_name}
-    - dataset.train_dir=/mnt/data/seaquest_dynamics/train
-    - dataset.eval_dir=/mnt/data/seaquest_dynamics/eval
+    - dataset.sources.0.train_dir=/mnt/data/seaquest_dynamics/train
+    - dataset.sources.0.eval_dir=/mnt/data/seaquest_dynamics/eval
     - dynamics.num_actions=18
     - checkpoint.manager.directory=${checkpoint_dir}
     - total_steps=1000000

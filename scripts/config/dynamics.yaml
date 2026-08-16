@@ -1,19 +1,21 @@
 seed: 42
-learning_rate: 3e-4
+ema_decay: 0.999
 optimizer:
-  _target_: optax.adam
-  learning_rate: ${learning_rate}
+  peak_lr: 3e-4
+  warmup_ratio: 0.05
+  decay_ratio: 0.1
+  weight_decay: 0.1
+  muon_beta: 0.95
+  ns_steps: 5
+  nesterov: true
+  adam_lr_ratio: 1.0
+  adam_b1: 0.9
+  adam_b2: 0.99
 log_interval: 100
 eval_steps: 1000
 total_steps: 1000000
-overfit_single_batch: false
 exp_name: ???
 tokenizer_exp_name: ???
-
-fsdp:
-  enabled: auto
-  data_axis_size: 8
-  log_sharding: true
 
 loss:
   bootstrap_ratio: 0.25
@@ -21,7 +23,9 @@ loss:
 
 video_eval:
   context_frames: 4
-  generated_frames: 60
+  horizon: 32
+  num_samples: 4
+  seed: 42
   sample_steps: 4
   context_tau: 0.9
   fps: 15
@@ -31,21 +35,19 @@ video_eval:
     checkpoint_step: null
 
 dataset:
-  train_dir: data/tokenized/train/
-  eval_dir: data/tokenized/eval/
+  latent_stats: data/tokenized/latent_stats.json
+  sources:
+    - embodiment: atari
+      train_dir: data/tokenized/train/
+      eval_dir: data/tokenized/eval/
+      action_dim: 1
+      sampling_weight: 1.0
   batch_size: 64
-  batch_length: 64
-  alternating_lengths:
-    enabled: true
-    short: 16
-    long: 64
-    long_every: 8
-    final_long_only_steps: 0
+  pack_length: 64
   worker_count: 4
   num_threads: 8
   prefetch_buffer_size: 16
   eval:
-    batch_length: 64
     max_batches: 16
 
 dynamics:
@@ -57,6 +59,8 @@ dynamics:
   num_registers: 2
   num_obs_tokens: 32
   num_actions: ???
+  num_embodiments: 1
+  max_action_dim: 1
   action_mode: discrete
   max_step_size: 6
   model_dim: 128

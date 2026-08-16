@@ -1,38 +1,34 @@
-# Fine-tune the 138M strided model from 1.5M on the g5-filtered latents.
 project: visionary-491008
-exp_name: dynamics_small_ft
-tokenizer_exp_name: tokenizer
-# Single-region, co-located with the TPU zone: same-region writes are not
-# billed as multi-region replication, which was ~76% of this run's GCS cost.
-bucket: gs://visionary-uc1
-checkpoint_dir: ${bucket}/so101/checkpoints/${exp_name}
+exp_name: dynamics_v4_312m_ramp
+tokenizer_exp_name: tokenizer_v2
+checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${exp_name}
 
 job:
-  name: so101-dyn-ftg5
+  name: so101-dynamics-312m-ramp
   poll_interval_seconds: 60
   queue_wait_timeout_seconds: 0
   spot: true
 
 repo:
   url: https://github.com/james0248/visionary.git
-  branch: so101
+  branch: so101-dynamics
 
 setup:
   accelerator: tpu
 
 training:
   script: scripts/train_dynamics.py
-  config_name: so101_dynamics_small_ftg5
+  config_name: so101_dynamics
   auto_resume: true
   overrides:
     - exp_name=${exp_name}
     - tokenizer_exp_name=${tokenizer_exp_name}
-    - dataset.train_dir=/mnt/data/dynamics_filtered/train
-    - dataset.eval_dir=/mnt/data/dynamics_filtered/eval
+    - dataset.latent_stats=/mnt/data/latent_stats.json
+    - dataset.sources.0.train_dir=/mnt/data/so101/train
+    - dataset.sources.0.eval_dir=/mnt/data/so101/eval
+    - dataset.sources.1.train_dir=/mnt/data/widowx/train
+    - dataset.sources.1.eval_dir=/mnt/data/widowx/eval
     - checkpoint.manager.directory=${checkpoint_dir}
-    # Overridden here rather than in scripts/config, so the running job picks
-    # up the new bucket without needing a push to the so101 branch.
-    - video_eval.tokenizer.checkpoint_dir=${bucket}/so101/checkpoints/${tokenizer_exp_name}
 
 markers:
   complete_uri: ${checkpoint_dir}/_training_complete.json
@@ -65,10 +61,10 @@ watcher:
 
 machine:
   family: v6e
-  chips: 8
+  chips: 16
   zone: us-central1-b
   spot: true
   data_disk:
-    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-so101-dyng5-uc1b
+    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-dynamics-v2-uc1b
     mode: read-only
     mount_path: /mnt/data

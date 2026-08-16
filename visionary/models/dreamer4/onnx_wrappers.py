@@ -1261,33 +1261,6 @@ def _slide_rebased_key_cache(
     )
 
 
-class _ExportActionEmbedding(nn.Module):
-    model_dim: int
-    num_actions: int
-    dtype: jnp.dtype = jnp.bfloat16
-
-    @nn.compact
-    def __call__(
-        self,
-        actions: jnp.ndarray,
-        batch_time_shape: tuple[int, int],
-    ) -> jnp.ndarray:
-        batch_size, seq_len = batch_time_shape
-        base_token = self.param(
-            "base_token",
-            nn.initializers.normal(stddev=0.02),
-            (self.model_dim,),
-        ).astype(self.dtype)
-        action_tokens = nn.Embed(
-            num_embeddings=self.num_actions,
-            features=self.model_dim,
-            embedding_init=nn.initializers.normal(stddev=0.02),
-            dtype=self.dtype,
-            name="action_embedding",
-        )(jnp.asarray(actions, dtype=jnp.int32))
-        return action_tokens + jnp.broadcast_to(base_token, (batch_size, seq_len, self.model_dim))
-
-
 class _CachedDynamicsModel(nn.Module):
     cfg: Any
     dtype: jnp.dtype = jnp.float32
@@ -1299,9 +1272,12 @@ class _CachedDynamicsModel(nn.Module):
             max_step_size=int(self.cfg.max_step_size),
             dtype=self.dtype,
         )
-        self.action_embedding = _ExportActionEmbedding(
+        self.action_embedding = dynamics_module.ActionEmbedding(
             model_dim=int(self.cfg.model_dim),
             num_actions=int(self.cfg.num_actions),
+            num_embodiments=int(self.cfg.num_embodiments),
+            max_action_dim=int(self.cfg.max_action_dim),
+            action_mode=str(self.cfg.action_mode),
             dtype=self.dtype,
         )
         self.register_tokens = self.param(
@@ -1327,12 +1303,13 @@ class _CachedDynamicsModel(nn.Module):
     def _tokens(
         self,
         z: jnp.ndarray,
-        actions: jnp.ndarray | None,
+        actions: jnp.ndarray,
         step_levels: jnp.ndarray,
         signal_levels: jnp.ndarray,
     ) -> tuple[jnp.ndarray, int, int]:
         batch_size, seq_len, num_obs_tokens, _ = z.shape
-        action_tokens = self.action_embedding(actions, (batch_size, seq_len))[:, :, None, :]
+        embodiment_ids = jnp.zeros((batch_size, seq_len), dtype=jnp.int32)
+        action_tokens = self.action_embedding(actions, embodiment_ids)[:, :, None, :]
         shortcut_tokens = self.shortcut_embedding(step_levels, signal_levels)[:, :, None, :]
         register_tokens = jnp.broadcast_to(
             self.register_tokens.astype(self.dtype),
@@ -1341,7 +1318,7 @@ class _CachedDynamicsModel(nn.Module):
         observation_tokens = nn.Dense(
             int(self.cfg.model_dim),
             dtype=self.dtype,
-            name="Dense_0",
+            name="observation_projection",
         )(z.astype(self.dtype))
         tokens = jnp.concatenate([action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2)
         total_tokens = 1 + 1 + int(self.cfg.num_registers) + num_obs_tokens
@@ -1355,7 +1332,7 @@ class _CachedDynamicsModel(nn.Module):
             dtype=self.dtype,
             kernel_init=nn.initializers.zeros,
             bias_init=nn.initializers.zeros,
-            name="Dense_1",
+            name="prediction_projection",
         )(observation_hidden)
 
     @nn.compact
@@ -2152,13 +2129,17 @@ def onnx_apply_dynamics_uncached(
     dtype: Any | None = jnp.float32,
 ) -> jnp.ndarray:
     model = create_dynamics(cfg, dtype=dtype)
+    embodiment_ids = jnp.zeros(z.shape[:2], dtype=jnp.int32)
+    segment_ids = jnp.zeros(z.shape[:2], dtype=jnp.int32)
     with export_overrides():
         return model.apply(
             variables,
             z,
             actions,
+            embodiment_ids,
             step_levels,
             signal_levels,
+            segment_ids,
             method=DynamicsModel.__call__,
         )
 

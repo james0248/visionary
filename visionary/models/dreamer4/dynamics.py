@@ -13,33 +13,50 @@ from visionary.models.dreamer4.transformer import (
 )
 
 
+def normalize_latents(latents: jnp.ndarray, mean: jax.typing.ArrayLike, std: jax.typing.ArrayLike) -> jnp.ndarray:
+    latents = jnp.asarray(latents, dtype=jnp.float32)
+    std = jnp.maximum(jnp.asarray(std, dtype=jnp.float32), 1e-8)
+    return (latents - jnp.asarray(mean, dtype=jnp.float32)) / std
+
+
+def denormalize_latents(latents: jnp.ndarray, mean: jax.typing.ArrayLike, std: jax.typing.ArrayLike) -> jnp.ndarray:
+    latents = jnp.asarray(latents, dtype=jnp.float32)
+    std = jnp.maximum(jnp.asarray(std, dtype=jnp.float32), 1e-8)
+    return latents * std + jnp.asarray(mean, dtype=jnp.float32)
+
+
 class ActionEmbedding(nn.Module):
     model_dim: int
     num_actions: int
-    action_mode: Literal["discrete", "continuous"] = "discrete"
+    num_embodiments: int
+    max_action_dim: int
+    action_mode: Literal["discrete", "continuous"]
     dtype: jnp.dtype = jnp.bfloat16
 
     @nn.compact
-    def __call__(
-        self,
-        actions: jnp.ndarray | None,
-        batch_time_shape: tuple[int, int],
-    ) -> jnp.ndarray:
-        batch_size, seq_len = batch_time_shape
+    def __call__(self, actions: jnp.ndarray, embodiment_ids: jnp.ndarray) -> jnp.ndarray:
         base_token = self.param(
             "base_token",
             nn.initializers.normal(stddev=0.02),
             (self.model_dim,),
         ).astype(self.dtype)
 
-        if actions is None:
-            return jnp.broadcast_to(base_token, (batch_size, seq_len, self.model_dim))
-
         if self.action_mode == "continuous":
             actions = jnp.asarray(actions, dtype=self.dtype)
-            hidden = nn.Dense(self.model_dim, dtype=self.dtype, name="action_in")(actions)
-            hidden = nn.gelu(hidden)
-            action_tokens = nn.Dense(self.model_dim, dtype=self.dtype, name="action_out")(hidden)
+            embodiment_ids = jnp.asarray(embodiment_ids, dtype=jnp.int32)
+            action_kernels = self.param(
+                "action_projection_kernel",
+                nn.initializers.lecun_normal(),
+                (self.num_embodiments, self.max_action_dim, self.model_dim),
+            ).astype(self.dtype)
+            action_biases = self.param(
+                "action_projection_bias",
+                nn.initializers.zeros,
+                (self.num_embodiments, self.model_dim),
+            ).astype(self.dtype)
+            selected_kernels = jnp.take(action_kernels, embodiment_ids, axis=0)
+            selected_biases = jnp.take(action_biases, embodiment_ids, axis=0)
+            action_tokens = jnp.einsum("bta,btad->btd", actions, selected_kernels) + selected_biases
         elif self.action_mode == "discrete":
             actions = jnp.asarray(actions, dtype=jnp.int32)
             valid_actions = actions >= 0
@@ -47,7 +64,7 @@ class ActionEmbedding(nn.Module):
             action_tokens = nn.Embed(
                 num_embeddings=self.num_actions,
                 features=self.model_dim,
-                embedding_init=nn.initializers.normal(stddev=0.02),
+                embedding_init=nn.initializers.normal(stddev=1.0),
                 dtype=self.dtype,
                 name="action_embedding",
             )(safe_actions)
@@ -65,19 +82,17 @@ class ShortcutEmbedding(nn.Module):
 
     @nn.compact
     def __call__(self, step_levels: jnp.ndarray, signal_levels: jnp.ndarray) -> jnp.ndarray:
-        step_dim = self.model_dim // 2
-        signal_dim = self.model_dim - step_dim
-
+        half_dim = self.model_dim // 2
         step_tokens = nn.Embed(
             num_embeddings=self.max_step_size,
-            features=step_dim,
+            features=half_dim,
             embedding_init=nn.initializers.normal(stddev=0.02),
             dtype=self.dtype,
             name="step_embedding",
         )(jnp.asarray(step_levels, dtype=jnp.int32))
         signal_tokens = nn.Embed(
-            num_embeddings=1 << self.max_step_size,
-            features=signal_dim,
+            num_embeddings=(1 << (self.max_step_size - 1)) + 1,
+            features=half_dim,
             embedding_init=nn.initializers.normal(stddev=0.02),
             dtype=self.dtype,
             name="signal_embedding",
@@ -93,6 +108,8 @@ class DynamicsModel(nn.Module):
     num_registers: int
     num_obs_tokens: int
     num_actions: int
+    num_embodiments: int
+    max_action_dim: int
 
     max_step_size: int
 
@@ -100,22 +117,27 @@ class DynamicsModel(nn.Module):
     head_dim: int
     mlp_hidden_dim: int
     context_length: int
-    action_mode: Literal["discrete", "continuous"] = "discrete"
+    latent_mean: tuple[float, ...]
+    latent_std: tuple[float, ...]
+
+    action_mode: Literal["discrete", "continuous"]
     temporal_layer_period: int = 4
     base: float = 10000.0
     remat_policy: str | None = None
     dtype: jnp.dtype = jnp.bfloat16
 
     def setup(self):
-        self.shortcut_embedding = ShortcutEmbedding(
-            model_dim=self.model_dim,
-            max_step_size=self.max_step_size,
-            dtype=self.dtype,
-        )
         self.action_embedding = ActionEmbedding(
             model_dim=self.model_dim,
             num_actions=self.num_actions,
+            num_embodiments=self.num_embodiments,
+            max_action_dim=self.max_action_dim,
             action_mode=self.action_mode,
+            dtype=self.dtype,
+        )
+        self.shortcut_embedding = ShortcutEmbedding(
+            model_dim=self.model_dim,
+            max_step_size=self.max_step_size,
             dtype=self.dtype,
         )
         self.register_tokens = self.param(
@@ -139,13 +161,15 @@ class DynamicsModel(nn.Module):
     def __call__(
         self,
         z: jnp.ndarray,
-        actions: jnp.ndarray | None,
+        actions: jnp.ndarray,
+        embodiment_ids: jnp.ndarray,
         step_levels: jnp.ndarray,
         signal_levels: jnp.ndarray,
+        segment_ids: jnp.ndarray,
     ) -> jnp.ndarray:
-        batch_size, seq_len, num_obs_tokens, token_dim = z.shape
+        batch_size, seq_len, input_obs_tokens, token_dim = z.shape
 
-        action_tokens = self.action_embedding(actions, (batch_size, seq_len))[:, :, None, :]
+        action_tokens = self.action_embedding(actions, embodiment_ids)[:, :, None, :]
         shortcut_tokens = self.shortcut_embedding(step_levels, signal_levels)[:, :, None, :]
         register_tokens = jnp.broadcast_to(
             self.register_tokens.astype(self.dtype),
@@ -154,24 +178,29 @@ class DynamicsModel(nn.Module):
         observation_tokens = nn.Dense(
             self.model_dim,
             dtype=self.dtype,
-            name="Dense_0",
+            name="observation_projection",
         )(z.astype(self.dtype))
 
-        num_tokens = 1 + 1 + self.num_registers + num_obs_tokens
+        observation_offset = 1 + 1 + self.num_registers  # action, shortcut, register
+        num_tokens = observation_offset + input_obs_tokens
         tokens = jnp.concatenate([action_tokens, shortcut_tokens, register_tokens, observation_tokens], axis=2)
 
         spatial_rope = create_temporal_rope(self.base, self.head_dim, num_tokens)
         temporal_rope = create_temporal_rope(self.base, self.head_dim, seq_len)
-        spatial_mask = jnp.ones((num_tokens, num_tokens), dtype=bool)
 
-        query_positions = jnp.arange(seq_len)[:, None]
-        key_positions = jnp.arange(seq_len)[None, :]
-        temporal_mask = key_positions <= query_positions
-        temporal_mask = temporal_mask & (key_positions >= query_positions - (self.context_length - 1))
-        temporal_mask = jnp.broadcast_to(
-            temporal_mask[None, :, :],
-            (batch_size, seq_len, seq_len),
-        )
+        # Actions cannot see latent tokens.
+        token_levels = jnp.concatenate([jnp.zeros(1), jnp.ones(num_tokens - 1)], dtype=jnp.int32)
+        spatial_mask = token_levels[:, None] >= token_levels[None, :]
+
+        # Context length windowed mask
+        temporal_mask = jnp.tril(jnp.ones((seq_len, seq_len), dtype=jnp.bool_))
+        temporal_mask = jnp.triu(temporal_mask, k=1 - self.context_length)
+        temporal_mask = jnp.broadcast_to(temporal_mask[None, :, :], (batch_size, seq_len, seq_len))
+
+        # Block attention
+        segment_ids = jnp.asarray(segment_ids, dtype=jnp.int32)
+        same_segment = segment_ids[:, :, None] == segment_ids[:, None, :]
+        temporal_mask = temporal_mask & same_segment
 
         hidden = self.transformer(
             x=tokens,
@@ -182,240 +211,332 @@ class DynamicsModel(nn.Module):
             temporal_rope_emb=temporal_rope,
             temporal_mask=temporal_mask,
         )
-        observation_offset = 1 + 1 + self.num_registers
         observation_hidden = hidden[:, :, observation_offset:, :]
         return nn.Dense(
             token_dim,
             dtype=self.dtype,
             kernel_init=nn.initializers.zeros,
             bias_init=nn.initializers.zeros,
-            name="Dense_1",
+            name="prediction_projection",
         )(observation_hidden)
 
     def generate_next(
         self,
         video_prefix: jnp.ndarray,
-        actions: jnp.ndarray | None,
+        actions: jnp.ndarray,
+        embodiment_ids: jnp.ndarray,
         context_noise: jnp.ndarray,
         sample_noise: jnp.ndarray,
         target_index: jnp.ndarray,
         context_tau: float,
         sample_steps: int,
-    ) -> jnp.ndarray:
+        clean_until: jnp.ndarray | int,
+    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+        """Generate one latent frame at each row's target index."""
+
         batch_size, seq_len, _, latent_dim = video_prefix.shape
         target_index = jnp.asarray(target_index, dtype=jnp.int32)
+        clean_until = jnp.asarray(clean_until, dtype=jnp.int32)
 
-        context_step_level = self.max_step_size - 1
-        context_step_count = 1 << context_step_level
-        context_signal_level = min(
-            max(int(round(context_tau * context_step_count)), 0),
-            context_step_count - 1,
-        )
-        context_tau = jnp.float32(context_signal_level / context_step_count)
+        k_max = 1 << (self.max_step_size - 1)
+        finest_step_level = self.max_step_size - 1
+        if not 0.0 <= context_tau <= 1.0:
+            raise ValueError(f"context_tau must be in [0, 1], got {context_tau}")
 
         sample_step_level = int(round(math.log2(sample_steps)))
         sample_step_count = 1 << sample_step_level
         sample_step_size = jnp.float32(1.0 / sample_step_count)
+        sample_signal_stride = k_max // sample_step_count
+        context_step_level = sample_step_level if sample_step_level == finest_step_level else finest_step_level - 1
+        context_step_count = 1 << context_step_level
+        context_signal_level = int(context_tau * context_step_count)
+        context_signal_index = context_signal_level * (k_max // context_step_count)
+        context_tau = jnp.float32(context_signal_level / context_step_count)
 
-        z_prefix = rearrange(
-            video_prefix,
-            "b t (n k) d -> b t n (k d)",
-            n=self.num_obs_tokens,
-        )
-        z_context_noise = rearrange(
-            context_noise,
-            "b t (n k) d -> b t n (k d)",
-            n=self.num_obs_tokens,
-        )
-        z_sample_noise = rearrange(
-            sample_noise[:, None],
-            "b t (n k) d -> b t n (k d)",
-            n=self.num_obs_tokens,
-        )[:, 0]
+        z_prefix = rearrange(video_prefix, "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)
+        z_context_noise = rearrange(context_noise, "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)
+        z_sample_noise = rearrange(sample_noise[:, None], "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens)[:, 0]
         _, _, num_obs_tokens, token_dim = z_prefix.shape
+        segment_ids = jnp.zeros((batch_size, seq_len), dtype=jnp.int32)
 
-        past_mask = jnp.arange(seq_len, dtype=jnp.int32) < target_index
+        positions = jnp.arange(seq_len, dtype=jnp.int32)
+        past_mask = positions < target_index
         past_mask_z = past_mask[None, :, None, None]
         past_mask_t = jnp.broadcast_to(past_mask[None, :], (batch_size, seq_len))
 
-        noised_prefix = context_tau * z_prefix.astype(jnp.float32) + (1.0 - context_tau) * z_context_noise.astype(
-            jnp.float32
-        )
+        clean_mask = positions < clean_until
+        clean_mask_z = clean_mask[None, :, None, None]
+        clean_mask_t = jnp.broadcast_to(clean_mask[None, :], (batch_size, seq_len))
+
+        z_prefix = z_prefix.astype(jnp.float32)
+        noised_prefix = context_tau * z_prefix + (1.0 - context_tau) * z_context_noise.astype(jnp.float32)
         base_z = jnp.where(
             past_mask_z,
-            noised_prefix,
+            jnp.where(clean_mask_z, z_prefix, noised_prefix),
             jnp.zeros((batch_size, seq_len, num_obs_tokens, token_dim), dtype=jnp.float32),
         )
         base_step_levels = jnp.where(
             past_mask_t,
-            jnp.full((batch_size, seq_len), context_step_level, dtype=jnp.int32),
-            jnp.zeros((batch_size, seq_len), dtype=jnp.int32),
-        )
-        base_signal_levels = jnp.where(
+            jnp.where(clean_mask_t, finest_step_level, context_step_level),
+            0,
+        ).astype(jnp.int32)
+        base_signal_indices = jnp.where(
             past_mask_t,
-            jnp.full((batch_size, seq_len), context_signal_level, dtype=jnp.int32),
-            jnp.zeros((batch_size, seq_len), dtype=jnp.int32),
-        )
+            jnp.where(clean_mask_t, k_max, context_signal_index),
+            0,
+        ).astype(jnp.int32)
 
-        current_z = z_sample_noise.astype(jnp.float32)
-        for sample_signal_level in range(sample_step_count):
+        def sample_step(
+            sample_signal_level: int,
+            carry: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+        ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+            current_z, x0_norm, update_mag = carry
             step_levels = base_step_levels.at[:, target_index].set(sample_step_level)
-            signal_levels = base_signal_levels.at[:, target_index].set(sample_signal_level)
+            signal_indices = base_signal_indices.at[:, target_index].set(sample_signal_level * sample_signal_stride)
             z_input = base_z.at[:, target_index].set(current_z)
-            predicted = self(z_input, actions, step_levels, signal_levels)[:, target_index].astype(jnp.float32)
+            predicted = self(z_input, actions, embodiment_ids, step_levels, signal_indices, segment_ids)[
+                :, target_index
+            ].astype(jnp.float32)
 
             tau = jnp.float32(sample_signal_level / sample_step_count)
             velocity = (predicted - current_z) / jnp.maximum(1.0 - tau, 1e-6)
-            current_z = current_z + velocity * sample_step_size
+            update = velocity * sample_step_size
+            x0_norm = x0_norm.at[sample_signal_level].set(jnp.mean(jnp.abs(predicted)))
+            update_mag = update_mag.at[sample_signal_level].set(jnp.mean(jnp.abs(update)))
+            return current_z + update, x0_norm, update_mag
 
-        return rearrange(current_z[:, None], "b t n (k d) -> b t (n k) d", d=latent_dim)[:, 0]
+        current_z, x0_norm, update_mag = jax.lax.fori_loop(
+            0,
+            sample_step_count,
+            sample_step,
+            (
+                z_sample_noise.astype(jnp.float32),
+                jnp.zeros(sample_step_count, dtype=jnp.float32),
+                jnp.zeros(sample_step_count, dtype=jnp.float32),
+            ),
+        )
+        frame = rearrange(current_z[:, None], "b t n (k d) -> b t (n k) d", d=latent_dim)[:, 0]
+        return frame, {"x0_norm": x0_norm, "update_mag": update_mag}
 
     def generate_rollout(
         self,
         video_prefix: jnp.ndarray,
-        actions: jnp.ndarray | None,
+        actions: jnp.ndarray,
+        embodiment_ids: jnp.ndarray,
         context_noise: jnp.ndarray,
         sample_noise: jnp.ndarray,
         start_index: jnp.ndarray,
         context_tau: float,
         sample_steps: int,
-    ) -> jnp.ndarray:
+    ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+        """Generate consecutive frames into a preallocated video tensor."""
+
         start_index = jnp.asarray(start_index, dtype=jnp.int32)
         rollout_steps = sample_noise.shape[1]
+        sample_step_count = 1 << int(round(math.log2(sample_steps)))
 
-        def body_fn(offset: int, current_video: jnp.ndarray) -> jnp.ndarray:
+        def body_fn(
+            offset: int,
+            carry: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+        ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+            current_video, x0_norm, update_mag = carry
             target_index = start_index + offset
-            next_frame = self.generate_next(
+            next_frame, diagnostics = self.generate_next(
                 current_video,
                 actions,
+                embodiment_ids,
                 context_noise,
                 sample_noise[:, offset],
                 target_index,
                 context_tau=context_tau,
                 sample_steps=sample_steps,
+                clean_until=start_index,
             )
-            return current_video.at[:, target_index].set(next_frame)
+            current_video = current_video.at[:, target_index].set(next_frame)
+            x0_norm = x0_norm.at[offset].set(diagnostics["x0_norm"])
+            update_mag = update_mag.at[offset].set(diagnostics["update_mag"])
+            return current_video, x0_norm, update_mag
 
-        return jax.lax.fori_loop(0, rollout_steps, body_fn, video_prefix)
+        generated, x0_norm, update_mag = jax.lax.fori_loop(
+            0,
+            rollout_steps,
+            body_fn,
+            (
+                video_prefix,
+                jnp.zeros((rollout_steps, sample_step_count), dtype=jnp.float32),
+                jnp.zeros((rollout_steps, sample_step_count), dtype=jnp.float32),
+            ),
+        )
+        return generated, {"x0_norm": x0_norm, "update_mag": update_mag}
 
     def loss(
         self,
         batch: DynamicsBatch,
-        bootstrap_rows: int = 0,
+        bootstrap_target_variables,
+        bootstrap_rows: int,
     ) -> tuple[jnp.ndarray, dict[str, jnp.ndarray]]:
+        """Compute shortcut forcing loss. Empirical rows use flow loss. Final rows use targets from two EMA half-steps."""
+
         z_target = rearrange(
-            jnp.asarray(batch["video"], dtype=jnp.float32),
-            "b t (n k) d -> b t n (k d)",
-            n=self.num_obs_tokens,
+            jnp.asarray(batch["video"], dtype=jnp.float32), "b t (n k) d -> b t n (k d)", n=self.num_obs_tokens
         )
         action_dtype = jnp.float32 if self.action_mode == "continuous" else jnp.int32
         actions = jnp.asarray(batch["actions"], dtype=action_dtype)
+        embodiment_ids = jnp.asarray(batch["embodiment_ids"], dtype=jnp.int32)
+        segment_ids = jnp.asarray(batch["segment_ids"], dtype=jnp.int32)
 
         batch_size, seq_len, _, _ = z_target.shape
-        bootstrap_rows = min(max(int(bootstrap_rows), 0), batch_size)
-        bootstrap_start = batch_size - bootstrap_rows
-        bootstrap_row_mask = jnp.arange(batch_size) >= bootstrap_start
-        bootstrap_row_mask = jnp.broadcast_to(
-            bootstrap_row_mask[:, None],
-            (batch_size, seq_len),
-        )
-        sample_rng = self.make_rng("sample")
-        step_rng, signal_rng, noise_rng = jax.random.split(sample_rng, 3)
+        if not 0 <= bootstrap_rows <= batch_size:
+            raise ValueError(f"Expected 0 <= bootstrap_rows <= {batch_size}, got {bootstrap_rows}")
 
+        transition_mask = jnp.ones((batch_size, seq_len), dtype=jnp.bool_)
+        transition_mask = transition_mask.at[:, 0].set(False)
+        same_segment = segment_ids[:, 1:] == segment_ids[:, :-1]
+        transition_mask = transition_mask.at[:, 1:].set(same_segment)
+
+        bootstrap_start = batch_size - bootstrap_rows
+        bootstrap_slice = slice(bootstrap_start, batch_size)
+        bootstrap_row_mask = jnp.arange(batch_size)[:, None] >= bootstrap_start
+        bootstrap_row_mask = jnp.broadcast_to(bootstrap_row_mask, (batch_size, seq_len))
+
+        step_rng, signal_rng, noise_rng = jax.random.split(self.make_rng("sample"), 3)
+
+        finest_step_level = self.max_step_size - 1
         sampled_bootstrap_levels = jax.random.randint(
             step_rng,
             shape=(batch_size, seq_len),
             minval=0,
-            maxval=self.max_step_size - 1,
+            maxval=finest_step_level,
             dtype=jnp.int32,
         )
-        step_levels = jnp.full((batch_size, seq_len), self.max_step_size - 1, dtype=jnp.int32)
+        step_levels = jnp.full((batch_size, seq_len), finest_step_level, dtype=jnp.int32)
         step_levels = jnp.where(bootstrap_row_mask, sampled_bootstrap_levels, step_levels)
         step_counts = 1 << step_levels
+
+        include_endpoint = jnp.where(bootstrap_row_mask, 0, 1)
         signal_levels = jax.random.randint(
             signal_rng,
             shape=(batch_size, seq_len),
             minval=0,
-            maxval=step_counts,
+            maxval=step_counts + include_endpoint,
             dtype=jnp.int32,
         )
+
+        signal_indices = signal_levels << (finest_step_level - step_levels)
 
         tau = signal_levels.astype(jnp.float32) / step_counts.astype(jnp.float32)
         step_sizes = 1.0 / step_counts.astype(jnp.float32)
         tau = tau[..., None, None]
         step_sizes = step_sizes[..., None, None]
 
-        # Full step prediction
         z_noise = jax.random.normal(noise_rng, z_target.shape, dtype=jnp.float32)
         z_noised = tau * z_target + (1.0 - tau) * z_noise
-        z_pred_1 = self(z_noised, actions, step_levels, signal_levels)
+        z_pred_1 = self(z_noised, actions, embodiment_ids, step_levels, signal_indices, segment_ids)
 
         flow_loss = (z_pred_1 - z_target) ** 2
-        loss_weight = 1.0 / (1.0 - tau) ** 2
+        loss_weight = 0.9 * tau + 0.1
         weighted_flow_loss = loss_weight * flow_loss
 
-        bootstrap_loss_metric = jnp.asarray(0.0, dtype=jnp.float32)
         weighted_loss = weighted_flow_loss
         if bootstrap_rows > 0:
-            bootstrap_slice = slice(bootstrap_start, batch_size)
             z_noised_bootstrap = z_noised[bootstrap_slice]
             actions_bootstrap = actions[bootstrap_slice]
+            embodiment_ids_bootstrap = embodiment_ids[bootstrap_slice]
             tau_bootstrap = tau[bootstrap_slice]
             step_sizes_bootstrap = step_sizes[bootstrap_slice]
             step_levels_bootstrap = step_levels[bootstrap_slice]
-            signal_levels_bootstrap = signal_levels[bootstrap_slice]
+            signal_indices_bootstrap = signal_indices[bootstrap_slice]
+            segment_ids_bootstrap = segment_ids[bootstrap_slice]
 
-            # Bootstrap is only used for tail rows, so avoid the extra forwards elsewhere.
-            half_step_levels = jnp.minimum(
-                step_levels_bootstrap + 1,
-                self.max_step_size - 1,
+            bootstrap_forward = nn.apply(
+                lambda model, z, action, embodiment, level, signal, segments: model(
+                    z, action, embodiment, level, signal, segments
+                ),
+                self.clone(parent=None),
             )
-            z_pred_2 = self(
+
+            # First EMA half-step
+            half_step_levels = step_levels_bootstrap + 1
+            z_pred_2 = bootstrap_forward(
+                bootstrap_target_variables,
                 z_noised_bootstrap,
                 actions_bootstrap,
+                embodiment_ids_bootstrap,
                 half_step_levels,
-                signal_levels_bootstrap * 2,
+                signal_indices_bootstrap,
+                segment_ids_bootstrap,
             )
-            b1 = (z_pred_2 - z_noised_bootstrap) / (1.0 - tau_bootstrap)
+            first_step_divisor = jnp.maximum(1.0 - tau_bootstrap, 1e-5)
+            b1 = (jax.lax.stop_gradient(z_pred_2) - z_noised_bootstrap) / first_step_divisor
 
+            # Second EMA half-step
             half_step_sizes = step_sizes_bootstrap / 2.0
-            half_noised = z_noised_bootstrap + b1 * half_step_sizes
-            z_pred_3 = self(
+            half_noised_unclipped = z_noised_bootstrap + b1 * half_step_sizes
+            half_noised = jnp.clip(half_noised_unclipped, -4.0, 4.0)
+            half_signal_delta = 1 << (self.max_step_size - 2 - step_levels_bootstrap)
+            z_pred_3 = bootstrap_forward(
+                bootstrap_target_variables,
                 half_noised,
                 actions_bootstrap,
+                embodiment_ids_bootstrap,
                 half_step_levels,
-                signal_levels_bootstrap * 2 + 1,
+                signal_indices_bootstrap + half_signal_delta,
+                segment_ids_bootstrap,
             )
-            b2 = (z_pred_3 - half_noised) / (1.0 - (tau_bootstrap + half_step_sizes))
+            second_step_divisor = jnp.maximum(1.0 - (tau_bootstrap + half_step_sizes), 1e-5)
+            b2 = (jax.lax.stop_gradient(z_pred_3) - half_noised) / second_step_divisor
 
-            bootstrap_target = jax.lax.stop_gradient((b1 + b2) / 2.0)
-            bootstrap_loss = (
-                (z_pred_1[bootstrap_slice] - z_noised_bootstrap) - (1.0 - tau_bootstrap) * bootstrap_target
-            ) ** 2
+            bootstrap_target_unclipped = jax.lax.stop_gradient((b1 + b2) / 2.0)
+            bootstrap_target_norm = jnp.mean(jnp.abs(bootstrap_target_unclipped))
+            bootstrap_target = jnp.clip(bootstrap_target_unclipped, -4.0, 4.0)
+            bootstrap_error = (z_pred_1[bootstrap_slice] - z_noised_bootstrap) - (
+                1.0 - tau_bootstrap
+            ) * bootstrap_target
+            bootstrap_loss = bootstrap_error**2
             weighted_bootstrap_loss = loss_weight[bootstrap_slice] * bootstrap_loss
-            bootstrap_loss_metric = jnp.mean(weighted_bootstrap_loss)
             weighted_loss = weighted_loss.at[bootstrap_slice].set(weighted_bootstrap_loss)
 
-        total_loss = jnp.mean(weighted_loss)
+        loss_mask = jnp.broadcast_to(transition_mask[..., None, None], weighted_loss.shape)
+        loss_mask = loss_mask.astype(jnp.float32)
+        loss_denominator = jnp.maximum(jnp.sum(loss_mask, axis=(1, 2, 3)), 1.0)
+        row_loss = jnp.sum(weighted_loss * loss_mask, axis=(1, 2, 3)) / loss_denominator
+        flow_row_loss = jnp.sum(weighted_flow_loss * loss_mask, axis=(1, 2, 3)) / loss_denominator
+        flow_row_mse = jnp.sum(flow_loss * loss_mask, axis=(1, 2, 3)) / loss_denominator
 
-        def masked_mean(values: jnp.ndarray, mask: jnp.ndarray) -> jnp.ndarray:
-            mask = jnp.broadcast_to(mask, values.shape).astype(values.dtype)
-            return jnp.sum(values * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+        total_loss = jnp.mean(row_loss)
+        flow_loss_metric = (
+            jnp.mean(flow_row_loss[:bootstrap_start]) if bootstrap_start > 0 else jnp.asarray(0.0, dtype=jnp.float32)
+        )
+        flow_mse_metric = (
+            jnp.mean(flow_row_mse[:bootstrap_start]) if bootstrap_start > 0 else jnp.asarray(0.0, dtype=jnp.float32)
+        )
+        bootstrap_loss_metric = (
+            jnp.mean(row_loss[bootstrap_slice]) if bootstrap_rows > 0 else jnp.asarray(0.0, dtype=jnp.float32)
+        )
 
-        use_bootstrap_loss = bootstrap_row_mask[..., None, None]
-        flow_mask = (~use_bootstrap_loss).astype(jnp.float32)
+        flow_token_mse = jnp.mean(flow_loss, axis=(-2, -1))
+        empirical_mask = jnp.arange(batch_size)[:, None] < bootstrap_start
+        flow_metric_mask = transition_mask & empirical_mask
+
+        def sigma_mse(sigma_mask: jnp.ndarray) -> jnp.ndarray:
+            metric_mask = flow_metric_mask & sigma_mask
+            return jnp.sum(flow_token_mse * metric_mask) / jnp.maximum(jnp.sum(metric_mask), 1.0)
+
+        tau_tokens = tau[..., 0, 0]
+        flow_mse_low = sigma_mse(tau_tokens < 0.25)
+        flow_mse_mid = sigma_mse((tau_tokens >= 0.25) & (tau_tokens < 0.75))
+        flow_mse_high = sigma_mse(tau_tokens >= 0.75)
 
         metrics = {
             "loss": total_loss,
-            "flow_loss": jnp.mean(weighted_flow_loss),
+            "flow_loss": flow_loss_metric,
+            "flow_mse": flow_mse_metric,
+            "flow_mse_low": flow_mse_low,
+            "flow_mse_mid": flow_mse_mid,
+            "flow_mse_high": flow_mse_high,
             "bootstrap_loss": bootstrap_loss_metric,
-            "active_flow_loss": masked_mean(weighted_flow_loss, flow_mask),
-            "active_bootstrap_loss": bootstrap_loss_metric,
-            "mean_tau": jnp.mean(tau),
-            "mean_step_size": jnp.mean(step_sizes),
-            "min_step_fraction": jnp.mean((step_levels == self.max_step_size - 1).astype(jnp.float32)),
-            "bootstrap_active_fraction": jnp.mean(bootstrap_row_mask.astype(jnp.float32)),
-            "bootstrap_active_rows": jnp.asarray(bootstrap_rows, dtype=jnp.float32),
-            "bootstrap_active_rows_global": jnp.asarray(bootstrap_rows, dtype=jnp.float32),
+            "bootstrap_target_norm": (
+                bootstrap_target_norm if bootstrap_rows > 0 else jnp.asarray(0.0, dtype=jnp.float32)
+            ),
         }
         return total_loss, metrics
