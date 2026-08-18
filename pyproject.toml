@@ -3,7 +3,7 @@ name = "visionary"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "ale-py>=0.11.2",
     "array-record>=0.8.3",
@@ -26,6 +26,9 @@ dependencies = [
     "scikit-image>=0.26.0",
     "wandb>=0.19.11",
 ]
+
+[project.optional-dependencies]
+robot = ["lerobot[feetech,hardware]>=0.6.1"]
 
 [build-system]
 requires = ["hatchling"]
