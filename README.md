@@ -1,60 +1,45 @@
-# Visionary
+# visionary
 
-World models that you can play in your browser. Small Dreamer 4–style
-(~7M parameter) models are trained to imagine Atari games, exported to ONNX, and
-run locally in the browser via ONNX Runtime Web (WebGPU, with a WASM fallback).
+visionary is a research repo aimed at training general-purpose agents inside world models. All of the work was done independently.
 
-Live demo: **[Dream Atari](https://www.hyeonseokjung.com/dream-atari)**
+Current code and models are based on the [Dreamer 4](https://danijar.com/project/dreamer4) architecture.
 
-## Layout
+## Dream Atari
 
-| Path | What's in it |
-| --- | --- |
-| `visionary/` | JAX/Flax model code — `tokenizer.py`, `dynamics.py`, `transformer.py`, dataset, LPIPS |
-| `visionary/export/`, `webgpu_app/export/` | ONNX export and graph-optimization passes (WebGPU + WASM profiles) |
-| `webgpu_app/demo/` | Browser demo (TypeScript, served with Bun) |
-| `scripts/` | Training entrypoints (`train_tokenizer.py`, `train_dynamics.py`) and configs |
-| `cloud/` | TPU / cloud setup helpers |
-| `docs/` | ONNX optimization notes and deployment guide |
+**Dream Atari** is a collection of world models trained on five Atari games.
 
-## Setup
+<p align="center">
+  <img src="assets/dream_atari.webp" alt="Dream Atari model rollouts" width="800">
+  <br><br>
+  <a href="https://www.hyeonseokjung.com/dream-atari"><strong>Demo Link</strong></a>
+</p>
 
-```sh
-uv sync                          # Python deps (training + export)
-cd webgpu_app && bun install     # web demo deps
-```
+- Each model has only 7M parameters, enabling it to run in the browser up to 30fps, even on a phone.
+- The models do not collapse even after long rollouts (~5 min).
+- The training data was generated from a small DQN agent. I collected rollouts from checkpoints throughout training to capture diverse behaviors and dynamics of the environment.
 
-## Training
 
-```sh
-uv run python scripts/train_tokenizer.py
-uv run python scripts/train_dynamics.py
-```
 
-The transformer ends in an RMSNorm, so the parameter tree does not match
-checkpoints trained before that was added. To load an older Atari checkpoint or
-reproduce the shipped demo weights, check out `abe92ca`.
+## SO-101 world model
 
-## Export to ONNX
+<p align="center">
+  <img src="assets/so101.webp" alt="SO-101 world model predictions compared with ground truth" width="800">
+  <br>
+  <em>Rollouts use episodes from the held-out evaluation split.</em>
+</p>
 
-```sh
-# WebGPU build
-uv run python webgpu_app/export/export_dreamer4_onnx.py --export_target webgpu
+- Scaled the model to 300M parameters (still small!) and trained on community-sourced [SO-101 arm datasets](https://huggingface.co/datasets/allenai/MolmoAct2-SO100_101-Dataset).
+- Cotrained the model on [SOAR](https://auto-improvement.github.io) and [BridgeData V2](https://rail-berkeley.github.io/bridgedata/) in order to transfer learned physics from fixed environments with lots of data to the diverse and noisy SO-101 environments, which have much less data per environment.
+- Shows learned physics such as rigid body interactions (pushing objects with a tool), opening doors and shelves, and handling deformable objects like cloth. Watch the video for more.
 
-# WASM build (what the public demo ships)
-uv run python webgpu_app/export/export_dreamer4_onnx.py --export_target wasm
-```
 
-The two targets use different graph passes because ORT WebGPU and ORT WASM
-support different fused/layout ops. See `docs/onnx_webgpu_progress.md` for the
-optimization log and `docs/webgpu_demo_deploy.md` for deployment.
 
-## Run the demo locally
+## Code
 
-```sh
-cd webgpu_app
-bun run demo:webgpu        # serves at http://127.0.0.1:4173
-```
 
-Runtime knobs (query params): `?backend=webgpu|wasm|auto`, `wasmNumThreads`,
-`fps`, `assetBase`. WebGPU is tried first and falls back to WASM.
+| Path                         | Contents                                                        |
+| ---------------------------- | --------------------------------------------------------------- |
+| `visionary/models/dreamer4/` | Video tokenizer, dynamics model, and spatiotemporal transformer |
+| `scripts/`                   | Training, evaluation, and dataset preparation                   |
+| `scripts/atari/`             | Atari environments, agents, and rollout collection              |
+| `scripts/robot/`             | Robot dataset processing                                        |
