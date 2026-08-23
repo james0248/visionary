@@ -5,6 +5,7 @@ set -euo pipefail
 PROJECT_ID="visionary-491008"
 STAGING_SERVICE_ACCOUNT="visionary-starter@visionary-491008.iam.gserviceaccount.com"
 MACHINE_TYPE="${HDML_MACHINE_TYPE:-c4-standard-4}"
+SPOT="${HDML_SPOT:-false}"
 BOOT_DISK_SIZE_GB="50"
 
 DISK_NAME=""
@@ -299,8 +300,8 @@ run_gcloud compute disks create "$DISK_NAME" \
     --provisioned-throughput="$THROUGHPUT" \
     --access-mode=READ_WRITE_SINGLE
 
-info "Creating temporary C4 VM and attaching the disk."
-run_gcloud compute instances create "$VM_NAME" \
+info "Creating temporary staging VM and attaching the disk."
+vm_args=(compute instances create "$VM_NAME" \
     --zone="$ZONE" \
     --machine-type="$MACHINE_TYPE" \
     --image-family=ubuntu-2204-lts \
@@ -309,7 +310,11 @@ run_gcloud compute instances create "$VM_NAME" \
     --boot-disk-type=hyperdisk-balanced \
     --service-account="$STAGING_SERVICE_ACCOUNT" \
     --scopes=https://www.googleapis.com/auth/cloud-platform \
-    --disk="name=$DISK_NAME,device-name=$DISK_NAME,mode=rw,boot=no,auto-delete=no"
+    --disk="name=$DISK_NAME,device-name=$DISK_NAME,mode=rw,boot=no,auto-delete=no")
+if [[ "$SPOT" == "true" ]]; then
+    vm_args+=(--provisioning-model=SPOT --instance-termination-action=DELETE)
+fi
+run_gcloud "${vm_args[@]}"
 
 wait_for_ssh
 
