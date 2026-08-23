@@ -175,7 +175,7 @@ run_setup() {
     fi
 
     info "Running uv sync"
-    uv sync
+    uv sync --python 3.12
 
     info "Installing visionary package"
     uv pip install --python .venv/bin/python .
