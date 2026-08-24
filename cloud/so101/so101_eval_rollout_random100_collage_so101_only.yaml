@@ -31,7 +31,7 @@ training:
     - --sample_steps=8
     - --fps=5
     - --seed=42
-    - --max_frames=512
+    - --max_frames=116
 
 markers:
   complete_uri: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/so101_only/_complete.json
