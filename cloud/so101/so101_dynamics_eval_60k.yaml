@@ -1,0 +1,60 @@
+project: visionary-491008
+
+job:
+  name: so101-dynamics-eval-60k
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: bc
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/eval_dynamics_videos.py
+  config_name: null
+  auto_resume: false
+  overrides:
+    - --checkpoint_dir=gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_so101_only
+    - --tokenizer_checkpoint_dir=gs://visionary-uc1/so101/checkpoints/tokenizer_v2
+    - --source_dirs=so101=/mnt/data/so101/eval
+    - --clip_specs=so101:0:22:0:56,so101:0:101:0:58,so101:0:824:0:37,so101:0:54:0:58,so101:0:185:0:58,so101:0:10:0:43,so101:0:39:0:68,so101:0:568:0:51,so101:0:6:0:36,so101:0:738:0:100,so101:0:13:0:72,so101:0:380:0:79,so101:0:126:0:52,so101:0:436:0:54,so101:0:17:0:28,so101:0:672:0:61
+    - --output_dir=/tmp/so101_dynamics_eval_60k
+    - --step=60000
+    - --context_frames=4
+    - --sample_steps=8
+    - --fps=5
+
+markers:
+  complete_uri: gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_so101_only/evals/60000/_complete.json
+  failure_prefix: gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_so101_only/evals/60000/failures
+
+logs:
+  uri: gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_so101_only/evals/60000/_starter.log
+  archive_uri_prefix: gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_so101_only/evals/60000/logs
+  tail_lines: 160
+
+failure_policy:
+  mode: stop
+  max_retries: 0
+  retry_backoff_seconds: 0
+
+secrets:
+  wandb_secret: wandb-api-key
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+machine:
+  family: v6e
+  chips: 8
+  zone: us-central1-b
+  spot: true
+  valid_until_duration: 3600s
+  data_disk:
+    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-dynamics-v2-uc1b
+    mode: read-only
+    mount_path: /mnt/data
