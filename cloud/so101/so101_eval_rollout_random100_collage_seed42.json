@@ -6,7 +6,7 @@
   "context_frames": 4,
   "target_hz": 5,
   "sample_steps": 8,
-  "trajectory_range": "record start, capped at 116 frames",
+  "trajectory_range": "record start, capped at 100 frames",
   "required_indices": [
     5,
     6,

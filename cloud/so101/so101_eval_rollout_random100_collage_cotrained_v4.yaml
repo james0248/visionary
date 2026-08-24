@@ -26,12 +26,13 @@ training:
     - --selection_source=so101
     - --output_dir=/tmp/so101-eval-r100-collage-v4
     - --upload_dir=gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/cotrained_v4/artifacts
+    - --upload_each_batch
     - --step=100000
     - --context_frames=4
     - --sample_steps=8
     - --fps=5
     - --seed=42
-    - --max_frames=116
+    - --max_frames=100
 
 markers:
   complete_uri: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/cotrained_v4/_complete.json

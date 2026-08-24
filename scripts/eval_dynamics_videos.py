@@ -115,6 +115,11 @@ def main() -> None:
     )
     parser.add_argument("--output_dir", required=True, help="Where to write mp4 files.")
     parser.add_argument("--upload_dir", help="Optional GCS directory for the completed output.")
+    parser.add_argument(
+        "--upload_each_batch",
+        action="store_true",
+        help="Sync selected-clip outputs after each completed batch.",
+    )
     parser.add_argument("--num_videos", type=int, default=20)
     parser.add_argument(
         "--random_clip_count",
@@ -459,6 +464,22 @@ def main() -> None:
             logger.info("Padding %d selected batch slots; padded rows are not scored or written", padding)
 
         local_summary = []
+
+        def write_selected_summary() -> None:
+            (output_dir / f"summary_process_{process_index}.json").write_text(
+                json.dumps(
+                    {
+                        "checkpoint_dir": args.checkpoint_dir,
+                        "step": step,
+                        "context_frames": args.context_frames,
+                        "sample_steps": args.sample_steps,
+                        "context_tau": args.context_tau,
+                        "videos": local_summary,
+                    },
+                    indent=2,
+                )
+            )
+
         for batch_start in range(0, len(clip_items), global_batch_size):
             global_items = clip_items[batch_start : batch_start + global_batch_size]
             local_start = process_index * local_batch_size
@@ -568,20 +589,12 @@ def main() -> None:
                     ssim,
                 )
             logger.info("Finished selected batch in %.1fs", time.monotonic() - started)
+            if args.upload_dir and args.upload_each_batch:
+                write_selected_summary()
+                upload_output(output_dir, args.upload_dir)
+                logger.info("Uploaded completed selected batches to %s", args.upload_dir)
 
-        (output_dir / f"summary_process_{process_index}.json").write_text(
-            json.dumps(
-                {
-                    "checkpoint_dir": args.checkpoint_dir,
-                    "step": step,
-                    "context_frames": args.context_frames,
-                    "sample_steps": args.sample_steps,
-                    "context_tau": args.context_tau,
-                    "videos": local_summary,
-                },
-                indent=2,
-            )
-        )
+        write_selected_summary()
         logger.info("Wrote %d selected clips on process %d", len(local_summary), process_index)
         if args.upload_dir:
             upload_output(output_dir, args.upload_dir)
