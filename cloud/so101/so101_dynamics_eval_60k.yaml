@@ -48,6 +48,13 @@ starter_service_account:
   scopes:
     - https://www.googleapis.com/auth/cloud-platform
 
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_so101_only/evals/60000/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
 machine:
   family: v6e
   chips: 8
