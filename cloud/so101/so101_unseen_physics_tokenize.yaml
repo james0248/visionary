@@ -42,9 +42,9 @@ logs:
   tail_lines: 160
 
 failure_policy:
-  mode: stop
-  max_retries: 0
-  retry_backoff_seconds: 0
+  mode: retry
+  max_retries: 2
+  retry_backoff_seconds: 30
 
 starter_service_account:
   email: visionary-starter@visionary-491008.iam.gserviceaccount.com
