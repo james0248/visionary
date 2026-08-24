@@ -490,14 +490,47 @@ mkdir -p "$(dirname "$REPO_DIR")"
 
 if [[ ! -d "$REPO_DIR/.git" ]]; then
     info "Cloning repository into $REPO_DIR"
-    git clone "$REPO_URL" "$REPO_DIR"
+    CLONE_DIR="${REPO_DIR}.clone"
+    for attempt in $(seq 1 10); do
+        rm -rf "$CLONE_DIR"
+        if git clone "$REPO_URL" "$CLONE_DIR"; then
+            mv "$CLONE_DIR" "$REPO_DIR"
+            break
+        fi
+        if [[ "$attempt" -eq 10 ]]; then
+            error "Repository clone failed after 10 attempts."
+            exit 1
+        fi
+        info "Repository clone failed; retrying in 15s (${attempt}/10)."
+        sleep 15
+    done
 fi
 
 cd "$REPO_DIR"
 git remote set-url origin "$REPO_URL"
-git fetch origin --prune
+for attempt in $(seq 1 10); do
+    if git fetch origin --prune; then
+        break
+    fi
+    if [[ "$attempt" -eq 10 ]]; then
+        error "Repository fetch failed after 10 attempts."
+        exit 1
+    fi
+    info "Repository fetch failed; retrying in 15s (${attempt}/10)."
+    sleep 15
+done
 git checkout "$REPO_BRANCH"
-git pull --ff-only origin "$REPO_BRANCH"
+for attempt in $(seq 1 10); do
+    if git pull --ff-only origin "$REPO_BRANCH"; then
+        break
+    fi
+    if [[ "$attempt" -eq 10 ]]; then
+        error "Repository pull failed after 10 attempts."
+        exit 1
+    fi
+    info "Repository pull failed; retrying in 15s (${attempt}/10)."
+    sleep 15
+done
 info "Repository ready at $(git rev-parse HEAD)"
 
 DATA_DISK_NAME="$(json_get data_disk.name)"
