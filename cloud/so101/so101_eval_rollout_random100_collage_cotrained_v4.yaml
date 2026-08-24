@@ -20,7 +20,7 @@ training:
   overrides:
     - --checkpoint_dir=gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_ramp
     - --tokenizer_checkpoint_dir=gs://visionary-uc1/so101/checkpoints/tokenizer_v2
-    - --data_dir=/mnt/data/so101/eval
+    - --data_dir=gs://visionary-uc1/so101/data/dynamics/so101/eval
     - --random_clip_count=100
     - --required_indices=5,6,10,13,17,22,39,40,41,54,62,101,126,185,293,380,436,568,634,672,738,743,824,881
     - --selection_source=so101
@@ -65,7 +65,3 @@ machine:
   zone: us-central1-b
   spot: true
   valid_until_duration: 1800s
-  data_disk:
-    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-dynamics-v2-uc1b
-    mode: read-only
-    mount_path: /mnt/data

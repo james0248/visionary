@@ -229,7 +229,7 @@ def main() -> None:
         if missing_sources:
             raise ValueError(f"Missing source directories for: {missing_sources}")
     else:
-        latent_paths = sorted(str(p) for p in Path(args.data_dir).glob("*.arecord"))
+        latent_paths = sorted(str(p) for p in epath.Path(args.data_dir).glob("*.arecord"))
         if not latent_paths:
             raise FileNotFoundError(f"No .arecord files in {args.data_dir}")
         latents = grain.ArrayRecordDataSource(latent_paths)

@@ -1,5 +1,5 @@
 {
-  "source": "/mnt/data/so101/eval",
+  "source": "gs://visionary-uc1/so101/data/dynamics/so101/eval",
   "selection_source": "so101",
   "seed": 42,
   "count": 100,
