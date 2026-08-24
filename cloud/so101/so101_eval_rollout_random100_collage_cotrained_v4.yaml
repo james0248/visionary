@@ -1,0 +1,71 @@
+project: visionary-491008
+
+job:
+  name: so101-eval-r100-collage-v4
+  poll_interval_seconds: 30
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: codex/unseen-physics-test
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/eval_dynamics_videos.py
+  config_name: null
+  auto_resume: false
+  overrides:
+    - --checkpoint_dir=gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_ramp
+    - --tokenizer_checkpoint_dir=gs://visionary-uc1/so101/checkpoints/tokenizer_v2
+    - --data_dir=/mnt/data/so101/eval
+    - --random_clip_count=100
+    - --required_indices=5,6,10,13,17,22,39,40,41,54,62,101,126,185,293,380,436,568,634,672,738,743,824,881
+    - --selection_source=so101
+    - --output_dir=/tmp/so101-eval-r100-collage-v4
+    - --upload_dir=gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/cotrained_v4/artifacts
+    - --step=100000
+    - --context_frames=4
+    - --sample_steps=8
+    - --fps=5
+    - --seed=42
+    - --max_frames=512
+
+markers:
+  complete_uri: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/cotrained_v4/_complete.json
+  failure_prefix: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/cotrained_v4/failures
+
+logs:
+  uri: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/cotrained_v4/_starter.log
+  archive_uri_prefix: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/cotrained_v4/logs
+  tail_lines: 200
+
+failure_policy:
+  mode: stop
+  max_retries: 0
+  retry_backoff_seconds: 0
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/cotrained_v4/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
+machine:
+  family: v6e
+  chips: 8
+  zone: us-central1-b
+  spot: true
+  valid_until_duration: 1800s
+  data_disk:
+    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-dynamics-v2-uc1b
+    mode: read-only
+    mount_path: /mnt/data

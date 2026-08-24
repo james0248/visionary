@@ -117,6 +117,20 @@ def main() -> None:
     parser.add_argument("--upload_dir", help="Optional GCS directory for the completed output.")
     parser.add_argument("--num_videos", type=int, default=20)
     parser.add_argument(
+        "--random_clip_count",
+        type=int,
+        help="Select this many full records at random from --data_dir.",
+    )
+    parser.add_argument(
+        "--required_indices",
+        help="Comma-separated record indices that must be present in --random_clip_count.",
+    )
+    parser.add_argument(
+        "--selection_source",
+        default="eval",
+        help="Source label written for clips selected from --data_dir.",
+    )
+    parser.add_argument(
         "--indices",
         help="Comma-separated video indices to render instead of 0..num_videos-1. "
         "Indices are deterministic given --seed, so the same clip can be re-rendered "
@@ -186,6 +200,15 @@ def main() -> None:
         parser.error("--data_dir is required unless --clip_specs is used")
     if args.clip_specs and args.action_source != "true":
         parser.error("--clip_specs supports only --action_source=true")
+    if args.random_clip_count is not None:
+        if args.clip_specs or args.indices:
+            parser.error("--random_clip_count cannot be combined with --clip_specs or --indices")
+        if args.random_clip_count <= 0:
+            parser.error("--random_clip_count must be positive")
+        if args.action_source != "true":
+            parser.error("--random_clip_count supports only --action_source=true")
+    elif args.required_indices:
+        parser.error("--required_indices requires --random_clip_count")
 
     roll_to_end = args.generated_frames < 0
     fixed_total = None if roll_to_end else args.context_frames + args.generated_frames
@@ -211,6 +234,57 @@ def main() -> None:
             raise FileNotFoundError(f"No .arecord files in {args.data_dir}")
         latents = grain.ArrayRecordDataSource(latent_paths)
         logger.info("Eval source has %d records", len(latents))
+
+        if args.random_clip_count is not None:
+            required = []
+            for value in (args.required_indices or "").split(","):
+                if value:
+                    index = int(value)
+                    if index not in required:
+                        required.append(index)
+            if len(required) > args.random_clip_count:
+                raise ValueError(
+                    f"Found {len(required)} required indices for a {args.random_clip_count}-clip sample"
+                )
+
+            frame_counts = {}
+            for index in range(len(latents)):
+                with np.load(io.BytesIO(latents[index])) as data:
+                    frame_counts[index] = min(len(data["frames"]), args.max_frames)
+            eligible = [index for index, count in frame_counts.items() if count > args.context_frames]
+            missing = [index for index in required if index not in frame_counts]
+            too_short = [index for index in required if index in frame_counts and index not in eligible]
+            if missing:
+                raise IndexError(f"Required indices are outside 0..{len(latents) - 1}: {missing}")
+            if too_short:
+                raise ValueError(f"Required indices are too short for context {args.context_frames}: {too_short}")
+
+            candidates = np.asarray([index for index in eligible if index not in required], dtype=np.int64)
+            rng = np.random.default_rng(args.seed)
+            rng.shuffle(candidates)
+            needed = args.random_clip_count - len(required)
+            if len(candidates) < needed:
+                raise ValueError(
+                    f"Found only {len(eligible)} eligible records for {args.random_clip_count} clips"
+                )
+            selected_indices = required + candidates[:needed].tolist()
+            selected_clips = [
+                SelectedClip(
+                    source=args.selection_source,
+                    embodiment_id=args.embodiment_id,
+                    index=index,
+                    start_frame=0,
+                    frame_count=frame_counts[index],
+                )
+                for index in selected_indices
+            ]
+            selected_sources[args.selection_source] = latents
+            logger.info(
+                "Selected %d full clips with seed %d, including %d required indices",
+                len(selected_clips),
+                args.seed,
+                len(required),
+            )
 
     raw_index = build_raw_index(args.raw_shards_dir) if args.raw_shards_dir else {}
     if args.raw_shards_dir:
