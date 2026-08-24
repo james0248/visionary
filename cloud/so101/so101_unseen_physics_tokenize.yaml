@@ -1,7 +1,7 @@
 project: visionary-491008
 
 job:
-  name: so101-unseen-physics-tokenize
+  name: so101-unseen-physics-tokenize-b8
   poll_interval_seconds: 30
   queue_wait_timeout_seconds: 0
   spot: true
@@ -28,17 +28,17 @@ training:
     - --action_stats=gs://visionary-uc1/so101/data/dynamics/so101/norm_stats.json
     - --encode_window_length=16
     - --encode_window_overlap=8
-    - --encode_batch_size=64
+    - --encode_batch_size=8
     - --encode_episode_batch_size=8
     - --records_per_shard=256
 
 markers:
   complete_uri: gs://visionary-uc1/so101/data/dynamics/unseen_physics/_complete.json
-  failure_prefix: gs://visionary-uc1/so101/data/dynamics/unseen_physics/failures
+  failure_prefix: gs://visionary-uc1/so101/data/dynamics/unseen_physics/failures-b8
 
 logs:
-  uri: gs://visionary-uc1/so101/data/dynamics/unseen_physics/_starter.log
-  archive_uri_prefix: gs://visionary-uc1/so101/data/dynamics/unseen_physics/logs
+  uri: gs://visionary-uc1/so101/data/dynamics/unseen_physics/_starter-b8.log
+  archive_uri_prefix: gs://visionary-uc1/so101/data/dynamics/unseen_physics/logs-b8
   tail_lines: 160
 
 failure_policy:
@@ -53,7 +53,7 @@ starter_service_account:
 
 watcher:
   impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
-  state_uri: gs://visionary-uc1/so101/data/dynamics/unseen_physics/_watcher_state.json
+  state_uri: gs://visionary-uc1/so101/data/dynamics/unseen_physics/_watcher_state-b8.json
   gcloud_retry_attempts: 5
   gcloud_retry_backoff_seconds: 5
   gcloud_retry_max_backoff_seconds: 60
