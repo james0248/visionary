@@ -2,8 +2,8 @@
 
 Reads the tokenizer's ArrayRecord shards (one record per episode and camera),
 encodes every frame with a trained tokenizer export, and writes one dynamics
-record per episode. The input train/eval split is preserved, so
-tokenizer-eval episodes stay out of dynamics-train.
+record per episode. The input split is preserved, so eval and test episodes
+stay out of dynamics-train.
 
 Episodes are encoded in windows of the tokenizer's training length (its
 temporal RoPE never saw longer offsets) and the window batch is sharded over
@@ -25,6 +25,9 @@ import functools
 import io
 import json
 import logging
+import shutil
+import subprocess
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -55,6 +58,18 @@ from visionary.shards import (
 logger = logging.getLogger(__name__)
 
 GB = 1024**3
+
+
+def is_gcs(path: str) -> bool:
+    return path.startswith("gs://")
+
+
+def gcloud_cp(source: str, destination: Path) -> None:
+    subprocess.run(["gcloud", "storage", "cp", source, str(destination)], check=True)
+
+
+def gcloud_rsync(source: Path, destination: str) -> None:
+    subprocess.run(["gcloud", "storage", "rsync", "--recursive", str(source), destination], check=True)
 
 
 class RunningLatentStats:
@@ -194,6 +209,9 @@ def load_stream(
             "episode": np.int32(data["episode"]),
             "camera": str(data["camera"]),
         }
+        for name in ("dataset", "task", "success", "success_class", "policy_repo_id", "policy_type"):
+            if name in data.files:
+                provenance[name] = data[name]
 
     stride = max(int(round(fps / target_hz)), 1)
     frames = decode_video_window(video, 0, length, tuple(preprocessor.resize_shape))
@@ -250,6 +268,7 @@ def encode_stream_record(stream: Stream, latents: np.ndarray) -> bytes:
     payload: dict[str, Any] = dict(stream.arrays)
     payload["frames"] = latents
     payload["prev_action"] = np.zeros(stream.arrays["actions"].shape[1:], dtype=np.float32)
+    payload["start_index"] = np.asarray(0, dtype=np.int64)
     payload["episode_id"] = np.asarray(stream.episode_id, dtype=np.int64)
     payload.update(stream.provenance)
 
@@ -440,9 +459,13 @@ def create_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, help="Streams per split, for smoke tests.")
     parser.add_argument(
         "--split",
-        choices=("both", "train", "eval"),
+        choices=("both", "train", "eval", "test"),
         default="both",
         help="Which input split to encode.",
+    )
+    parser.add_argument(
+        "--action_stats",
+        help="Existing training norm_stats.json. Required for eval/test-only input without train shards.",
     )
     parser.add_argument(
         "--stream_start",
@@ -457,6 +480,8 @@ def create_parser() -> argparse.ArgumentParser:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s", force=True)
     args = create_parser().parse_args()
+    temporary = tempfile.TemporaryDirectory(prefix="visionary-dynamics-")
+    temporary_path = Path(temporary.name)
 
     if jax.process_count() > 1:
         raise RuntimeError("Single-host script; run one process and it uses every local device.")
@@ -481,16 +506,32 @@ def main() -> None:
     )
 
     input_dir = epath.Path(args.input_dir)
-    output_dir = Path(args.output_dir)
+    output_uri = args.output_dir if is_gcs(args.output_dir) else None
+    output_dir = temporary_path / "output" if output_uri else Path(args.output_dir)
     splits = ("train", "eval") if args.split == "both" else (args.split,)
-    needed = set(splits) | {"train"}
+    needed = set(splits)
+    if not args.action_stats:
+        needed.add("train")
     sources = {split: open_split_source(input_dir, split) for split in sorted(needed)}
     for split, source in sources.items():
         logger.info("Found %d %s streams", len(source), split)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     stats_path = output_dir / "norm_stats.json"
-    if stats_path.exists():
+    if args.action_stats:
+        if is_gcs(args.action_stats):
+            source_stats = temporary_path / "training_norm_stats.json"
+            gcloud_cp(args.action_stats, source_stats)
+        else:
+            source_stats = Path(args.action_stats)
+        if not source_stats.exists():
+            raise FileNotFoundError(source_stats)
+        if stats_path.exists() and stats_path.read_bytes() != source_stats.read_bytes():
+            raise ValueError(f"Existing stats at {stats_path} do not match {source_stats}")
+        if not stats_path.exists():
+            shutil.copyfile(source_stats, stats_path)
+        logger.info("Using external training action stats from %s", source_stats)
+    elif stats_path.exists():
         logger.info("Reusing action stats at %s", stats_path)
     else:
         logger.info("Computing action stats over the train shards")
@@ -540,6 +581,7 @@ def main() -> None:
             "encode_window_length": args.encode_window_length,
             "encode_window_overlap": args.encode_window_overlap,
             "split": args.split,
+            "external_action_stats": args.action_stats,
             "stream_start": args.stream_start,
             "stream_stop": args.stream_stop,
         },
@@ -552,6 +594,10 @@ def main() -> None:
         sum(stats.payload_bytes for stats in split_stats.values()) / GB,
         metadata_path,
     )
+    if output_uri:
+        gcloud_rsync(output_dir, output_uri)
+        logger.info("Uploaded dynamics dataset to %s", output_uri)
+    temporary.cleanup()
 
 
 if __name__ == "__main__":

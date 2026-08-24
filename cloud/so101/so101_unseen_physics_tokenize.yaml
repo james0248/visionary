@@ -1,0 +1,66 @@
+project: visionary-491008
+
+job:
+  name: so101-unseen-physics-tokenize
+  poll_interval_seconds: 30
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: codex/unseen-physics-test
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/robot/save_dynamics_dataset_from_shards.py
+  config_name: null
+  auto_resume: false
+  overrides:
+    - --checkpoint_dir=gs://visionary-uc1/so101/checkpoints/tokenizer_v2
+    - --step=100000
+    - --input_dir=gs://visionary-uc1/so101/data/tokenizer/shards
+    - --output_dir=gs://visionary-uc1/so101/data/dynamics/unseen_physics
+    - --split=test
+    - --action_dim=6
+    - --target_hz=5
+    - --action_stats=gs://visionary-uc1/so101/data/dynamics/so101/norm_stats.json
+    - --encode_window_length=16
+    - --encode_window_overlap=8
+    - --encode_batch_size=64
+    - --encode_episode_batch_size=8
+    - --records_per_shard=256
+
+markers:
+  complete_uri: gs://visionary-uc1/so101/data/dynamics/unseen_physics/_complete.json
+  failure_prefix: gs://visionary-uc1/so101/data/dynamics/unseen_physics/failures
+
+logs:
+  uri: gs://visionary-uc1/so101/data/dynamics/unseen_physics/_starter.log
+  archive_uri_prefix: gs://visionary-uc1/so101/data/dynamics/unseen_physics/logs
+  tail_lines: 160
+
+failure_policy:
+  mode: stop
+  max_retries: 0
+  retry_backoff_seconds: 0
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: gs://visionary-uc1/so101/data/dynamics/unseen_physics/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
+machine:
+  family: v5e
+  chips: 1
+  zone: us-central1-a
+  spot: true
+  valid_until_duration: 3600s

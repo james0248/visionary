@@ -3,6 +3,8 @@ import json
 import shutil
 import subprocess
 import tarfile
+import tempfile
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
 import numpy as np
@@ -55,8 +57,8 @@ def gcs_mark_done(prefix):
     )
 
 
-def transcode(src, dst, extra_in=()):
-    run(["ffmpeg", "-loglevel", "error", "-y", *extra_in, "-i", str(src), *ENCODE_ARGS, str(dst)])
+def transcode(src, dst, extra_in=(), extra_out=(), encode_args=ENCODE_ARGS):
+    run(["ffmpeg", "-loglevel", "error", "-y", *extra_in, "-i", str(src), *extra_out, *encode_args, str(dst)])
     out = run(
         [
             "ffprobe",
@@ -300,6 +302,174 @@ def bridge_units(table):
         pairs = np.unique(np.stack([chunks, files], axis=1), axis=0)
         units.extend((cam, int(c), int(f)) for c, f in pairs)
     return sorted(units)
+
+
+def convert_so101_v3_to_v21(values):
+    converted = np.asarray(values, dtype=np.float32).copy()
+    if converted.shape[1] != 6:
+        raise ValueError(f"Expected six SO-101 joints, got {converted.shape}")
+    converted[:, 1] = 90.0 - converted[:, 1]
+    converted[:, 2] += 90.0
+    return converted
+
+
+def standardize_lerobot_v3_video(job):
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as temp:
+        output = Path(temp.name)
+    try:
+        encode_args = ENCODE_ARGS.copy()
+        encode_args[encode_args.index("-preset") + 1] = job["preset"]
+        n_frames, width, height = transcode(
+            job["video"],
+            output,
+            extra_in=["-ss", str(job["t0"])],
+            extra_out=["-frames:v", str(job["rows"])],
+            encode_args=encode_args,
+        )
+        return n_frames, width, height, output.read_bytes()
+    finally:
+        output.unlink(missing_ok=True)
+
+
+def process_lerobot_v3_repo(
+    source, raw_dir, out_dir, cameras, report, limit_episodes=None, workers=4, intermediate_preset="ultrafast"
+):
+    raw = Path(raw_dir)
+    info = json.loads((raw / "meta" / "info.json").read_text())
+    if info.get("codebase_version") != "v3.0":
+        raise ValueError(f"Expected LeRobot v3.0, got {info.get('codebase_version')}")
+    fps = float(info["fps"])
+    episode_table = bridge_episode_table(raw)
+    available = bridge_camera_keys(episode_table.column_names)
+    selected = [f"observation.images.{camera}" for camera in cameras]
+    unknown = sorted(set(selected) - set(available))
+    if unknown:
+        raise ValueError(f"Unknown cameras {unknown}; available={available}")
+    episodes = episode_table.to_pylist()
+    if limit_episodes is not None:
+        episodes = episodes[:limit_episodes]
+
+    data_cache = {}
+    issues = []
+    action_dims = set()
+    jobs = []
+    for ep in episodes:
+        ep_idx = int(ep["episode_index"])
+        key = (int(ep["data/chunk_index"]), int(ep["data/file_index"]))
+        if key not in data_cache:
+            table = read_parquet(raw / "data" / f"chunk-{key[0]:03d}" / f"file-{key[1]:03d}.parquet")
+            data_cache.clear()
+            data_cache[key] = (
+                np.asarray(table.column("episode_index").to_numpy()),
+                stack_column(table, "action"),
+                stack_column(table, "observation.state"),
+            )
+        ep_column, all_actions, all_state = data_cache[key]
+        mask = ep_column == ep_idx
+        actions = convert_so101_v3_to_v21(all_actions[mask])
+        state = convert_so101_v3_to_v21(all_state[mask])
+        action_dims.add(actions.shape[1])
+        expected = int(ep["length"])
+        if len(actions) != expected or len(state) != expected:
+            issues.append(f"ep{ep_idx}: actions={len(actions)} state={len(state)} expected={expected}")
+            continue
+        npz = frames_npz_bytes(actions, state)
+        for cam_index, cam in enumerate(selected):
+            vchunk = int(ep[f"videos/{cam}/chunk_index"])
+            vfile = int(ep[f"videos/{cam}/file_index"])
+            video = raw / "videos" / cam / f"chunk-{vchunk:03d}" / f"file-{vfile:03d}.mp4"
+            t0 = float(ep[f"videos/{cam}/from_timestamp"])
+            t1 = float(ep[f"videos/{cam}/to_timestamp"])
+            metadata = {
+                "dataset": "lerobot_v3",
+                "source": source,
+                "episode": ep_idx,
+                "camera": {
+                    "index": cam_index,
+                    "name_hint": camera_name_hint(cam),
+                    "orig_name": cam.removeprefix("observation.images."),
+                },
+                "language": (ep.get("tasks") or [""])[0],
+                "fps": fps,
+                "parquet_rows": len(actions),
+            }
+            for name in ("success", "success_class", "policy_repo_id", "policy_type"):
+                if ep.get(name) is not None:
+                    metadata[name] = ep[name]
+            jobs.append(
+                {
+                    "episode": ep_idx,
+                    "camera": cam,
+                    "name": f"ep{ep_idx:06d}_cam{cam_index:02d}",
+                    "video": video,
+                    "t0": t0,
+                    "t1": t1,
+                    "rows": len(actions),
+                    "npz": npz,
+                    "metadata": metadata,
+                    "preset": intermediate_preset,
+                }
+            )
+
+    writer = ShardWriter(out_dir)
+    written = 0
+    completed = 0
+    next_job = 0
+    pending = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        while next_job < min(len(jobs), workers * 2):
+            future = executor.submit(standardize_lerobot_v3_video, jobs[next_job])
+            pending[future] = jobs[next_job]
+            next_job += 1
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                job = pending.pop(future)
+                try:
+                    n_frames, width, height, video_bytes = future.result()
+                    if abs(n_frames - job["rows"]) > 2:
+                        raise RuntimeError(f"frames={n_frames} rows={job['rows']}")
+                    metadata = {**job["metadata"], "frames": n_frames, "width": width, "height": height}
+                    writer.add_entry(
+                        job["name"],
+                        {
+                            "meta.json": json.dumps(metadata).encode(),
+                            "video.mp4": video_bytes,
+                            "frames.npz": job["npz"],
+                        },
+                    )
+                    written += 1
+                except Exception as exc:
+                    issues.append(f"ep{job['episode']}/{job['camera']}: {type(exc).__name__}: {exc}")
+                completed += 1
+                if next_job < len(jobs):
+                    future = executor.submit(standardize_lerobot_v3_video, jobs[next_job])
+                    pending[future] = jobs[next_job]
+                    next_job += 1
+                if completed % 100 == 0 or completed == len(jobs):
+                    print(f"standardized={completed}/{len(jobs)} entries={written} issues={len(issues)}", flush=True)
+    shards = writer.close()
+    manifest = {
+        "dataset": "lerobot_v3",
+        "source": source,
+        "fps": fps,
+        "episodes": len(episodes),
+        "cameras": [{"index": i, "orig_name": c} for i, c in enumerate(cameras)],
+        "entries": written,
+        "action_dims": sorted(action_dims),
+        "joint_conversion": {
+            "source": "LeRobot v3 SO-101",
+            "target": "training v2.1 SO-101",
+            "shoulder_lift": "90 - value",
+            "elbow_flex": "value + 90",
+        },
+        "intermediate_video_preset": intermediate_preset,
+        "shards": shards,
+        "issue_count": len(issues),
+        "issues": issues[:MAX_LOGGED_ISSUES],
+    }
+    (Path(out_dir) / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    report.append(manifest)
 
 
 def process_bridge_video(cam, vchunk, vfile, raw_dir, out_dir, episode_table, data_cache, report):
@@ -590,7 +760,7 @@ def soar_main(args, report):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", required=True, choices=["so101", "bridge", "soar"])
+    parser.add_argument("--dataset", required=True, choices=["so101", "bridge", "soar", "lerobot_v3"])
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--num_shards", type=int, default=1)
     parser.add_argument("--raw", default="gs://visionary-uc1/raw")
@@ -599,15 +769,43 @@ def main():
     parser.add_argument("--manifest", default="artifacts/so101/download_pool.json")
     parser.add_argument("--annotations", default="/mnt/work/language_annotations")
     parser.add_argument("--soar_fps", type=int, default=5)
+    parser.add_argument("--source", help="Repository ID for a local LeRobot v3 dataset.")
+    parser.add_argument("--cameras", help="Comma-separated camera names verified by visual review.")
+    parser.add_argument("--limit_episodes", type=int)
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument(
+        "--intermediate_preset",
+        default="ultrafast",
+        help="LeRobot v3 standardized-video preset. Final tokenizer packing still uses its configured preset.",
+    )
     args = parser.parse_args()
+    Path(args.workdir).mkdir(parents=True, exist_ok=True)
 
     report = []
     if args.dataset == "so101":
         so101_main(args, report)
     elif args.dataset == "bridge":
         bridge_main(args, report)
-    else:
+    elif args.dataset == "soar":
         soar_main(args, report)
+    else:
+        if not args.source or not args.cameras:
+            parser.error("--dataset lerobot_v3 requires --source and --cameras")
+        if str(args.out).startswith("gs://") or str(args.raw).startswith("gs://"):
+            parser.error("lerobot_v3 mode requires local --raw and --out paths")
+        source_name = args.source.replace("/", "__")
+        out_dir = Path(args.out) / source_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        process_lerobot_v3_repo(
+            args.source,
+            args.raw,
+            out_dir,
+            [camera.strip() for camera in args.cameras.split(",") if camera.strip()],
+            report,
+            limit_episodes=args.limit_episodes,
+            workers=args.workers,
+            intermediate_preset=args.intermediate_preset,
+        )
 
     report_path = Path(args.workdir) / f"report_{args.dataset}_{args.shard}.json"
     report_path.write_text(json.dumps(report, indent=2))

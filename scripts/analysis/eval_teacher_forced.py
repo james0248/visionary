@@ -122,7 +122,7 @@ def main() -> None:
             actions = np.asarray(data["actions"], dtype=np.float32)
             prev_action = np.asarray(data["prev_action"], dtype=np.float32)
             key = (str(data["repo"]), int(data["episode"]), str(data["camera"]))
-            record_start = int(data["start_index"])
+            record_start = int(data["start_index"]) if "start_index" in data.files else 0
         total = min(args.total_frames, (len(video) - 1) // args.stride + 1)
         span = (total - 1) * args.stride + 1
         rng = np.random.default_rng([args.seed, index])

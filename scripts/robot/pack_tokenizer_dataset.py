@@ -354,7 +354,11 @@ def pack_source(source, entries, analysis, args, out_path):
     cameras = analysis["cameras"]
     episodes = analysis["episodes"]
 
-    fixed = {c for c, m in cameras.items() if not m["moving"]}
+    if args.cameras:
+        approved = {camera.strip() for camera in args.cameras.split(",") if camera.strip()}
+        fixed = set(cameras) & approved
+    else:
+        fixed = {c for c, m in cameras.items() if not m["moving"]}
     dims = {}
     for cam in fixed:
         if cameras[cam].get("width") and cameras[cam].get("height"):
@@ -413,6 +417,12 @@ def pack_source(source, entries, analysis, args, out_path):
             repo=repo,
             episode=np.int32(meta["episode"]),
             camera=cam,
+            dataset=str(meta.get("dataset", "")),
+            task=str(meta.get("language", "")),
+            success=np.int8(meta.get("success", -1)),
+            success_class=str(meta.get("success_class", "")),
+            policy_repo_id=str(meta.get("policy_repo_id", "")),
+            policy_type=str(meta.get("policy_type", "")),
         )
         writer.write(buf.getvalue())
         written += 1
@@ -503,6 +513,10 @@ def main():
     )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--cameras",
+        help="Comma-separated fixed camera allow-list from visual review. Disables the camera-motion verdict.",
+    )
     args = parser.parse_args()
 
     Path(args.workdir).mkdir(parents=True, exist_ok=True)
