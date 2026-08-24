@@ -1,0 +1,63 @@
+project: visionary-491008
+
+job:
+  name: so101-unseen-r100-v4
+  poll_interval_seconds: 30
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: codex/unseen-physics-test
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/eval_dynamics_videos.py
+  config_name: null
+  auto_resume: false
+  overrides:
+    - --checkpoint_dir=gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_ramp
+    - --tokenizer_checkpoint_dir=gs://visionary-uc1/so101/checkpoints/tokenizer_v2
+    - --source_dirs=unseen=gs://visionary-uc1/so101/data/dynamics/unseen_physics/test
+    - --clip_specs=unseen:0:43:0:144,unseen:0:62:0:145,unseen:0:67:0:144,unseen:0:77:0:144,unseen:0:81:0:146,unseen:0:84:0:145,unseen:0:89:0:145,unseen:0:90:0:143,unseen:0:101:0:136,unseen:0:146:0:176,unseen:0:165:0:106,unseen:0:188:0:104,unseen:0:197:0:62,unseen:0:205:0:65,unseen:0:208:0:61,unseen:0:219:0:69,unseen:0:235:0:64,unseen:0:236:0:69,unseen:0:264:0:75,unseen:0:274:0:52,unseen:0:292:0:143,unseen:0:315:0:136,unseen:0:342:0:80,unseen:0:365:0:60,unseen:0:372:0:71,unseen:0:380:0:59,unseen:0:393:0:47,unseen:0:401:0:30,unseen:0:405:0:34,unseen:0:412:0:49,unseen:0:417:0:40,unseen:0:433:0:38,unseen:0:445:0:88,unseen:0:453:0:80,unseen:0:457:0:88,unseen:0:459:0:97,unseen:0:474:0:85,unseen:0:477:0:91,unseen:0:482:0:93,unseen:0:484:0:92,unseen:0:491:0:99,unseen:0:493:0:104,unseen:0:508:0:115,unseen:0:513:0:109,unseen:0:519:0:115,unseen:0:525:0:135,unseen:0:528:0:115,unseen:0:536:0:110,unseen:0:540:0:78,unseen:0:545:0:80,unseen:0:573:0:93,unseen:0:585:0:68,unseen:0:590:0:37,unseen:0:620:0:82,unseen:0:662:0:145,unseen:0:664:0:174,unseen:0:667:0:149,unseen:0:695:0:45,unseen:0:726:0:53,unseen:0:727:0:54,unseen:0:745:0:45,unseen:0:770:0:58,unseen:0:776:0:59,unseen:0:781:0:49,unseen:0:798:0:53,unseen:0:807:0:125,unseen:0:822:0:55,unseen:0:842:0:52,unseen:0:857:0:45,unseen:0:864:0:57,unseen:0:889:0:114,unseen:0:893:0:97,unseen:0:897:0:161,unseen:0:907:0:125,unseen:0:912:0:113,unseen:0:913:0:105,unseen:0:945:0:158,unseen:0:986:0:84,unseen:0:997:0:78,unseen:0:1014:0:101,unseen:0:1015:0:68,unseen:0:1024:0:118,unseen:0:1030:0:52,unseen:0:1066:0:56,unseen:0:1081:0:50,unseen:0:1109:0:46,unseen:0:1120:0:64,unseen:0:1137:0:75,unseen:0:1144:0:47,unseen:0:1169:0:54,unseen:0:1194:0:33,unseen:0:1230:0:44,unseen:0:1253:0:41,unseen:0:1263:0:70,unseen:0:1266:0:40,unseen:0:1319:0:112,unseen:0:1326:0:116,unseen:0:1348:0:109,unseen:0:1430:0:55,unseen:0:1446:0:84
+    - --output_dir=/tmp/so101-unseen-r100-v4
+    - --upload_dir=gs://visionary-uc1/so101/evals/unseen_physics/random100_seed42/cotrained_v4/artifacts
+    - --step=100000
+    - --context_frames=4
+    - --sample_steps=8
+    - --fps=5
+
+markers:
+  complete_uri: gs://visionary-uc1/so101/evals/unseen_physics/random100_seed42/cotrained_v4/_complete.json
+  failure_prefix: gs://visionary-uc1/so101/evals/unseen_physics/random100_seed42/cotrained_v4/failures
+
+logs:
+  uri: gs://visionary-uc1/so101/evals/unseen_physics/random100_seed42/cotrained_v4/_starter.log
+  archive_uri_prefix: gs://visionary-uc1/so101/evals/unseen_physics/random100_seed42/cotrained_v4/logs
+  tail_lines: 200
+
+failure_policy:
+  mode: stop
+  max_retries: 0
+  retry_backoff_seconds: 0
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: gs://visionary-uc1/so101/evals/unseen_physics/random100_seed42/cotrained_v4/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
+machine:
+  family: v6e
+  chips: 8
+  zone: us-central1-b
+  spot: true
+  valid_until_duration: 1800s

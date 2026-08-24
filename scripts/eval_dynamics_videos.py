@@ -16,6 +16,7 @@ import argparse
 import io
 import json
 import logging
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,7 @@ import imageio
 import jax
 import jax.numpy as jnp
 import numpy as np
+from etils import epath
 from hydra.utils import instantiate
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -76,12 +78,19 @@ def parse_selected_clips(value: str) -> list[SelectedClip]:
     return clips
 
 
-def parse_source_dirs(value: str) -> dict[str, Path]:
+def parse_source_dirs(value: str) -> dict[str, epath.Path]:
     sources = {}
     for spec in value.split(","):
         name, path = spec.split("=", maxsplit=1)
-        sources[name] = Path(path)
+        sources[name] = epath.Path(path)
     return sources
+
+
+def upload_output(source: Path, destination: str) -> None:
+    subprocess.run(
+        ["gcloud", "storage", "rsync", "--recursive", str(source), destination],
+        check=True,
+    )
 
 
 def main() -> None:
@@ -105,6 +114,7 @@ def main() -> None:
         help="Comma-separated source:embodiment:index:start_frame:frame_count selections.",
     )
     parser.add_argument("--output_dir", required=True, help="Where to write mp4 files.")
+    parser.add_argument("--upload_dir", help="Optional GCS directory for the completed output.")
     parser.add_argument("--num_videos", type=int, default=20)
     parser.add_argument(
         "--indices",
@@ -166,6 +176,9 @@ def main() -> None:
         "separates tokenizer error from dynamics error.",
     )
     args = parser.parse_args()
+
+    if args.upload_dir and process_count != 1:
+        parser.error("--upload_dir currently supports one-host jobs only")
 
     if bool(args.source_dirs) != bool(args.clip_specs):
         parser.error("--source_dirs and --clip_specs must be used together")
@@ -364,21 +377,25 @@ def main() -> None:
         clips = sorted(selected_clips, key=lambda clip: clip.frame_count)
         global_batch_size = jax.device_count()
         local_batch_size = global_batch_size // process_count
-        if len(clips) % global_batch_size:
-            raise ValueError(f"Selected clip count must be divisible by {global_batch_size}, got {len(clips)}")
+        padding = (-len(clips)) % global_batch_size
+        clip_items = [(clip, False) for clip in clips]
+        clip_items.extend((clips[0], True) for _ in range(padding))
+        clip_items.sort(key=lambda item: item[0].frame_count)
+        if padding:
+            logger.info("Padding %d selected batch slots; padded rows are not scored or written", padding)
 
         local_summary = []
-        for batch_start in range(0, len(clips), global_batch_size):
-            global_clips = clips[batch_start : batch_start + global_batch_size]
+        for batch_start in range(0, len(clip_items), global_batch_size):
+            global_items = clip_items[batch_start : batch_start + global_batch_size]
             local_start = process_index * local_batch_size
-            local_clips = global_clips[local_start : local_start + local_batch_size]
-            total_frames = max(clip.frame_count for clip in global_clips)
+            local_items = global_items[local_start : local_start + local_batch_size]
+            total_frames = max(clip.frame_count for clip, _ in global_items)
             local_videos = []
             local_actions = []
             local_embodiment_ids = []
             local_metadata = []
 
-            for clip in local_clips:
+            for clip, is_padding in local_items:
                 source = selected_sources[clip.source]
                 if clip.index >= len(source):
                     raise IndexError(f"{clip.source} index {clip.index} is outside 0..{len(source) - 1}")
@@ -407,7 +424,7 @@ def main() -> None:
                 local_videos.append(np.pad(video[indices], ((0, frame_padding), (0, 0), (0, 0))))
                 local_actions.append(np.pad(aligned_actions, ((0, frame_padding), (0, 0))))
                 local_embodiment_ids.append(np.full((total_frames,), clip.embodiment_id, dtype=np.int32))
-                local_metadata.append((clip, stream))
+                local_metadata.append((clip, stream, is_padding))
 
             video_batch = local_batch_to_global(np.stack(local_videos), batch_sharding)
             action_batch = local_batch_to_global(np.stack(local_actions), batch_sharding)
@@ -424,7 +441,9 @@ def main() -> None:
             decoded = to_u8(global_batch_to_local(decode_all(video_batch)))
             generated = to_u8(global_batch_to_local(decode_all(generated_latent)))
 
-            for row, (clip, stream) in enumerate(local_metadata):
+            for row, (clip, stream, is_padding) in enumerate(local_metadata):
+                if is_padding:
+                    continue
                 stop_frame = clip.start_frame + clip.frame_count
                 base = f"d{clip.index:06d}__f{clip.start_frame:04d}-{stop_frame:04d}"
                 domain_dir = output_dir / clip.source
@@ -490,6 +509,9 @@ def main() -> None:
             )
         )
         logger.info("Wrote %d selected clips on process %d", len(local_summary), process_index)
+        if args.upload_dir:
+            upload_output(output_dir, args.upload_dir)
+            logger.info("Uploaded rollout output to %s", args.upload_dir)
         return
 
     summary = []
@@ -617,6 +639,9 @@ def main() -> None:
         mean_psnr,
         mean_ssim,
     )
+    if args.upload_dir:
+        upload_output(output_dir, args.upload_dir)
+        logger.info("Uploaded rollout output to %s", args.upload_dir)
 
 
 if __name__ == "__main__":
