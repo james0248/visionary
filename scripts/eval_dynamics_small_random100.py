@@ -364,6 +364,43 @@ def write_video(path: Path, frames: np.ndarray, fps: float) -> None:
     imageio.mimsave(path, frames, fps=fps, macro_block_size=1)
 
 
+def video_paths(output_dir: Path, index: int, sample_steps: int) -> tuple[Path, Path, Path]:
+    stem = f"d{index:06d}"
+    return (
+        output_dir / "decoded" / f"{stem}__decoded.mp4",
+        output_dir / "rollout" / f"{stem}__dynamics_small_s{sample_steps}.mp4",
+        output_dir / "side_by_side" / f"{stem}__decoded__dynamics_small.mp4",
+    )
+
+
+def score_video(
+    sample: dict[str, object], reference: np.ndarray, prediction: np.ndarray, context_frames: int
+) -> dict[str, object]:
+    length = int(sample["length"])
+    generated_slice = slice(context_frames, length)
+    ref_f = reference[generated_slice].astype(np.float32) / 255.0
+    pred_f = prediction[generated_slice].astype(np.float32) / 255.0
+    psnr = float(peak_signal_noise_ratio(ref_f, pred_f, data_range=1.0))
+    ssim = float(
+        np.mean(
+            [
+                structural_similarity(a, b, data_range=1.0, channel_axis=-1)
+                for a, b in zip(ref_f, pred_f, strict=True)
+            ]
+        )
+    )
+    key = sample["key"]
+    return {
+        "index": int(sample["index"]),
+        "stream": f"{key[0]}/ep{key[1]}/{key[2]}",
+        "frame_count": length,
+        "source_fps": float(sample["source_fps"]),
+        "rollout_fps": float(sample["fps"]),
+        "psnr_vs_decoded": psnr,
+        "ssim_vs_decoded": ssim,
+    }
+
+
 def rollout_all(
     manifest: list[dict[str, object]],
     tokenized_dir: Path,
@@ -424,6 +461,16 @@ def rollout_all(
     summary = []
     for start in range(0, len(samples), batch_size):
         active = samples[start : start + batch_size]
+        paths = [video_paths(output_dir, int(sample["index"]), sample_steps) for sample in active]
+        if all(all(path.exists() for path in sample_paths) for sample_paths in paths):
+            for sample, sample_paths in zip(active, paths, strict=True):
+                reference = np.asarray(imageio.mimread(sample_paths[0]))[: int(sample["length"])]
+                prediction = np.asarray(imageio.mimread(sample_paths[1]))[: int(sample["length"])]
+                summary.append(score_video(sample, reference, prediction, context_frames))
+            logger.info(
+                "Reused retained rollouts through clip %d/%d", start + len(active), len(samples)
+            )
+            continue
         videos, actions, seeds = pad_batch(active, batch_size, max_frames)
         started = time.monotonic()
         generated = np.asarray(
@@ -443,45 +490,15 @@ def rollout_all(
             index = int(sample["index"])
             reference = decoded[row, :length]
             prediction = rolled[row, :length]
-            generated_slice = slice(context_frames, length)
-            ref_f = reference[generated_slice].astype(np.float32) / 255.0
-            pred_f = prediction[generated_slice].astype(np.float32) / 255.0
-            psnr = float(peak_signal_noise_ratio(ref_f, pred_f, data_range=1.0))
-            ssim = float(
-                np.mean(
-                    [
-                        structural_similarity(a, b, data_range=1.0, channel_axis=-1)
-                        for a, b in zip(ref_f, pred_f, strict=True)
-                    ]
-                )
-            )
-            stem = f"d{index:06d}"
             fps = float(sample["fps"])
-            write_video(output_dir / "decoded" / f"{stem}__decoded.mp4", reference, fps)
-            write_video(
-                output_dir / "rollout" / f"{stem}__dynamics_small_s{sample_steps}.mp4",
-                prediction,
-                fps,
-            )
+            decoded_path, rollout_path, side_path = video_paths(output_dir, index, sample_steps)
+            write_video(decoded_path, reference, fps)
+            write_video(rollout_path, prediction, fps)
             separator = np.full((length, reference.shape[1], 4, 3), 255, dtype=np.uint8)
             side_by_side = np.concatenate([reference, separator, prediction], axis=2)
-            write_video(
-                output_dir / "side_by_side" / f"{stem}__decoded__dynamics_small.mp4",
-                side_by_side,
-                fps,
-            )
-            key = sample["key"]
-            summary.append(
-                {
-                    "index": index,
-                    "stream": f"{key[0]}/ep{key[1]}/{key[2]}",
-                    "frame_count": length,
-                    "source_fps": float(sample["source_fps"]),
-                    "rollout_fps": fps,
-                    "psnr_vs_decoded": psnr,
-                    "ssim_vs_decoded": ssim,
-                }
-            )
+            write_video(side_path, side_by_side, fps)
+            summary.append(score_video(sample, reference, prediction, context_frames))
+        (output_dir / "partial_summary.json").write_text(json.dumps({"videos": summary}, indent=2))
         logger.info(
             "Rolled out %d/%d clips in %.1fs",
             min(start + len(active), len(samples)),
@@ -530,6 +547,7 @@ def main() -> None:
     tokenized_dir = Path(args.tokenized_dir)
     output_dir = Path(args.output_dir)
     fetch_existing(args.tokenized_uri, tokenized_dir)
+    fetch_existing(args.output_uri, output_dir)
     completed = {int(path.stem.rsplit("_", 1)[1]) for path in tokenized_dir.glob("clip_*.npz")}
     missing_manifest = [item for item in manifest if int(item["index"]) not in completed]
 
