@@ -47,7 +47,7 @@ logs:
 
 failure_policy:
   mode: retry
-  max_retries: 1
+  max_retries: 12
   retry_backoff_seconds: 30
 
 starter_service_account:
