@@ -64,6 +64,6 @@ watcher:
 machine:
   family: v5e
   chips: 1
-  zone: us-central1-a
+  zone: us-west1-c
   spot: true
   valid_until_duration: 3600s
