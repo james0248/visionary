@@ -61,4 +61,4 @@ machine:
   chips: 16
   zone: us-central1-b
   spot: true
-  valid_until_duration: 3600s
+  valid_until_duration: 3000s
