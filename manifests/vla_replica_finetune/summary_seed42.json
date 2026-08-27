@@ -1,0 +1,11 @@
+{
+  "repo": "HenryZhang/VLAReplica_SFT_data",
+  "selection_seed": 42,
+  "selection_method": "sha256 rank within task",
+  "per_task": 3,
+  "num_tasks": 27,
+  "train_trajectories": 81,
+  "heldout_trajectories": 420,
+  "train_duration_s": 1379.0333333333333,
+  "heldout_duration_s": 7234.2
+}
