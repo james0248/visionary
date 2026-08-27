@@ -308,6 +308,7 @@ def tokenize_selected(
             pre_stride_fps=np.asarray(min(source_fps, 30.0), dtype=np.float32),
             source_index=np.asarray(index, dtype=np.int32),
             start_index=np.asarray(0, dtype=np.int32),
+            tokenizer_bounded_latent=np.asarray(False),
         )
         completed += 1
         logger.info(
@@ -611,6 +612,7 @@ def main() -> None:
         "dynamics_step": args.dynamics_step,
         "tokenizer_checkpoint": args.tokenizer_checkpoint,
         "tokenizer_step": args.tokenizer_step,
+        "tokenizer_bounded_latent": False,
         "saved_model_config": EXPECTED_DYNAMICS,
         "historical_preprocessing": {
             "target_fps": 30,
