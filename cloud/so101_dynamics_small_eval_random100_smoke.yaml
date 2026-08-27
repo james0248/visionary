@@ -63,8 +63,8 @@ watcher:
   gcloud_retry_max_backoff_seconds: 60
 
 machine:
-  family: v6e
+  family: v5e
   chips: 1
-  zone: us-east1-d
+  zone: us-central1-a
   spot: true
   valid_until_duration: 1200s
