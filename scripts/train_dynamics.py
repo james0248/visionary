@@ -494,7 +494,11 @@ def main(cfg: DictConfig):
             target_variables=state.params,
             step=None if source_step is None else int(source_step),
         )
-        state = state.replace(params=restored_params, ema_params=restored_params)
+        restored_ema_params = jax.tree_util.tree_map(
+            lambda value: jnp.copy(value) if hasattr(value, "shape") else value,
+            restored_params,
+        )
+        state = state.replace(params=restored_params, ema_params=restored_ema_params)
         logger.info(
             "Initialized online and EMA parameters from model export %s at step %s; "
             "optimizer and training step are fresh.",
