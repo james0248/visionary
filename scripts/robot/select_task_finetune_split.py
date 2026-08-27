@@ -34,6 +34,7 @@ def main() -> None:
     parser.add_argument("--output_dir", required=True)
     parser.add_argument("--repo", default="HenryZhang/VLAReplica_SFT_data")
     parser.add_argument("--per_task", type=int, default=3)
+    parser.add_argument("--validation_per_task", type=int, default=3)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -45,34 +46,55 @@ def main() -> None:
         by_task[str(row["task"])].append(row)
     if not by_task:
         raise ValueError(f"No records found for {args.repo}")
-    too_small = {task: len(group) for task, group in by_task.items() if len(group) <= args.per_task}
+    reserved_per_task = args.per_task + args.validation_per_task
+    too_small = {task: len(group) for task, group in by_task.items() if len(group) <= reserved_per_task}
     if too_small:
-        raise ValueError(f"Tasks need more than {args.per_task} records: {too_small}")
+        raise ValueError(f"Tasks need more than {reserved_per_task} records: {too_small}")
 
     train = []
+    validation = []
+    test = []
     heldout = []
     for task, group in sorted(by_task.items()):
         ordered = sorted(group, key=lambda row: rank(args.seed, task, int(row["episode"])))
         train.extend(ordered[: args.per_task])
-        heldout.extend(ordered[args.per_task :])
+        validation.extend(ordered[args.per_task : reserved_per_task])
+        test.extend(ordered[reserved_per_task:])
+        heldout.extend(ordered[args.per_task:])
     train.sort(key=lambda row: (str(row["task"]), int(row["episode"])))
+    validation.sort(key=lambda row: (str(row["task"]), int(row["episode"])))
+    test.sort(key=lambda row: (str(row["task"]), int(row["episode"])))
     heldout.sort(key=lambda row: (str(row["task"]), int(row["episode"])))
 
     train_keys = {(row["repo"], int(row["episode"]), row["camera"]) for row in train}
+    validation_keys = {(row["repo"], int(row["episode"]), row["camera"]) for row in validation}
+    test_keys = {(row["repo"], int(row["episode"]), row["camera"]) for row in test}
     heldout_keys = {(row["repo"], int(row["episode"]), row["camera"]) for row in heldout}
     if train_keys & heldout_keys:
         raise ValueError("Fine-tune and held-out records overlap")
+    if validation_keys & test_keys:
+        raise ValueError("Validation and test records overlap")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     source = "data/unseen_physics/shared_pipeline/tokenizer_input/test/records.jsonl"
     train_payload = summarize(train, source, args.repo, args.seed, args.per_task)
+    validation_payload = summarize(
+        validation, source, args.repo, args.seed, args.validation_per_task
+    )
+    test_payload = summarize(test, source, args.repo, args.seed, 0)
     heldout_payload = summarize(heldout, source, args.repo, args.seed, args.per_task)
     (output_dir / f"train_{args.per_task}_per_task_seed{args.seed}.json").write_text(
         json.dumps(train_payload, indent=2) + "\n"
     )
     (output_dir / f"heldout_seed{args.seed}.json").write_text(
         json.dumps(heldout_payload, indent=2) + "\n"
+    )
+    (output_dir / f"validation_{args.validation_per_task}_per_task_seed{args.seed}.json").write_text(
+        json.dumps(validation_payload, indent=2) + "\n"
+    )
+    (output_dir / f"test_seed{args.seed}.json").write_text(
+        json.dumps(test_payload, indent=2) + "\n"
     )
     summary = {
         "repo": args.repo,
@@ -81,8 +103,12 @@ def main() -> None:
         "per_task": args.per_task,
         "num_tasks": len(by_task),
         "train_trajectories": len(train),
+        "validation_trajectories": len(validation),
+        "test_trajectories": len(test),
         "heldout_trajectories": len(heldout),
         "train_duration_s": train_payload["duration_s"],
+        "validation_duration_s": validation_payload["duration_s"],
+        "test_duration_s": test_payload["duration_s"],
         "heldout_duration_s": heldout_payload["duration_s"],
     }
     (output_dir / f"summary_seed{args.seed}.json").write_text(
