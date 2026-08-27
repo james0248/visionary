@@ -1,0 +1,64 @@
+project: visionary-491008
+
+job:
+  name: so101-vla-ft393-one-per-task-s1000
+  poll_interval_seconds: 30
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: codex/vla-replica-ft-3-per-task
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/eval_dynamics_videos.py
+  config_name: null
+  auto_resume: false
+  overrides:
+    - --checkpoint_dir=gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_ramp_vla_replica_ft393_s1000_seed42
+    - --tokenizer_checkpoint_dir=gs://visionary-uc1/so101/checkpoints/tokenizer_v2
+    - --source_dirs=test=gs://visionary-uc1/so101/data/dynamics/vla_replica_ft3_seed42/test
+    - --clip_specs=test:0:170:0:97,test:0:300:0:100,test:0:89:0:58,test:0:110:0:63,test:0:245:0:86,test:0:252:0:100,test:0:239:0:80,test:0:241:0:100,test:0:254:0:72,test:0:135:0:31,test:0:209:0:100,test:0:234:0:100,test:0:221:0:100,test:0:268:0:35,test:0:276:0:67,test:0:53:0:52,test:0:48:0:64,test:0:23:0:70,test:0:0:0:87,test:0:44:0:77,test:0:55:0:64,test:0:40:0:75,test:0:63:0:100,test:0:66:0:100,test:0:60:0:100,test:0:75:0:100,test:0:72:0:100
+    - --output_dir=/tmp/so101-vla-ft393-one-per-task-s1000
+    - --upload_dir=gs://visionary-uc1/so101/evals/vla_replica_ablation/ft393_s1000/heldout_one_per_task/artifacts
+    - --upload_each_batch
+    - --step=1000
+    - --context_frames=4
+    - --sample_steps=8
+    - --fps=5
+
+markers:
+  complete_uri: gs://visionary-uc1/so101/evals/vla_replica_ablation/ft393_s1000/heldout_one_per_task/_complete.json
+  failure_prefix: gs://visionary-uc1/so101/evals/vla_replica_ablation/ft393_s1000/heldout_one_per_task/failures
+
+logs:
+  uri: gs://visionary-uc1/so101/evals/vla_replica_ablation/ft393_s1000/heldout_one_per_task/_starter.log
+  archive_uri_prefix: gs://visionary-uc1/so101/evals/vla_replica_ablation/ft393_s1000/heldout_one_per_task/logs
+  tail_lines: 200
+
+failure_policy:
+  mode: retry
+  max_retries: 12
+  retry_backoff_seconds: 30
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: gs://visionary-uc1/so101/evals/vla_replica_ablation/ft393_s1000/heldout_one_per_task/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
+machine:
+  family: v6e
+  chips: 8
+  zone: us-central1-b
+  spot: true
+  valid_until_duration: 600s
