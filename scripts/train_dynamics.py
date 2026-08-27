@@ -334,7 +334,9 @@ def main(cfg: DictConfig):
     )
     logger.info("Data mesh: %d devices", mesh.shape[DATA_AXIS])
 
-    latent_stats_path = to_absolute_path(str(cfg.dataset.latent_stats))
+    latent_stats_path = str(cfg.dataset.latent_stats)
+    if "://" not in latent_stats_path:
+        latent_stats_path = to_absolute_path(latent_stats_path)
     latent_stats = load_latent_stats(latent_stats_path)
     latent_normalizer = NormalizeDynamicsLatents(latent_stats.mean, latent_stats.std)
     OmegaConf.update(cfg, "dynamics.latent_mean", latent_stats.mean.tolist(), force_add=True)

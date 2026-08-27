@@ -21,7 +21,7 @@ training:
   config_name: so101_dynamics_vla_replica_ft3
   auto_resume: true
   overrides:
-    - dataset.latent_stats=/mnt/data/latent_stats.json
+    - dataset.latent_stats=gs://visionary-uc1/so101/data/dynamics/latent_stats.json
     - dataset.sources.0.train_dir=${data_dir}/train
     - dataset.sources.0.eval_dir=${data_dir}/validation
     - checkpoint.manager.directory=${checkpoint_dir}
@@ -62,7 +62,3 @@ machine:
   zone: us-central1-b
   spot: true
   valid_until_duration: 3600s
-  data_disk:
-    source: projects/visionary-491008/zones/us-central1-b/disks/visionary-dynamics-v2-uc1b
-    mode: read-only
-    mount_path: /mnt/data
