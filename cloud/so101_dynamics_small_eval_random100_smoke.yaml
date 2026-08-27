@@ -4,7 +4,7 @@ job:
   name: so101-eval-dynsmall-fix-smoke
   poll_interval_seconds: 20
   queue_wait_timeout_seconds: 0
-  spot: true
+  spot: false
 
 repo:
   url: https://github.com/james0248/visionary.git
@@ -66,5 +66,5 @@ machine:
   family: v6e
   chips: 1
   zone: us-central1-b
-  spot: true
+  spot: false
   valid_until_duration: 1200s
