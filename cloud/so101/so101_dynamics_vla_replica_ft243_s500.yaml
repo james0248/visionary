@@ -4,7 +4,7 @@ checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${exp_name}
 data_dir: gs://visionary-uc1/so101/data/dynamics/vla_replica_ft243_seed42
 
 job:
-  name: so101-vla-ft243-s500
+  name: so101-vla-ft243-s500-usc1b
   poll_interval_seconds: 30
   queue_wait_timeout_seconds: 0
   spot: true
@@ -58,7 +58,7 @@ starter_service_account:
 
 watcher:
   impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
-  state_uri: ${checkpoint_dir}/_watcher_state.json
+  state_uri: ${checkpoint_dir}/_watcher_state_usc1b.json
   gcloud_retry_attempts: 5
   gcloud_retry_backoff_seconds: 5
   gcloud_retry_max_backoff_seconds: 60
@@ -66,6 +66,6 @@ watcher:
 machine:
   family: v6e
   chips: 16
-  zone: us-east5-b
+  zone: us-central1-b
   spot: true
   valid_until_duration: 3000s
