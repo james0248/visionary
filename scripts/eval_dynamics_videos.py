@@ -93,6 +93,13 @@ def upload_output(source: Path, destination: str) -> None:
     )
 
 
+def download_output(source: str, destination: Path) -> None:
+    subprocess.run(
+        ["gcloud", "storage", "rsync", "--recursive", source, str(destination)],
+        check=True,
+    )
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s", force=True)
     init_distributed_if_pod(logger=logger)
@@ -119,6 +126,11 @@ def main() -> None:
         "--upload_each_batch",
         action="store_true",
         help="Sync selected-clip outputs after each completed batch.",
+    )
+    parser.add_argument(
+        "--resume_upload",
+        action="store_true",
+        help="Download --upload_dir and skip selected clips already present in its summary.",
     )
     parser.add_argument("--num_videos", type=int, default=20)
     parser.add_argument(
@@ -198,6 +210,8 @@ def main() -> None:
 
     if args.upload_dir and process_count != 1:
         parser.error("--upload_dir currently supports one-host jobs only")
+    if args.resume_upload and not args.upload_dir:
+        parser.error("--resume_upload requires --upload_dir")
 
     if bool(args.source_dirs) != bool(args.clip_specs):
         parser.error("--source_dirs and --clip_specs must be used together")
@@ -219,6 +233,9 @@ def main() -> None:
     fixed_total = None if roll_to_end else args.context_frames + args.generated_frames
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.resume_upload:
+        download_output(args.upload_dir, output_dir)
+        logger.info("Downloaded prior selected-clip output from %s", args.upload_dir)
 
     latents = None
     selected_sources = {}
@@ -453,7 +470,31 @@ def main() -> None:
         tokenizer_variables = jax.tree_util.tree_map(
             lambda value: shard_from_host(value, replicated_sharding), tokenizer_variables
         )
-        clips = sorted(selected_clips, key=lambda clip: clip.frame_count)
+        summary_path = output_dir / f"summary_process_{process_index}.json"
+        local_summary = []
+        if args.resume_upload and summary_path.exists():
+            prior_summary = json.loads(summary_path.read_text())
+            local_summary = list(prior_summary.get("videos", []))
+        completed = {
+            (
+                str(video["source"]),
+                int(video["embodiment_id"]),
+                int(video["index"]),
+                int(video["start_frame"]),
+                int(video["frame_count"]),
+            )
+            for video in local_summary
+        }
+        clips = sorted(
+            (
+                clip
+                for clip in selected_clips
+                if (clip.source, clip.embodiment_id, clip.index, clip.start_frame, clip.frame_count) not in completed
+            ),
+            key=lambda clip: clip.frame_count,
+        )
+        if completed:
+            logger.info("Resuming with %d completed clips and %d remaining clips", len(completed), len(clips))
         global_batch_size = jax.device_count()
         local_batch_size = global_batch_size // process_count
         padding = (-len(clips)) % global_batch_size
@@ -463,10 +504,8 @@ def main() -> None:
         if padding:
             logger.info("Padding %d selected batch slots; padded rows are not scored or written", padding)
 
-        local_summary = []
-
         def write_selected_summary() -> None:
-            (output_dir / f"summary_process_{process_index}.json").write_text(
+            summary_path.write_text(
                 json.dumps(
                     {
                         "checkpoint_dir": args.checkpoint_dir,

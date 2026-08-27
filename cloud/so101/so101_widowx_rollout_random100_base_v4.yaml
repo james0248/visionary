@@ -27,6 +27,7 @@ training:
     - --output_dir=/tmp/so101-widowx-r100-base-v4
     - --upload_dir=gs://visionary-uc1/so101/evals/widowx_random100_seed42/base_v4/artifacts
     - --upload_each_batch
+    - --resume_upload
     - --step=100000
     - --context_frames=4
     - --generated_frames=-1
