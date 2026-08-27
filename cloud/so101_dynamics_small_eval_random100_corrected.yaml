@@ -1,0 +1,69 @@
+project: visionary-491008
+
+job:
+  name: so101-eval-r100-dynsmall-fix
+  poll_interval_seconds: 20
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: codex/dynamics-small-r100-saved-config
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/eval_dynamics_small_random100.py
+  config_name: null
+  auto_resume: false
+  overrides:
+    - --manifest=manifests/so101_eval_random100_seed42.json
+    - --raw_shards=gs://visionary-uc1/so101/data/tokenizer/shards/eval
+    - --tokenizer_checkpoint=gs://visionary-uc1/so101/checkpoints/tokenizer
+    - --tokenizer_step=50000
+    - --dynamics_checkpoint=gs://visionary-uc1/so101/checkpoints/dynamics_small
+    - --dynamics_step=1500000
+    - --tokenized_dir=/tmp/dynamics-small-r100-corrected/tokenized
+    - --tokenized_uri=gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/dynamics_small_7p5hz_corrected_unbounded/tokenized_eval_selected100
+    - --output_dir=/tmp/dynamics-small-r100-corrected/artifacts
+    - --output_uri=gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/dynamics_small_7p5hz_corrected_unbounded/artifacts
+    - --max_frames=100
+    - --stride=4
+    - --encode_window=32
+    - --context_frames=4
+    - --sample_steps=8
+    - --context_tau=0.9
+
+markers:
+  complete_uri: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/dynamics_small_7p5hz_corrected_unbounded/_complete.json
+  failure_prefix: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/dynamics_small_7p5hz_corrected_unbounded/failures
+
+logs:
+  uri: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/dynamics_small_7p5hz_corrected_unbounded/_starter.log
+  archive_uri_prefix: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/dynamics_small_7p5hz_corrected_unbounded/logs
+  tail_lines: 240
+
+failure_policy:
+  mode: stop
+  max_retries: 0
+  retry_backoff_seconds: 0
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: gs://visionary-uc1/so101/evals/eval_split/random100_collage_seed42/dynamics_small_7p5hz_corrected_unbounded/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
+machine:
+  family: v6e
+  chips: 1
+  zone: us-central1-b
+  spot: true
+  valid_until_duration: 3600s

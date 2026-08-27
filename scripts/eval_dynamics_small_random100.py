@@ -79,6 +79,7 @@ EXPECTED_TOKENIZER = {
     "channel_dim": 16,
     "resize_shape": [240, 320],
     "patch_size": 16,
+    "bounded_latent": False,
 }
 
 
@@ -190,6 +191,7 @@ def fetch_existing(uri: str, local_dir: Path) -> None:
 class TokenizerRuntime:
     def __init__(self, checkpoint_dir: str, step: int, mesh: Mesh, batch_sharding: NamedSharding):
         config, variables = restore_model_export_single_device(checkpoint_dir, step=step)
+        config["bounded_latent"] = False
         validate_config(config, EXPECTED_TOKENIZER, "tokenizer")
         self.model = instantiate(config)
         self.preprocessor = TokenizerPreprocessor.from_config(
@@ -266,6 +268,7 @@ def tokenize_selected(
     batch_size: int,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    total = len(manifest)
     max_source_frames = (max_rollout_frames - 1) * stride + 1
     completed = 0
     for item in manifest:
@@ -307,7 +310,13 @@ def tokenize_selected(
             start_index=np.asarray(0, dtype=np.int32),
         )
         completed += 1
-        logger.info("Tokenized %d/100: index=%d, %d source frames", completed, index, len(latents))
+        logger.info(
+            "Tokenized %d/%d: index=%d, %d source frames",
+            completed,
+            total,
+            index,
+            len(latents),
+        )
         if completed % 10 == 0:
             sync(output_dir, output_uri)
     sync(output_dir, output_uri)
@@ -530,6 +539,7 @@ def main() -> None:
     parser.add_argument("--context_frames", type=int, default=4)
     parser.add_argument("--sample_steps", type=int, default=8)
     parser.add_argument("--context_tau", type=float, default=0.9)
+    parser.add_argument("--limit", type=int, default=100)
     args = parser.parse_args()
 
     if jax.process_count() != 1:
@@ -543,6 +553,9 @@ def main() -> None:
     manifest = manifest_payload["videos"]
     if len(manifest) != 100 or len({item["stream"] for item in manifest}) != 100:
         raise ValueError("The manifest must contain the exact 100 unique streams")
+    if not 1 <= args.limit <= len(manifest):
+        raise ValueError(f"Expected limit in [1, {len(manifest)}], got {args.limit}")
+    manifest = manifest[: args.limit]
 
     tokenized_dir = Path(args.tokenized_dir)
     output_dir = Path(args.output_dir)
@@ -573,7 +586,7 @@ def main() -> None:
             args.encode_window,
             device_count,
         )
-    logger.info("All 100 selected eval streams are tokenized")
+    logger.info("All %d selected eval streams are tokenized", len(manifest))
 
     summary = rollout_all(
         manifest,
