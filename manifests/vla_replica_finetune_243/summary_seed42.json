@@ -1,0 +1,14 @@
+{
+  "repo": "HenryZhang/VLAReplica_SFT_data",
+  "selection_seed": 42,
+  "selection_method": "9 per task with fixed reserved evaluation records",
+  "base_train_trajectories": 81,
+  "additional_train_trajectories": 162,
+  "train_trajectories": 243,
+  "validation_trajectories": 27,
+  "test_trajectories": 231,
+  "reserved_eval_trajectories": 27,
+  "train_duration_s": 4237.633333333333,
+  "validation_duration_s": 474.93333333333334,
+  "test_duration_s": 3900.6666666666665
+}

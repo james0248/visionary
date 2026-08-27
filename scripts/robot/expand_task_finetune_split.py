@@ -69,7 +69,9 @@ def main() -> None:
     parser.add_argument("--validation", type=Path, required=True)
     parser.add_argument("--test", type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
-    parser.add_argument("--total_train", type=int, required=True)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--total_train", type=int)
+    target.add_argument("--per_task", type=int)
     parser.add_argument("--reserved_episodes", required=True)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -96,37 +98,67 @@ def main() -> None:
     if reserved_tasks != all_tasks:
         raise ValueError("Reserved evaluation records must cover every task exactly once")
 
-    groups: dict[str, list[dict]] = defaultdict(list)
-    for record in source_test:
-        if int(record["episode"]) not in reserved_episodes:
-            groups[str(record["task"])].append(record)
-    additional_count = args.total_train - len(base_train)
-    if additional_count < 0:
-        raise ValueError("total_train is smaller than the base training split")
-    allocation = allocate_proportionally(groups, additional_count)
-
     additional = []
-    for task, records in sorted(groups.items()):
-        ordered = sorted(records, key=lambda record: rank(args.seed, task, int(record["episode"])))
-        additional.extend(ordered[: allocation[task]])
+    if args.per_task is not None:
+        groups: dict[str, list[dict]] = defaultdict(list)
+        for record in validation + source_test:
+            if int(record["episode"]) not in reserved_episodes:
+                groups[str(record["task"])].append(record)
+        base_by_task: dict[str, int] = defaultdict(int)
+        for record in base_train:
+            base_by_task[str(record["task"])] += 1
+        for task in sorted(all_tasks):
+            needed = args.per_task - base_by_task[task]
+            if needed < 0:
+                raise ValueError(f"Base split has more than {args.per_task} records for {task}")
+            ordered = sorted(groups[task], key=lambda record: rank(args.seed, task, int(record["episode"])))
+            if len(ordered) < needed:
+                raise ValueError(f"Task {task} needs {needed} additional records, found {len(ordered)}")
+            additional.extend(ordered[:needed])
+        total_train = args.per_task * len(all_tasks)
+        final_validation = reserved
+        candidate_heldout = validation + source_test
+        selection_method = f"{args.per_task} per task with fixed reserved evaluation records"
+    else:
+        groups = defaultdict(list)
+        for record in source_test:
+            if int(record["episode"]) not in reserved_episodes:
+                groups[str(record["task"])].append(record)
+        additional_count = args.total_train - len(base_train)
+        if additional_count < 0:
+            raise ValueError("total_train is smaller than the base training split")
+        allocation = allocate_proportionally(groups, additional_count)
+        for task, records in sorted(groups.items()):
+            ordered = sorted(records, key=lambda record: rank(args.seed, task, int(record["episode"])))
+            additional.extend(ordered[: allocation[task]])
+        total_train = args.total_train
+        final_validation = validation
+        candidate_heldout = source_test
+        selection_method = "proportional task allocation with sha256 rank"
+
     train = base_train + additional
     train_keys = {record_key(record) for record in train}
-    test = [record for record in source_test if record_key(record) not in train_keys]
-    heldout = validation + test
-    for records in (train, validation, test, heldout, reserved):
+    validation_output_keys = {record_key(record) for record in final_validation}
+    test = [
+        record
+        for record in candidate_heldout
+        if record_key(record) not in train_keys and record_key(record) not in validation_output_keys
+    ]
+    heldout = final_validation + test
+    for records in (train, final_validation, test, heldout, reserved):
         records.sort(key=lambda record: (str(record["task"]), int(record["episode"])))
 
-    if len(train) != args.total_train:
-        raise RuntimeError(f"Expected {args.total_train} training records, got {len(train)}")
+    if len(train) != total_train:
+        raise RuntimeError(f"Expected {total_train} training records, got {len(train)}")
     if train_keys & {record_key(record) for record in heldout}:
         raise RuntimeError("Training and held-out records overlap")
-    if not {record_key(record) for record in reserved}.issubset({record_key(record) for record in test}):
-        raise RuntimeError("Reserved evaluation records are not all in the final test split")
+    if not {record_key(record) for record in reserved}.issubset({record_key(record) for record in heldout}):
+        raise RuntimeError("Reserved evaluation records are not all held out")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     payloads = {
-        f"train_{args.total_train}_seed{args.seed}.json": summarize(train, source, repo, args.seed),
-        f"validation_seed{args.seed}.json": summarize(validation, source, repo, args.seed),
+        f"train_{total_train}_seed{args.seed}.json": summarize(train, source, repo, args.seed),
+        f"validation_seed{args.seed}.json": summarize(final_validation, source, repo, args.seed),
         f"test_seed{args.seed}.json": summarize(test, source, repo, args.seed),
         f"heldout_seed{args.seed}.json": summarize(heldout, source, repo, args.seed),
         f"reserved_eval_seed{args.seed}.json": summarize(reserved, source, repo, args.seed),
@@ -136,14 +168,14 @@ def main() -> None:
     summary = {
         "repo": repo,
         "selection_seed": args.seed,
-        "selection_method": "proportional task allocation with sha256 rank",
+        "selection_method": selection_method,
         "base_train_trajectories": len(base_train),
         "additional_train_trajectories": len(additional),
         "train_trajectories": len(train),
-        "validation_trajectories": len(validation),
+        "validation_trajectories": len(final_validation),
         "test_trajectories": len(test),
         "reserved_eval_trajectories": len(reserved),
-        "train_duration_s": payloads[f"train_{args.total_train}_seed{args.seed}.json"]["duration_s"],
+        "train_duration_s": payloads[f"train_{total_train}_seed{args.seed}.json"]["duration_s"],
         "validation_duration_s": payloads[f"validation_seed{args.seed}.json"]["duration_s"],
         "test_duration_s": payloads[f"test_seed{args.seed}.json"]["duration_s"],
     }

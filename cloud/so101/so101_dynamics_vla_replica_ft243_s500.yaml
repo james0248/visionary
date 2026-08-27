@@ -1,10 +1,10 @@
 project: visionary-491008
-exp_name: dynamics_v4_312m_ramp_vla_replica_ft273_s500_seed42
+exp_name: dynamics_v4_312m_ramp_vla_replica_ft243_s500_seed42
 checkpoint_dir: gs://visionary-uc1/so101/checkpoints/${exp_name}
-data_dir: gs://visionary-uc1/so101/data/dynamics/vla_replica_ft273_seed42
+data_dir: gs://visionary-uc1/so101/data/dynamics/vla_replica_ft243_seed42
 
 job:
-  name: so101-vla-ft273-s500
+  name: so101-vla-ft243-s500
   poll_interval_seconds: 30
   queue_wait_timeout_seconds: 0
   spot: true
