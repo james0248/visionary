@@ -20,6 +20,7 @@ from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
 from visionary.common.checkpoint import (
     CheckpointManager,
+    restore_model_export,
     restore_model_export_single_device,
     restore_preprocessor_export,
     save_model_export,
@@ -481,6 +482,23 @@ def main(cfg: DictConfig):
     state = jax.jit(init_state, out_shardings=metrics_sharding)(
         local_batch_to_global(initial_train_batch, batch_sharding)
     )
+
+    initialization_cfg = cfg.get("initialization")
+    if initialization_cfg is not None:
+        source_directory = str(initialization_cfg.directory)
+        source_step = initialization_cfg.get("step")
+        restored_params = restore_model_export(
+            source_directory,
+            target_variables=state.params,
+            step=None if source_step is None else int(source_step),
+        )
+        state = state.replace(params=restored_params, ema_params=restored_params)
+        logger.info(
+            "Initialized online and EMA parameters from model export %s at step %s; "
+            "optimizer and training step are fresh.",
+            source_directory,
+            "latest" if source_step is None else int(source_step),
+        )
     state_shardings = jax.tree_util.tree_map(lambda _: metrics_sharding, state)
     logger.info("State init took %.1fs", time.monotonic() - _t)
 
