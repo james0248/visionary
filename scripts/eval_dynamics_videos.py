@@ -544,13 +544,25 @@ def main() -> None:
                 domain_dir = output_dir / clip.source
                 decoded_dir = domain_dir / "decoded"
                 rollout_dir = domain_dir / "rollout"
+                comparison_dir = domain_dir / "comparison"
                 decoded_dir.mkdir(parents=True, exist_ok=True)
                 rollout_dir.mkdir(parents=True, exist_ok=True)
+                comparison_dir.mkdir(parents=True, exist_ok=True)
                 decoded_frames = decoded[row, : clip.frame_count]
                 generated_frames = generated[row, : clip.frame_count]
                 imageio.mimsave(decoded_dir / f"{base}__decoded.mp4", decoded_frames, fps=args.fps)
                 imageio.mimsave(
                     rollout_dir / f"{base}__rollout_s{args.sample_steps}.mp4", generated_frames, fps=args.fps
+                )
+                separator = np.full((decoded_frames.shape[1], 4, 3), 255, dtype=np.uint8)
+                comparison_frames = [
+                    np.concatenate([target, separator, prediction], axis=1)
+                    for target, prediction in zip(decoded_frames, generated_frames, strict=True)
+                ]
+                imageio.mimsave(
+                    comparison_dir / f"{base}__decoded-left__rollout-right_s{args.sample_steps}.mp4",
+                    comparison_frames,
+                    fps=args.fps,
                 )
 
                 generated_slice = slice(args.context_frames, clip.frame_count)
