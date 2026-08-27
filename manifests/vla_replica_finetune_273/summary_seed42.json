@@ -1,0 +1,14 @@
+{
+  "repo": "HenryZhang/VLAReplica_SFT_data",
+  "selection_seed": 42,
+  "selection_method": "proportional task allocation with sha256 rank",
+  "base_train_trajectories": 81,
+  "additional_train_trajectories": 192,
+  "train_trajectories": 273,
+  "validation_trajectories": 81,
+  "test_trajectories": 147,
+  "reserved_eval_trajectories": 27,
+  "train_duration_s": 4649.133333333333,
+  "validation_duration_s": 1425.9666666666667,
+  "test_duration_s": 2538.133333333333
+}
