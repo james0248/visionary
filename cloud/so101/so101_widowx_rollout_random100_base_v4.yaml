@@ -1,0 +1,70 @@
+project: visionary-491008
+
+job:
+  name: so101-widowx-r100-base-v4
+  poll_interval_seconds: 30
+  queue_wait_timeout_seconds: 0
+  spot: true
+
+repo:
+  url: https://github.com/james0248/visionary.git
+  branch: codex/vla-replica-ft-3-per-task
+
+setup:
+  accelerator: tpu
+
+training:
+  script: scripts/eval_dynamics_videos.py
+  config_name: null
+  auto_resume: false
+  overrides:
+    - --checkpoint_dir=gs://visionary-uc1/so101/checkpoints/dynamics_v4_312m_ramp
+    - --tokenizer_checkpoint_dir=gs://visionary-uc1/so101/checkpoints/tokenizer_v2
+    - --data_dir=gs://visionary-uc1/so101/data/dynamics/widowx/eval
+    - --random_clip_count=100
+    - --selection_source=widowx
+    - --embodiment_id=1
+    - --output_dir=/tmp/so101-widowx-r100-base-v4
+    - --upload_dir=gs://visionary-uc1/so101/evals/widowx_random100_seed42/base_v4/artifacts
+    - --upload_each_batch
+    - --step=100000
+    - --context_frames=4
+    - --generated_frames=-1
+    - --max_frames=100
+    - --sample_steps=8
+    - --fps=5
+    - --seed=42
+    - --rollout_seed=0
+
+markers:
+  complete_uri: gs://visionary-uc1/so101/evals/widowx_random100_seed42/base_v4/_complete.json
+  failure_prefix: gs://visionary-uc1/so101/evals/widowx_random100_seed42/base_v4/failures
+
+logs:
+  uri: gs://visionary-uc1/so101/evals/widowx_random100_seed42/base_v4/_starter.log
+  archive_uri_prefix: gs://visionary-uc1/so101/evals/widowx_random100_seed42/base_v4/logs
+  tail_lines: 200
+
+failure_policy:
+  mode: retry
+  max_retries: 1
+  retry_backoff_seconds: 30
+
+starter_service_account:
+  email: visionary-starter@visionary-491008.iam.gserviceaccount.com
+  scopes:
+    - https://www.googleapis.com/auth/cloud-platform
+
+watcher:
+  impersonate_service_account: visionary-watcher@visionary-491008.iam.gserviceaccount.com
+  state_uri: gs://visionary-uc1/so101/evals/widowx_random100_seed42/base_v4/_watcher_state.json
+  gcloud_retry_attempts: 5
+  gcloud_retry_backoff_seconds: 5
+  gcloud_retry_max_backoff_seconds: 60
+
+machine:
+  family: v6e
+  chips: 8
+  zone: us-central1-b
+  spot: true
+  valid_until_duration: 600s
